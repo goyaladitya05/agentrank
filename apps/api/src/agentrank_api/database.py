@@ -1,7 +1,12 @@
 """Database engine construction and connectivity checks."""
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from agentrank_api.config import Settings
 
@@ -17,6 +22,15 @@ def create_engine(settings: Settings) -> AsyncEngine:
         pool_pre_ping=True,
         connect_args={"connect_timeout": settings.postgres_connect_timeout},
     )
+
+
+def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
+    """Build the session factory for the application.
+
+    expire_on_commit is off so that objects stay readable after a commit. Without it,
+    serializing a just committed row triggers a fresh SELECT per attribute.
+    """
+    return async_sessionmaker(engine, expire_on_commit=False)
 
 
 async def check_connection(engine: AsyncEngine) -> None:

@@ -1,6 +1,6 @@
 """Migrations must round trip against a real PostgreSQL database."""
 
-from pathlib import Path
+from collections.abc import Callable
 
 from alembic import command
 from alembic.config import Config
@@ -10,13 +10,7 @@ from sqlalchemy import create_engine, inspect
 
 from agentrank_api.config import Settings
 
-REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
-
-
-def alembic_config(settings: Settings) -> Config:
-    config = Config(REPOSITORY_ROOT / "alembic.ini")
-    config.attributes["settings"] = settings
-    return config
+AlembicConfigFactory = Callable[[Settings], Config]
 
 
 def table_names(settings: Settings) -> set[str]:
@@ -36,8 +30,10 @@ def current_revision(settings: Settings) -> str | None:
         engine.dispose()
 
 
-def test_migrations_upgrade_downgrade_and_upgrade_again(throwaway_database: Settings) -> None:
-    config = alembic_config(throwaway_database)
+def test_migrations_upgrade_downgrade_and_upgrade_again(
+    throwaway_database: Settings, alembic_config_factory: AlembicConfigFactory
+) -> None:
+    config = alembic_config_factory(throwaway_database)
     head = ScriptDirectory.from_config(config).get_current_head()
 
     command.upgrade(config, "head")
@@ -52,9 +48,11 @@ def test_migrations_upgrade_downgrade_and_upgrade_again(throwaway_database: Sett
     assert current_revision(throwaway_database) == head
 
 
-def test_models_match_migrations(throwaway_database: Settings) -> None:
+def test_models_match_migrations(
+    throwaway_database: Settings, alembic_config_factory: AlembicConfigFactory
+) -> None:
     """A model change that skipped a migration must fail here, not in production."""
-    config = alembic_config(throwaway_database)
+    config = alembic_config_factory(throwaway_database)
     command.upgrade(config, "head")
 
     command.check(config)
