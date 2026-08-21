@@ -104,6 +104,11 @@ class CheckoutSession(Base):
         # target. Carrying the currency into it is what lets a line be tied to both this
         # checkout's merchant and this checkout's currency in one constraint.
         UniqueConstraint("id", "merchant_id", "currency"),
+        # The same target without the currency, for a referencing row that carries no
+        # money at all. An inventory reservation is bound through (checkout_id,
+        # merchant_id), and PostgreSQL requires a unique constraint on exactly those two
+        # columns to point at.
+        UniqueConstraint("id", "merchant_id"),
         CheckConstraint(f"status IN ({_STATUS_VALUES})", name="status_known"),
         CheckConstraint(f"currency ~ '{CURRENCY_PATTERN}'", name="currency_format"),
         CheckConstraint("subtotal_amount_minor >= 0", name="subtotal_not_negative"),

@@ -21,6 +21,7 @@ from agentrank_api.config import Settings, get_settings
 from agentrank_api.constraints import models as constraint_models  # noqa: F401  registers tables
 from agentrank_api.database import create_engine as create_async_engine
 from agentrank_api.database import create_session_factory
+from agentrank_api.inventory import models as inventory_models  # noqa: F401  registers tables
 from agentrank_api.mandates import models as mandate_models  # noqa: F401  registers tables
 from agentrank_api.models import Base
 

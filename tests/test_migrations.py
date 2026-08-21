@@ -19,10 +19,13 @@ from agentrank_api.commerce import models as commerce_models  # noqa: F401  regi
 from agentrank_api.commerce.dev_catalog import MERCHANT_SLUG, seed_dev_catalog
 from agentrank_api.commerce.models import Merchant, Product, Variant
 from agentrank_api.config import Settings
+from agentrank_api.constraints.models import IntentConstraint, IntentConstraintSet
 from agentrank_api.constraints.repository import IntentConstraintRepository
 from agentrank_api.constraints.rules import ConstraintOperator, IntentConstraintSpec
 from agentrank_api.database import create_engine as create_async_engine
 from agentrank_api.database import create_session_factory
+from agentrank_api.inventory.models import InventoryReservation, InventoryReservationLine
+from agentrank_api.inventory.repository import InventoryReservationRepository
 from agentrank_api.mandates.models import SpendingMandate
 from agentrank_api.mandates.repository import MandateRepository
 from agentrank_api.models import Base
@@ -35,6 +38,7 @@ AlembicConfigFactory = Callable[[Settings], Config]
 PHASE_1A_HEAD = "ace599f8cce9"
 PHASE_1B_HEAD = "9360057d8773"
 PHASE_1C_HEAD = "4dc1a0f57b18"
+PHASE_1D_HEAD = "70b5c985a47a"
 
 HOUR = timedelta(hours=1)
 CHECKOUT_ID = uuid.uuid7()
@@ -113,6 +117,35 @@ def quote_snapshot(settings: Settings) -> dict[str, Any]:
         engine.dispose()
 
 
+def constraint_snapshot(settings: Settings) -> dict[str, Any]:
+    """The Phase 1D rows, which the Phase 1E migration must leave alone."""
+    engine = create_engine(settings.database_url)
+    try:
+        with engine.connect() as connection:
+            return {
+                "set_count": connection.execute(
+                    select(func.count()).select_from(IntentConstraintSet)
+                ).scalar_one(),
+                "constraints": sorted(
+                    connection.execute(
+                        select(IntentConstraint.attribute_key, IntentConstraint.value)
+                    ).all(),
+                    key=str,
+                ),
+            }
+    finally:
+        engine.dispose()
+
+
+def row_count(settings: Settings, model: type[Base]) -> int:
+    engine = create_engine(settings.database_url)
+    try:
+        with engine.connect() as connection:
+            return int(connection.execute(select(func.count()).select_from(model)).scalar_one())
+    finally:
+        engine.dispose()
+
+
 def table_names(settings: Settings) -> set[str]:
     engine = create_engine(settings.database_url)
     try:
@@ -171,14 +204,20 @@ async def test_migrations_apply_to_a_database_that_already_holds_data(
 
     The chain is exercised the way a deployment would meet it. Each phase's data is written
     at that phase's head, and only then does the next migration run. By the time the Phase
-    1D migration runs, the database already holds a Phase 1A catalog, a Phase 1B mandate
-    and audit event, and a Phase 1C quote with its lines, and every one of them has to come
-    through the upgrade, the reversal and the reupgrade unchanged.
+    1E migration runs, the database already holds a Phase 1A catalog, a Phase 1B mandate
+    and audit event, a Phase 1C quote with its lines, and a Phase 1D constraint set, and
+    every one of them has to come through the upgrade, the reversal and the reupgrade
+    unchanged.
 
     Phase 1D is the first migration to add columns to a table whose rows a trigger refuses
     to update. An ALTER TABLE is not an UPDATE, so the new columns take their default
     without the guard firing, and that is exactly the thing an empty database cannot say
     anything about.
+
+    Phase 1E adds a unique constraint to that same table and then a table referencing it.
+    Building a unique index over rows that already exist is the other operation an empty
+    database says nothing about, and the reservation written afterwards is what makes the
+    downgrade drop a table with rows in it rather than an empty one.
     """
     config = alembic_config_factory(throwaway_database)
     command.upgrade(config, PHASE_1A_HEAD)
@@ -276,21 +315,15 @@ async def test_migrations_apply_to_a_database_that_already_holds_data(
         quoted = quote_snapshot(throwaway_database)
         assert quoted["checkout_totals"] == [variant.price_amount_minor]
 
-        command.upgrade(config, "head")
+        # Phase 1D data: semantic authorization written against that existing mandate.
+        command.upgrade(config, PHASE_1D_HEAD)
         assert catalog_snapshot(throwaway_database) == seeded
         assert authorization_snapshot(throwaway_database) == authorized
         assert quote_snapshot(throwaway_database) == quoted
-        assert {table.name for table in Base.metadata.sorted_tables} <= table_names(
-            throwaway_database
-        )
         # A line written before the snapshot existed takes the column defaults rather than
         # a backfill from today's catalog, and an empty snapshot fails closed.
         assert line_snapshots(throwaway_database) == [(None, {})]
 
-        # Semantic authorization written against that existing mandate, so the downgrade
-        # below has rows to remove rather than only tables. The foreign key onto the
-        # mandate is RESTRICT and a trigger refuses DELETE, and a DROP TABLE is neither, so
-        # neither may block the reversal.
         async with factory() as session:
             await IntentConstraintRepository(session).create(
                 merchant_id=merchant_id,
@@ -300,10 +333,48 @@ async def test_migrations_apply_to_a_database_that_already_holds_data(
                 ],
             )
             await session.commit()
+
+        constrained = constraint_snapshot(throwaway_database)
+        assert constrained["set_count"] == 1
+
+        # Phase 1E data: stock held against that existing quote, so the downgrade below has
+        # rows to remove rather than only tables.
+        command.upgrade(config, "head")
+        assert catalog_snapshot(throwaway_database) == seeded
+        assert authorization_snapshot(throwaway_database) == authorized
+        assert quote_snapshot(throwaway_database) == quoted
+        assert constraint_snapshot(throwaway_database) == constrained
+        assert line_snapshots(throwaway_database) == [(None, {})]
+        assert {table.name for table in Base.metadata.sorted_tables} <= table_names(
+            throwaway_database
+        )
+
+        async with factory() as session:
+            line = (await session.execute(select(CheckoutLine))).scalars().one()
+            await InventoryReservationRepository(session).create(
+                merchant_id=merchant_id,
+                checkout_id=CHECKOUT_ID,
+                expires_at=datetime.now(UTC) + HOUR,
+                quantities={line.variant_id: line.quantity},
+            )
+            await session.commit()
+
+        assert row_count(throwaway_database, InventoryReservation) == 1
+        assert row_count(throwaway_database, InventoryReservationLine) == 1
     finally:
         await engine.dispose()
 
     # A downgrade removes what this phase added and leaves everything earlier untouched.
+    # The reservation's foreign key onto the checkout is RESTRICT and a trigger refuses
+    # every update, and a DROP TABLE is neither, so neither may block the reversal.
+    command.downgrade(config, PHASE_1D_HEAD)
+    assert catalog_snapshot(throwaway_database) == seeded
+    assert authorization_snapshot(throwaway_database) == authorized
+    assert quote_snapshot(throwaway_database) == quoted
+    assert constraint_snapshot(throwaway_database) == constrained
+    assert "inventory_reservation" not in table_names(throwaway_database)
+    assert "inventory_reservation_line" not in table_names(throwaway_database)
+
     command.downgrade(config, PHASE_1C_HEAD)
     assert catalog_snapshot(throwaway_database) == seeded
     assert authorization_snapshot(throwaway_database) == authorized
@@ -315,3 +386,6 @@ async def test_migrations_apply_to_a_database_that_already_holds_data(
     assert catalog_snapshot(throwaway_database) == seeded
     assert authorization_snapshot(throwaway_database) == authorized
     assert quote_snapshot(throwaway_database) == quoted
+    # The reservation is gone with the table that held it, which is what a downgrade of
+    # this phase means. Everything written before it is still here.
+    assert row_count(throwaway_database, InventoryReservation) == 0

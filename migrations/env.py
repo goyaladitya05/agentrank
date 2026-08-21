@@ -17,6 +17,7 @@ from agentrank_api.audit import models as audit_models  # noqa: F401  isort:skip
 from agentrank_api.checkout import models as checkout_models  # noqa: F401  isort:skip
 from agentrank_api.commerce import models as commerce_models  # noqa: F401  isort:skip
 from agentrank_api.constraints import models as constraint_models  # noqa: F401  isort:skip
+from agentrank_api.inventory import models as inventory_models  # noqa: F401  isort:skip
 from agentrank_api.mandates import models as mandate_models  # noqa: F401  isort:skip
 
 config = context.config
