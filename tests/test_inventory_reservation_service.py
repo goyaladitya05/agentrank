@@ -30,6 +30,7 @@ from agentrank_api.inventory.repository import (
 from agentrank_api.inventory.service import (
     InventoryReservationService,
     InventoryViolationCode,
+    ReleaseReason,
     ReservationOutcome,
     total_reserved,
 )
@@ -45,6 +46,7 @@ PRICE = 499900
 # A concurrent test that goes wrong blocks on a row lock rather than failing, so every
 # gather is bounded. Generous enough never to fire on a healthy database.
 CONCURRENCY_TIMEOUT = 30
+CANCELLED = ReleaseReason.CHECKOUT_CANCELLED
 
 # How long an attempt is watched before concluding it is genuinely waiting on a lock. This
 # is a detection window, not a semantic one: nothing about a reservation depends on it. An
@@ -271,12 +273,12 @@ async def test_releasing_gives_the_stock_back(session: AsyncSession, shop: Shop)
     assert held.reservation is not None
     assert not (await service.reserve(second, expires_at=NOW + HOUR, at=NOW)).reserved
 
-    assert await service.release(held.reservation) is True
+    assert await service.release(held.reservation, reason=CANCELLED) is True
     assert (await service.reserve(second, expires_at=NOW + HOUR, at=NOW)).reserved
     await session.commit()
 
     # Releasing twice changes nothing and reports that it changed nothing.
-    assert await service.release(held.reservation) is False
+    assert await service.release(held.reservation, reason=CANCELLED) is False
 
 
 async def still_waiting(*attempts: asyncio.Task[ReservationOutcome]) -> bool:

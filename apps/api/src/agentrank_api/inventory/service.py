@@ -23,7 +23,9 @@ Three rules shape this module:
   is available is that total minus the reservations effective right now
 
 This service does not commit. The caller sets the transaction boundary, which is what lets
-a reservation, its lines and its audit event be one unit of work.
+a reservation, its lines and its audit event be one unit of work. Holding a merchant's stock
+and releasing it are both recorded, because both are things that happened to a merchant's
+inventory on a buyer's behalf.
 """
 
 import uuid
@@ -31,13 +33,36 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from agentrank_api.audit.models import ActorType
+from agentrank_api.audit.repository import AuditRepository
 from agentrank_api.checkout.models import CheckoutSession
-from agentrank_api.inventory.models import InventoryReservation
+from agentrank_api.inventory.models import InventoryReservation, ReservationStatus
 from agentrank_api.inventory.repository import InventoryReservationRepository
 from agentrank_api.inventory.rules import is_effective
+
+RESERVATION_RESOURCE = "inventory_reservation"
+INVENTORY_RESERVED = "inventory.reserved"
+INVENTORY_RELEASED = "inventory.released"
+
+# Stock is held while preparing a purchase the buyer asked for, so it is the buyer's act,
+# exactly as quoting is. This names a role and not a verified identity: nothing
+# authenticates a caller yet.
+RESERVATION_ACTOR = ActorType.BUYER
+
+
+class ReleaseReason(StrEnum):
+    """Why stock was given back.
+
+    One member, because there is one way to release a reservation today. A payment phase
+    that gives stock back after a failed attempt adds a member here rather than writing
+    prose into a payload, so the trail stays answerable by a machine.
+    """
+
+    CHECKOUT_CANCELLED = "checkout_cancelled"
 
 
 class InventoryViolationCode(StrEnum):
@@ -92,6 +117,7 @@ class InventoryReservationService:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
         self._reservations = InventoryReservationRepository(session)
+        self._audit = AuditRepository(session)
 
     async def reserve(
         self, checkout: CheckoutSession, *, expires_at: datetime, at: datetime
@@ -116,6 +142,10 @@ class InventoryReservationService:
         preparation service derives it from the checkout and the mandate. `at` is the
         instant the accounting is done against, and it is an argument for the same reason
         every other rule here takes one.
+
+        A success writes the reservation, its lines and one `inventory.reserved` event. They
+        are one unit of work: if the audit append fails, no stock is held. A repeat writes
+        no second event, because nothing happened the second time.
 
         Nothing is committed. A refusal leaves the transaction usable, and a success leaves
         the caller to decide what else belongs in it.
@@ -163,21 +193,49 @@ class InventoryReservationService:
             expires_at=expires_at,
             quantities=quantities,
         )
+        await self._append(reservation, INVENTORY_RESERVED, _reserved_payload(reservation))
         return ReservationOutcome(reservation=reservation, created=True)
 
-    async def release(self, reservation: InventoryReservation) -> bool:
-        """Give the stock back, once.
+    async def release(self, reservation: InventoryReservation, *, reason: ReleaseReason) -> bool:
+        """Give the stock back, once, and record that it happened.
 
         Idempotent and terminal: releasing an already released reservation is not an error,
-        does not move `released_at` and reports that it changed nothing, so a caller can
-        record exactly one event for exactly one real transition.
+        does not move `released_at` and appends no second event. The return value says
+        whether this call is what changed anything.
 
         No variant lock is taken. Releasing only ever frees capacity, so a concurrent
         reservation that has not yet seen it simply counts this stock as still held and
         refuses, which is conservative rather than wrong. The lock exists to stop two
         claims on one unit, and a release makes no claim.
         """
-        return await self._reservations.release(reservation)
+        if not await self._reservations.release(reservation):
+            return False
+
+        await self._append(reservation, INVENTORY_RELEASED, _released_payload(reservation, reason))
+        return True
+
+    async def release_for_checkout(self, checkout_id: uuid.UUID, *, reason: ReleaseReason) -> bool:
+        """Release whatever this checkout is holding, if it is holding anything.
+
+        The lookup and the release are one step so that a caller withdrawing a checkout
+        cannot release the stock without recording it, or record it without releasing.
+        """
+        reservation = await self._reservations.get_active_for_checkout(checkout_id)
+        if reservation is None:
+            return False
+        return await self.release(reservation, reason=reason)
+
+    async def _append(
+        self, reservation: InventoryReservation, event_type: str, payload: dict[str, Any]
+    ) -> None:
+        await self._audit.append(
+            merchant_id=reservation.merchant_id,
+            actor_type=RESERVATION_ACTOR,
+            event_type=event_type,
+            resource_type=RESERVATION_RESOURCE,
+            resource_id=reservation.id,
+            payload=payload,
+        )
 
 
 def checkout_quantities(checkout: CheckoutSession) -> dict[uuid.UUID, int]:
@@ -222,6 +280,41 @@ def _shortfalls(
                 )
             )
     return tuple(violations)
+
+
+def _reserved_payload(reservation: InventoryReservation) -> dict[str, Any]:
+    """What was held, in the words of the reservation itself.
+
+    The lines are recorded as well as the totals, so the trail answers which stock was held
+    rather than merely how much. Nothing about price is here: a reservation is a claim on
+    stock and the money is already recorded on the quote.
+    """
+    return {
+        "checkout_id": str(reservation.checkout_id),
+        "expires_at": reservation.expires_at.isoformat(),
+        "line_count": len(reservation.lines),
+        "total_quantity": reservation.total_quantity,
+        "lines": [
+            {"variant_id": str(line.variant_id), "quantity": line.quantity}
+            for line in reservation.lines
+        ],
+    }
+
+
+def _released_payload(reservation: InventoryReservation, reason: ReleaseReason) -> dict[str, Any]:
+    """What stopped being held, and why.
+
+    The reason is a stable code rather than prose, for the same reason an event type is one.
+    The quantities are restated because they are what the merchant got back, and reading
+    them should not need a join to a table.
+    """
+    return {
+        "checkout_id": str(reservation.checkout_id),
+        "reason": reason.value,
+        "status": ReservationStatus.RELEASED.value,
+        "line_count": len(reservation.lines),
+        "total_quantity": reservation.total_quantity,
+    }
 
 
 def total_reserved(reservations: Sequence[InventoryReservation], *, at: datetime) -> int:

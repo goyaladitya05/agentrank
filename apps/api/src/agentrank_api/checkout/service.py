@@ -52,6 +52,7 @@ from agentrank_api.commerce.models import Variant
 from agentrank_api.commerce.repository import CatalogRepository, MerchantRepository
 from agentrank_api.constraints.repository import IntentConstraintRepository
 from agentrank_api.errors import ConflictError, NotFoundError
+from agentrank_api.inventory.service import InventoryReservationService, ReleaseReason
 from agentrank_api.mandates.repository import MandateRepository
 from agentrank_api.money import validate_amount_minor
 
@@ -119,6 +120,7 @@ class CheckoutService:
         self._catalog = CatalogRepository(session)
         self._checkouts = CheckoutRepository(session)
         self._constraints = IntentConstraintRepository(session)
+        self._inventory = InventoryReservationService(session)
         self._audit = AuditRepository(session)
 
     async def create_checkout(self, request: NewCheckout) -> CheckoutSession:
@@ -229,6 +231,15 @@ class CheckoutService:
         move the original timestamp. Cancellation is terminal; there is no counterpart that
         reopens one, and the database enforces that too.
 
+        Any stock this checkout was holding is released in the same transaction. A withdrawn
+        quote that still held inventory would keep it off the shelf until it expired, for a
+        purchase that can no longer happen. The cancellation, the release and both audit
+        events commit together or not at all.
+
+        The release is inside the transition rather than beside it. A reservation can only
+        be active while its checkout is open, since preparing a cancelled one is refused, so
+        a repeat has nothing to release and appends nothing.
+
         Nothing about the price changes. Cancelling a quote withdraws it, it does not
         rewrite what was quoted, and the trigger on the table refuses any attempt to do
         both at once.
@@ -237,6 +248,9 @@ class CheckoutService:
         if await self._checkouts.cancel(checkout):
             await self._append(
                 checkout, CHECKOUT_CANCELLED, {"status": CheckoutStatus.CANCELLED.value}
+            )
+            await self._inventory.release_for_checkout(
+                checkout.id, reason=ReleaseReason.CHECKOUT_CANCELLED
             )
         # Committed either way. When nothing changed this just closes the read.
         await self._session.commit()
