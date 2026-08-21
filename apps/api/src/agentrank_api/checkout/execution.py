@@ -55,6 +55,12 @@ Live catalog state is read for exactly one thing, which is stock. What the check
 and what it is were snapshotted when it was quoted and are read from the quote, so a
 merchant editing a price or a colour afterwards cannot change what was authorized. That
 split is deliberate: quote semantics come from snapshots, availability comes from now.
+
+Beside preparation is its inverse, `release_reservation`, which gives a hold back on purpose
+and records why. Preparation is the only thing that takes a hold, so without a deliberate way
+to end one a reservation that should not be held could only be waited out. It is an
+application operation with no route: an endpoint that released an arbitrary reservation would
+let an unauthenticated caller free stock a merchant was holding for somebody else.
 """
 
 import uuid
@@ -78,6 +84,7 @@ from agentrank_api.inventory.service import (
     InventoryReservationService,
     InventoryViolation,
     InventoryViolationCode,
+    ReleaseReason,
 )
 from agentrank_api.mandates.models import SpendingMandate
 from agentrank_api.mandates.repository import MandateRepository
@@ -251,6 +258,45 @@ class CheckoutExecutionService:
             authorization=admission,
             reservation=outcome.reservation,
         )
+
+    async def release_reservation(self, checkout_id: uuid.UUID, *, reason: ReleaseReason) -> bool:
+        """Give back the stock this checkout is holding, and say why in the trail.
+
+        The inverse of preparation, and the reason it exists is that preparation is the only
+        thing that takes a hold. Until now the only way to give one back was to cancel the
+        quote, which is a decision about the quote rather than about the stock, so a
+        reservation that should not be held could only be waited out. A claim on a merchant's
+        inventory that nothing can deliberately end is a claim the system has lost track of.
+
+        `reason` is required and is a code rather than prose, because the whole point of
+        releasing on purpose is that the trail says which purpose. There is no default: a
+        caller that has not decided why it is giving stock back has not decided to give it
+        back.
+
+        Internal on purpose. No route reaches this. An endpoint that released an arbitrary
+        reservation would let an unauthenticated caller free stock a merchant was holding for
+        somebody else, and no caller outside this application needs one: a buyer who does not
+        want the item cancels the quote, and a lapsed reservation frees itself.
+
+        The checkout is locked first, so this serializes against a preparation that may be
+        writing a reservation for it at this moment, and against a cancellation. Second in
+        the lock order and nothing above it, which reverses nothing. See
+        agentrank_api.locking.
+
+        Idempotent, and it reports whether this call is what changed anything. Releasing a
+        checkout that holds nothing is not an error and records nothing. The release and its
+        `inventory.released` event commit together or not at all.
+
+        Nothing here decides whether a purchase happened. This is a claim on stock being
+        withdrawn, and no payment exists in this application to have withdrawn it.
+        """
+        checkout = await self._checkouts.get_for_update(checkout_id)
+        if checkout is None:
+            raise NotFoundError("checkout", str(checkout_id))
+
+        released = await self._inventory.release_for_checkout(checkout.id, reason=reason)
+        await self._session.commit()
+        return released
 
     async def execution_authorization(
         self, checkout_id: uuid.UUID, *, at: datetime | None = None

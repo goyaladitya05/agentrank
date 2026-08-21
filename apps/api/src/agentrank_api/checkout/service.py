@@ -250,6 +250,17 @@ class CheckoutService:
         purchase that can no longer happen. The cancellation, the release and both audit
         events commit together or not at all.
 
+        The release is attempted on the repeat as well, and this is the one thing a repeat
+        does that is not nothing. A cancelled checkout holding stock should be unreachable
+        now that preparation and cancellation serialize, so ordinarily there is nothing to
+        release and nothing is recorded. If one is ever found, the honest thing is to give
+        the stock back rather than leave it held until it lapses, so the repeat heals it and
+        records `reservation_recovered` rather than `checkout_cancelled`, because the two are
+        different facts and only one of them is an ordinary lifecycle event.
+
+        Healing is all it does. `cancelled_at` does not move, no second `checkout.cancelled`
+        event is appended, and nothing but the inconsistent reservation is touched.
+
         Nothing about the price changes. Cancelling a quote withdraws it, it does not
         rewrite what was quoted, and the trigger on the table refuses any attempt to do
         both at once.
@@ -259,9 +270,10 @@ class CheckoutService:
             await self._append(
                 checkout, CHECKOUT_CANCELLED, {"status": CheckoutStatus.CANCELLED.value}
             )
-            await self._inventory.release_for_checkout(
-                checkout.id, reason=ReleaseReason.CHECKOUT_CANCELLED
-            )
+            reason = ReleaseReason.CHECKOUT_CANCELLED
+        else:
+            reason = ReleaseReason.RESERVATION_RECOVERED
+        await self._inventory.release_for_checkout(checkout.id, reason=reason)
         # Committed either way. When nothing changed this just closes the read.
         await self._session.commit()
         return checkout

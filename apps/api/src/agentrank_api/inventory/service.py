@@ -57,12 +57,20 @@ RESERVATION_ACTOR = ActorType.BUYER
 class ReleaseReason(StrEnum):
     """Why stock was given back.
 
-    One member, because there is one way to release a reservation today. A payment phase
-    that gives stock back after a failed attempt adds a member here rather than writing
-    prose into a payload, so the trail stays answerable by a machine.
+    A code rather than prose, so the trail stays answerable by a machine. A payment phase
+    that gives stock back after a definitive decline adds a member here rather than writing
+    a sentence into a payload.
+
+    `RESERVATION_RECOVERED` is not an ordinary lifecycle event and reads as an admission
+    that something was wrong. That is deliberate. It means a reservation was found holding
+    stock for a checkout that could no longer use it, which the locking in
+    `CheckoutExecutionService.prepare_execution` is supposed to make unreachable. A release
+    under this reason in the trail is a signal worth reading, and merging it into
+    `CHECKOUT_CANCELLED` would hide exactly the thing worth knowing.
     """
 
     CHECKOUT_CANCELLED = "checkout_cancelled"
+    RESERVATION_RECOVERED = "reservation_recovered"
 
 
 class InventoryViolationCode(StrEnum):
