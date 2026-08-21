@@ -76,6 +76,7 @@ from agentrank_api.checkout.execution_authorization import (
 )
 from agentrank_api.checkout.models import CheckoutSession
 from agentrank_api.checkout.repository import CheckoutRepository
+from agentrank_api.conflicts import translated_conflicts
 from agentrank_api.constraints.repository import IntentConstraintRepository
 from agentrank_api.errors import NotFoundError
 from agentrank_api.inventory.models import InventoryReservation
@@ -215,13 +216,18 @@ class CheckoutExecutionService:
                 authorization=admission,
             )
 
-        outcome = await self._inventory.reserve(
-            checkout,
-            # Server derived, never a caller's number, and never longer than either of the
-            # two things that make this checkout usable at all.
-            expires_at=reservation_expires_at(checkout.expires_at, mandate.valid_until),
-            at=evaluated_at,
-        )
+        async with translated_conflicts(self._session, identifier=str(checkout_id)):
+            # A backstop rather than the mechanism. The locks and the admission check above
+            # are what stop a second active reservation and an already expired one, and both
+            # are also constraints on the table. If either is ever violated anyway, a caller
+            # gets the refusal it names rather than a psycopg error as a 500.
+            outcome = await self._inventory.reserve(
+                checkout,
+                # Server derived, never a caller's number, and never longer than either of
+                # the two things that make this checkout usable at all.
+                expires_at=reservation_expires_at(checkout.expires_at, mandate.valid_until),
+                at=evaluated_at,
+            )
         if not outcome.reserved:
             await self._session.rollback()
             return CheckoutExecutionReadiness(

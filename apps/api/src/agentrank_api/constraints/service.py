@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from agentrank_api.audit.models import ActorType
 from agentrank_api.audit.repository import AuditRepository
 from agentrank_api.commerce.repository import MerchantRepository
+from agentrank_api.conflicts import translated_conflicts
 from agentrank_api.constraints.models import IntentConstraintSet
 from agentrank_api.constraints.repository import IntentConstraintRepository
 from agentrank_api.constraints.rules import (
@@ -154,6 +155,11 @@ class IntentConstraintService:
         Both writes happen in one transaction and one commit. If the audit append fails,
         neither the constraint set nor its constraints are persisted: authorization data
         with no record of being granted is exactly what the audit trail exists to prevent.
+
+        A mandate is qualified once, and the read that enforces that can be true for two
+        callers at the same time. The unique constraint on `mandate_id` is what actually
+        prevents the second set, and it is translated into the same refusal the read would
+        have given, so a caller cannot tell whether it lost a race.
         """
         merchant = await self._merchants.get_by_id(request.merchant_id)
         if merchant is None:
@@ -188,11 +194,16 @@ class IntentConstraintService:
             _check_against_mandate(constraint, mandate)
 
         specs = request.semantic_specs()
-        constraint_set = await self._constraints.create(
-            merchant_id=request.merchant_id,
-            mandate_id=request.mandate_id,
-            specs=specs,
-        )
+        async with translated_conflicts(self._session, identifier=str(mandate.id)):
+            # The read above answers first and answers better, naming the mandate. This
+            # answers when two creations pass that read at once, which the unique constraint
+            # on `mandate_id` is what actually prevents. Both produce the same refusal, so a
+            # caller cannot tell whether it lost a race.
+            constraint_set = await self._constraints.create(
+                merchant_id=request.merchant_id,
+                mandate_id=request.mandate_id,
+                specs=specs,
+            )
         await self._audit.append(
             merchant_id=constraint_set.merchant_id,
             actor_type=CONSTRAINTS_ACTOR,
