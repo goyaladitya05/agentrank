@@ -9,12 +9,13 @@ The command names are the important design in this file, and they are chosen so 
 the name tells an operator whether money can move:
 
 ```text
-list-unresolved   reads                       nothing moves
-show              reads                       nothing moves
-status            reads                       nothing moves
-reconcile         asks the provider           money never moves here
-resume            sends to the provider       money can move
-abandon           decides without asking      money never moves, stock goes back
+list-unresolved       reads                     nothing moves
+show                  reads                     nothing moves
+status                reads                     nothing moves
+reconcile             asks the provider         money never moves here
+reconcile-unresolved  asks about a batch        money never moves here either
+resume                sends to the provider     money can move
+abandon               decides without asking    money never moves, stock goes back
 ```
 
 `reconcile` and `resume` being two commands rather than one is the whole point of that table.
@@ -50,6 +51,7 @@ from agentrank_api.payments.operations import (
     PaymentOperationsService,
     PaymentOperationView,
     PaymentStatusCounts,
+    PaymentSweep,
     UnresolvedPayments,
     classify,
 )
@@ -89,6 +91,7 @@ AGE_WIDTH = 9
 AMOUNT_WIDTH = 16
 HOLD_WIDTH = 11
 LABEL_WIDTH = 18
+RESULT_WIDTH = 23
 
 MISSING = "-"
 
@@ -155,6 +158,25 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
     query.add_argument("attempt_id", type=uuid.UUID, help="the payment attempt identifier")
     _add_json(query)
     query.set_defaults(command=reconcile)
+
+    sweep = commands.add_parser(
+        "reconcile-unresolved",
+        help="reconcile a bounded batch of unresolved payments, once",
+        description=(
+            "Query the provider about every unresolved payment in the work list, oldest first,"
+            " up to the limit. Hand triggered and one shot: nothing schedules this and nothing"
+            " repeats it. Payments that have never been dispatched are reported and skipped,"
+            " because finishing one of those is a payment rather than a query."
+        ),
+    )
+    sweep.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_UNRESOLVED_LIMIT,
+        help=f"how many payments to reconcile (default {DEFAULT_UNRESOLVED_LIMIT})",
+    )
+    _add_json(sweep)
+    sweep.set_defaults(command=reconcile_unresolved)
 
     dispatch = commands.add_parser(
         "resume",
@@ -302,6 +324,28 @@ async def reconcile(
         provider_action="queried" if outcome.provider_called else NOT_ASKED,
         provider_record=outcome.provider_record,
     )
+    return ExitCode.OK
+
+
+async def reconcile_unresolved(
+    session: AsyncSession,
+    provider: PaymentProvider,
+    arguments: argparse.Namespace,
+    out: TextIO,
+) -> int:
+    """Run one bounded sweep and report every payment in it.
+
+    Zero whether or not anything moved. A sweep in which every payment is still unresolved is a
+    sweep that ran and found nothing to learn, and a script that treated that as a failure would
+    alert on the ordinary case. A payment the kernel refused is a row in the report rather than
+    an exit code, for the same reason: the other payments were still processed and the operator
+    still needs to see them.
+    """
+    swept = await PaymentService(session, provider).reconcile_unresolved(limit=arguments.limit)
+    if arguments.as_json:
+        _write_json(out, _sweep_json(swept))
+        return ExitCode.OK
+    _render_sweep(swept, out)
     return ExitCode.OK
 
 
@@ -458,6 +502,35 @@ def _render_listing(listing: UnresolvedPayments, out: TextIO) -> None:
     print(footer, file=out)
 
 
+def _render_sweep(swept: PaymentSweep, out: TextIO) -> None:
+    """One line per payment considered, then what the whole pass amounted to."""
+    if not swept.items:
+        print("no unresolved payments", file=out)
+        return
+
+    print(
+        f"{'attempt':<{ID_WIDTH}}  {'result':<{RESULT_WIDTH}}  transition",
+        file=out,
+    )
+    for item in swept.items:
+        after = MISSING if item.status_after is None else item.status_after.value
+        transition = f"{item.status_before.value} -> {after}"
+        if item.detail is not None:
+            transition = f"{transition}  {item.detail}"
+        print(
+            f"{item.attempt_id!s:<{ID_WIDTH}}  {item.result.value:<{RESULT_WIDTH}}  {transition}",
+            file=out,
+        )
+
+    footer = (
+        f"{len(swept.items)} considered, {swept.resolved} resolved,"
+        f" {swept.still_unresolved} still unresolved, limit {swept.limit}"
+    )
+    if swept.truncated:
+        footer = f"{footer}, more may exist"
+    print(footer, file=out)
+
+
 def _render_view(view: PaymentOperationView, out: TextIO) -> None:
     """Every field of one payment, then its recent trail beneath a blank line."""
     payment = view.payment
@@ -527,6 +600,27 @@ def _view_json(view: PaymentOperationView) -> dict[str, Any]:
         "observed_at": view.observed_at.isoformat(),
         "payment": _payment_json(view.payment, view.observed_at),
         "events": [_event_json(event) for event in view.events],
+    }
+
+
+def _sweep_json(swept: PaymentSweep) -> dict[str, Any]:
+    return {
+        "observed_at": swept.observed_at.isoformat(),
+        "limit": swept.limit,
+        "truncated": swept.truncated,
+        "considered": len(swept.items),
+        "resolved": swept.resolved,
+        "still_unresolved": swept.still_unresolved,
+        "items": [
+            {
+                "attempt_id": str(item.attempt_id),
+                "result": item.result.value,
+                "status_before": item.status_before.value,
+                "status_after": None if item.status_after is None else item.status_after.value,
+                "detail": item.detail,
+            }
+            for item in swept.items
+        ],
     }
 
 

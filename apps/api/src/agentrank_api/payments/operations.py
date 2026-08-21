@@ -95,7 +95,9 @@ class PaymentOperationResult(StrEnum):
 
     RESOLVED_SUCCESS
         The provider reported a definitive success and this call recorded it. The stock was
-        consumed and the checkout is paid. Nothing further is needed.
+        consumed and the checkout is paid. Nothing further is needed. "This call" is load
+        bearing: a second operator told the same true answer a moment later gets
+        ALREADY_TERMINAL, so one recovery is never counted twice.
 
     RESOLVED_FAILURE
         The provider reported a definitive decline. The hold went back and the checkout is
@@ -116,8 +118,10 @@ class PaymentOperationResult(StrEnum):
         is something to wait for.
 
     ALREADY_TERMINAL
-        The payment was settled before this call, so no provider was asked. A sweep meeting a
-        payment somebody else resolved has done its job.
+        The payment was settled and this call is not what settled it. Either it was already
+        terminal before anybody asked, in which case no provider was queried, or two operators
+        asked at once and this one lost the lock and wrote nothing. A sweep meeting a payment
+        somebody else resolved has done its job.
 
     OUTCOME_CONFLICT
         This call observed something definitive that contradicts the terminal state already
@@ -158,6 +162,22 @@ class PaymentOperationResult(StrEnum):
     ALREADY_ABANDONED = "already_abandoned"
 
 
+# The results that mean a payment stopped being unresolved during this operation. Named beside
+# the enumeration rather than inside a counting loop, so that a reader of a sweep report can see
+# which outcomes are counted as progress without reading the code that counts them.
+#
+# `ALREADY_TERMINAL` is deliberately not here. The payment does have an answer, and it had one
+# before this operation started, so counting it as progress would let a sweep over a work list
+# somebody else had already cleared report that it had done the clearing.
+RESOLVING_RESULTS: frozenset[PaymentOperationResult] = frozenset(
+    {
+        PaymentOperationResult.RESOLVED_SUCCESS,
+        PaymentOperationResult.RESOLVED_FAILURE,
+        PaymentOperationResult.PROVIDER_NEVER_EXECUTED,
+    }
+)
+
+
 def classify(outcome: PaymentOutcome) -> PaymentOperationResult:
     """Turn one dispatch or one reconciliation into the sentence an operator needs.
 
@@ -171,8 +191,15 @@ def classify(outcome: PaymentOutcome) -> PaymentOperationResult:
     A conflict first, because it is the only result that is about two answers rather than one
     and it must never be reported as whichever of them happens to stand.
 
-    Then "no provider was asked", which for a reconciliation means exactly one thing: the
-    attempt was already terminal and there was nothing to learn. A dispatch cannot reach it.
+    Then a settled payment this call did not settle. That covers both shapes of it, and they
+    have to be one branch. Sometimes the attempt was already terminal before anybody asked, so
+    no provider was queried at all. Sometimes two operators asked at the same moment, both were
+    told the same true answer, and one of them lost the lock and wrote nothing. Reporting the
+    second as a resolution would let two sweeps both claim to have resolved one payment, and a
+    report that counts one recovery twice is worse than no report.
+
+    `changed` rather than `provider_called` is what decides it, and that is the whole fix: the
+    question is whether this call is what moved the row, not whether it went to the network.
 
     Then the two definitive resolutions, read off the authoritative row rather than off what
     the provider said. A failure carrying `PROVIDER_NEVER_EXECUTED` is reported as the
@@ -185,7 +212,7 @@ def classify(outcome: PaymentOutcome) -> PaymentOperationResult:
     """
     if outcome.conflict is not None:
         return PaymentOperationResult.OUTCOME_CONFLICT
-    if not outcome.provider_called:
+    if outcome.attempt.is_terminal and not outcome.changed:
         return PaymentOperationResult.ALREADY_TERMINAL
     if outcome.attempt.status is PaymentAttemptStatus.SUCCEEDED:
         return PaymentOperationResult.RESOLVED_SUCCESS
@@ -243,6 +270,71 @@ class PaymentOperationView:
     payment: PaymentOperationRow
     observed_at: datetime
     events: tuple[PaymentAuditEntry, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SweepItem:
+    """What a bounded sweep did about one payment.
+
+    `status_before` is what the listing saw, not what the reconciliation locked. The two can
+    differ, because between the listing and the attempt's turn somebody else may have resolved
+    it, and that is not an error: it is the ordinary shape of two operators working at once.
+    What the kernel acted on is always re-read under a lock, and `status_after` is what stands
+    afterwards.
+
+    `status_after` is None only when the kernel refused this attempt, because then nothing was
+    read back and reporting the snapshot as the outcome would be claiming knowledge the sweep
+    does not have.
+
+    `detail` is the refusal's stable code when there was one. Prose belongs on the error, not
+    in a batch report a script may read.
+    """
+
+    attempt_id: uuid.UUID
+    status_before: PaymentAttemptStatus
+    status_after: PaymentAttemptStatus | None
+    result: PaymentOperationResult
+    detail: str | None = None
+
+    @property
+    def resolved(self) -> bool:
+        """Whether this payment now has a definitive answer that it did not have before."""
+        return self.result in RESOLVING_RESULTS
+
+    @property
+    def still_unresolved(self) -> bool:
+        """Whether this payment is still somebody's problem after the sweep."""
+        return self.status_after is None or self.status_after in UNRESOLVED_STATUSES
+
+
+@dataclass(frozen=True, slots=True)
+class PaymentSweep:
+    """One hand triggered pass over the work list, and what each payment in it did.
+
+    Bounded and one shot. There is no scheduler behind this, no retry timer and no daemon: a
+    sweep happens because an operator asked for one, and the reason is the same reason nothing
+    reconciles automatically anywhere in this system. An ambiguous payment queried on a timer is
+    a payment that eventually gets charged twice by something nobody is watching.
+
+    `truncated` says whether the bound may have hidden work rather than whether there was any,
+    which is what an operator needs in order to know whether to run it again.
+    """
+
+    observed_at: datetime
+    limit: int
+    items: tuple[SweepItem, ...]
+
+    @property
+    def truncated(self) -> bool:
+        return len(self.items) >= self.limit
+
+    @property
+    def resolved(self) -> int:
+        return sum(1 for item in self.items if item.resolved)
+
+    @property
+    def still_unresolved(self) -> int:
+        return sum(1 for item in self.items if item.still_unresolved)
 
 
 @dataclass(frozen=True, slots=True)

@@ -38,12 +38,23 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from agentrank_api.errors import ConflictError, NotFoundError
+from agentrank_api.errors import AgentRankError, ConflictError, NotFoundError
 from agentrank_api.payments.admission import PaymentAdmission, PaymentAdmissionService
 from agentrank_api.payments.execution import PaymentExecutionService, PaymentOutcome
 from agentrank_api.payments.models import PaymentAttempt, PaymentAttemptStatus
+from agentrank_api.payments.operations import (
+    PaymentOperationResult,
+    PaymentOperationsService,
+    PaymentSweep,
+    SweepItem,
+    classify,
+)
 from agentrank_api.payments.provider import PaymentProvider
-from agentrank_api.payments.repository import PaymentAttemptRepository
+from agentrank_api.payments.repository import (
+    DEFAULT_UNRESOLVED_LIMIT,
+    PaymentAttemptRepository,
+    PaymentOperationRow,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +80,7 @@ class PaymentService:
         self._admission = PaymentAdmissionService(session)
         self._execution = PaymentExecutionService(session, provider)
         self._attempts = PaymentAttemptRepository(session)
+        self._operations = PaymentOperationsService(session)
 
     async def pay(self, checkout_id: uuid.UUID, *, idempotency_key: str) -> PaymentResult:
         """Admit a payment for this checkout and, if it may be dispatched, send it.
@@ -145,6 +157,84 @@ class PaymentService:
         and is `resume`'s business.
         """
         return await self._execution.reconcile(attempt_id)
+
+    async def reconcile_unresolved(self, *, limit: int = DEFAULT_UNRESOLVED_LIMIT) -> PaymentSweep:
+        """Reconcile a bounded batch of unresolved payments, one at a time, and report each.
+
+        Hand triggered and one shot. There is no scheduler behind this, no retry timer, no
+        daemon and no polling loop, and that is the same decision the whole payment kernel
+        rests on rather than an unimplemented feature: an ambiguous payment queried on a
+        timer eventually becomes a payment charged twice by something nobody is watching. A
+        person decides to ask, and this is what they get when they do.
+
+        Bounded twice over. The listing is bounded, so this cannot walk a table, and the batch
+        is exactly the listing, so it cannot grow while it runs. Payments admitted after the
+        listing was taken belong to the next sweep.
+
+        ADMITTED is skipped rather than acted on, and that is the most important line here.
+        Such an attempt has provably never reached a provider, so a query would learn nothing,
+        and the operation that would finish it is a payment. Performing one from inside
+        something an operator ran across a whole work list is exactly the surprise this
+        separation exists to prevent, so the sweep reports it and leaves it for `resume`.
+
+        One at a time and never in parallel. Each reconciliation takes locks in the documented
+        order and commits, and running several at once from one session would serialize on the
+        session anyway while making the failure modes harder to reason about. Two operators
+        sweeping at the same time is a different question and is safe: each attempt is re-read
+        under its own lock, and whichever writer commits first is authoritative.
+
+        A refusal is recorded and the sweep carries on. That is what stops one payment costing
+        an operator the report on all the others, and it is safe because each item's outcome
+        was already committed atomically by the reconciliation that produced it: there is no
+        batch transaction to corrupt. Anything that is not a deliberate application error
+        propagates, because an unexpected exception in a trusted recovery tool should be loud
+        rather than summarized into a column.
+        """
+        listing = await self._operations.list_unresolved(limit=limit)
+        items = [await self._sweep_one(payment) for payment in listing.payments]
+        return PaymentSweep(
+            observed_at=listing.observed_at, limit=listing.limit, items=tuple(items)
+        )
+
+    async def _sweep_one(self, payment: PaymentOperationRow) -> SweepItem:
+        """Reconcile one payment out of a batch, or record why this one could not be.
+
+        The snapshot decides only whether to skip. Everything the reconciliation acts on it
+        re-reads under a lock, so an attempt that moved between the listing and its turn is
+        handled by the kernel rather than by a stale status in this loop.
+        """
+        if payment.status is PaymentAttemptStatus.ADMITTED:
+            return SweepItem(
+                attempt_id=payment.attempt_id,
+                status_before=payment.status,
+                status_after=payment.status,
+                result=PaymentOperationResult.SKIPPED_NOT_DISPATCHED,
+            )
+
+        try:
+            outcome = await self.reconcile(payment.attempt_id)
+        except AgentRankError as refused:
+            # The refusing service already rolled back if it had a transaction open. This is
+            # for the ones that raise from a read, so the next item starts clean either way.
+            await self._session.rollback()
+            return SweepItem(
+                attempt_id=payment.attempt_id,
+                status_before=payment.status,
+                # Deliberately unknown. Nothing was read back, and reporting the snapshot here
+                # would be claiming knowledge this sweep does not have.
+                status_after=None,
+                result=PaymentOperationResult.REFUSED,
+                # The refusal's stable code, or the one name a missing payment has. Prose
+                # belongs on the error rather than in a column a script may read.
+                detail=refused.reason if isinstance(refused, ConflictError) else "not_found",
+            )
+
+        return SweepItem(
+            attempt_id=payment.attempt_id,
+            status_before=payment.status,
+            status_after=outcome.attempt.status,
+            result=classify(outcome),
+        )
 
     async def resume(self, attempt_id: uuid.UUID) -> PaymentOutcome:
         """Send a payment that was admitted and never dispatched, and record the answer.

@@ -37,6 +37,7 @@ Run it through the repository environment:
 uv run python -m agentrank_api.cli payments list-unresolved
 uv run python -m agentrank_api.cli payments show <attempt-id>
 uv run python -m agentrank_api.cli payments reconcile <attempt-id>
+uv run python -m agentrank_api.cli payments reconcile-unresolved --limit 20
 uv run python -m agentrank_api.cli payments resume <attempt-id>
 uv run python -m agentrank_api.cli payments abandon <attempt-id> --reason provider_unreachable
 uv run python -m agentrank_api.cli payments status

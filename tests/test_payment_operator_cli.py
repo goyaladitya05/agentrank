@@ -474,6 +474,77 @@ async def test_reconcile_refuses_a_payment_that_was_never_dispatched(
     assert (await reread(session, attempt.id)).status is PaymentAttemptStatus.ADMITTED
 
 
+async def test_the_sweep_command_reconciles_a_batch_and_skips_what_it_must_not_send(
+    session: AsyncSession, shop: Shop, catalog_settings: Settings
+) -> None:
+    """The batch command, with the two shapes an operator has to be able to tell apart.
+
+    One payment's charge went through and the answer was lost, so the sweep resolves it. One was
+    admitted and never sent, so the sweep reports it and leaves it alone: finishing that one is
+    a payment rather than a query, and it belongs to `resume`. The exit code is zero either way,
+    because a sweep that could not act on something has still done its job.
+    """
+    provider = FakePaymentProvider(clock=NOW)
+    provider.set_outcome("pay-ampere-0001", FakeOutcome.LOST_RESPONSE)
+    lost = await unresolved(session, shop, provider, key="pay-ampere-0001")
+    stuck = await admitted(session, shop, key="pay-ampere-0002")
+    lost_id, stuck_id = lost.id, stuck.id
+    before = await stock(session, shop.black)
+
+    swept = await run(catalog_settings, provider, "payments", "reconcile-unresolved")
+
+    assert swept.code == ExitCode.OK
+    rows = {line.split()[0]: line.split()[1] for line in swept.out.splitlines()[1:-1]}
+    assert rows[str(lost_id)] == "resolved_success"
+    assert rows[str(stuck_id)] == "skipped_not_dispatched"
+    assert "2 considered, 1 resolved, 1 still unresolved, limit 50" in swept.out
+
+    assert (await reread(session, lost_id)).status is PaymentAttemptStatus.SUCCEEDED
+    # Untouched, and specifically never sent.
+    assert (await reread(session, stuck_id)).status is PaymentAttemptStatus.ADMITTED
+    assert provider.executions_for("pay-ampere-0002") == 0
+    assert await stock(session, shop.black) == before - 1
+
+
+async def test_the_sweep_command_is_bounded_and_reports_json(
+    session: AsyncSession, shop: Shop, catalog_settings: Settings
+) -> None:
+    """A limit an operator can act on, and a report a script can read."""
+    provider = FakePaymentProvider(default=FakeOutcome.AMBIGUOUS, clock=NOW)
+    await unresolved(session, shop, provider, key="pay-ampere-0001")
+    await unresolved(session, shop, provider, key="pay-ampere-0002")
+
+    swept = await run(
+        catalog_settings, provider, "payments", "reconcile-unresolved", "--limit", "1", "--json"
+    )
+    report = swept.json()
+
+    assert swept.code == ExitCode.OK
+    assert report["limit"] == 1
+    assert report["considered"] == 1
+    assert report["truncated"] is True
+    assert report["resolved"] == 0
+    assert report["still_unresolved"] == 1
+    items = report["items"]
+    assert isinstance(items, list)
+    assert items[0]["result"] == "provider_absent"
+    assert items[0]["status_before"] == "UNKNOWN"
+    assert items[0]["status_after"] == "UNKNOWN"
+    assert items[0]["detail"] is None
+    # One queried, and specifically not both. The bound is real rather than cosmetic.
+    assert len(provider.queries) == 1
+
+
+async def test_the_sweep_command_on_an_empty_work_list_says_so(
+    session: AsyncSession, provider: FakePaymentProvider, catalog_settings: Settings
+) -> None:
+    """Nothing to sweep is an answer and it is a zero."""
+    swept = await run(catalog_settings, provider, "payments", "reconcile-unresolved")
+
+    assert swept.code == ExitCode.OK
+    assert swept.out.strip() == "no unresolved payments"
+
+
 async def test_resume_dispatches_an_admitted_payment_exactly_once(
     session: AsyncSession, shop: Shop, catalog_settings: Settings
 ) -> None:
