@@ -31,11 +31,14 @@ cp .env.example .env
 make install
 make db-up
 make migrate
+make seed-dev
 ```
 
 `make install` creates the Python virtual environment at `.venv` and installs frontend
 dependencies from the lock files. `make db-up` starts PostgreSQL and waits for it to
-become healthy. Run `make help` to list every target.
+become healthy. `make seed-dev` loads a small development catalog: one merchant, five
+products, ten variants. It is safe to run repeatedly and is never run by the application
+itself. Run `make help` to list every target.
 
 The values in `.env.example` are development defaults that match the local Docker Compose
 service. They are not secrets and must not be reused anywhere real.

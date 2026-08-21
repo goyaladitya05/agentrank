@@ -11,7 +11,7 @@ API_APP := agentrank_api.main:create_app
 
 .PHONY: help install format lint format-check typecheck test test-backend test-frontend \
 	build-frontend check-text check-whitespace check \
-	db-up db-down db-reset db-verify migrate api web
+	db-up db-down db-reset db-verify migrate seed-dev api web
 
 help: ## List available targets
 	@grep -hE '^[a-zA-Z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) \
@@ -73,6 +73,9 @@ db-verify: ## Confirm the local database is reachable and is PostgreSQL 18
 
 migrate: ## Apply all migrations
 	$(UV) run alembic upgrade head
+
+seed-dev: ## Create or refresh the local development catalog
+	$(UV) run python scripts/seed_dev_catalog.py
 
 api: ## Run the API with reload
 	$(UV) run uvicorn $(API_APP) --factory --reload --port 8000

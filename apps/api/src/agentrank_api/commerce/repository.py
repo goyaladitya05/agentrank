@@ -121,6 +121,20 @@ class CatalogRepository:
         await self._session.flush()
         return variant
 
+    async def get_product_by_external_id(
+        self, merchant_id: uuid.UUID, external_id: str
+    ) -> Product | None:
+        """Look a product up by the merchant's own identifier for it."""
+        statement = select(Product).where(
+            Product.merchant_id == merchant_id, Product.external_id == external_id
+        )
+        return (await self._session.execute(statement)).scalar_one_or_none()
+
+    async def get_variant_by_sku(self, merchant_id: uuid.UUID, sku: str) -> Variant | None:
+        """Look a variant up by SKU, which is unique within a merchant."""
+        statement = select(Variant).where(Variant.merchant_id == merchant_id, Variant.sku == sku)
+        return (await self._session.execute(statement)).scalar_one_or_none()
+
     async def get_product(self, product_id: uuid.UUID) -> Product | None:
         """Fetch one product with its merchant and every variant loaded."""
         statement = (
