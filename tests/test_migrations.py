@@ -15,9 +15,12 @@ from sqlalchemy import create_engine, func, inspect, select, text
 from agentrank_api.audit.models import ActorType, AuditEvent
 from agentrank_api.audit.repository import AuditRepository
 from agentrank_api.checkout.models import CheckoutLine, CheckoutSession
+from agentrank_api.checkout.quote import QuotedLine
+from agentrank_api.checkout.repository import CheckoutRepository
 from agentrank_api.commerce import models as commerce_models  # noqa: F401  registers tables
 from agentrank_api.commerce.dev_catalog import MERCHANT_SLUG, seed_dev_catalog
 from agentrank_api.commerce.models import Merchant, Product, Variant
+from agentrank_api.commerce.repository import CatalogRepository, MerchantRepository
 from agentrank_api.config import Settings
 from agentrank_api.constraints.models import IntentConstraint, IntentConstraintSet
 from agentrank_api.constraints.repository import IntentConstraintRepository
@@ -25,6 +28,7 @@ from agentrank_api.constraints.rules import ConstraintOperator, IntentConstraint
 from agentrank_api.database import create_engine as create_async_engine
 from agentrank_api.database import create_session_factory
 from agentrank_api.inventory.models import InventoryReservation, InventoryReservationLine
+from agentrank_api.inventory.repository import InventoryReservationRepository
 from agentrank_api.mandates.models import SpendingMandate
 from agentrank_api.mandates.repository import MandateRepository
 from agentrank_api.models import Base
@@ -41,6 +45,7 @@ PHASE_1B_HEAD = "9360057d8773"
 PHASE_1C_HEAD = "4dc1a0f57b18"
 PHASE_1D_HEAD = "70b5c985a47a"
 PHASE_1E_HEAD = "637598637298"
+PHASE_1F_HEAD = "ab60fc05d747"
 
 HOUR = timedelta(hours=1)
 CHECKOUT_ID = uuid.uuid7()
@@ -184,6 +189,90 @@ def current_revision(settings: Settings) -> str | None:
     try:
         with engine.connect() as connection:
             return MigrationContext.configure(connection).get_current_revision()
+    finally:
+        engine.dispose()
+
+
+async def seed_payment_chain(target: Settings) -> uuid.UUID:
+    """Everything a payment attempt needs beneath it, written through the ORM at head.
+
+    A merchant, a mandate, a catalog entry, a quote, a hold and one ADMITTED attempt. Written
+    with the repositories rather than as SQL, which is safe here and not at the older revisions
+    above: the models describe head and this runs at head.
+
+    Returns the attempt identifier, because every test using this then moves that one row into
+    the state it wants to meet a downgrade with.
+    """
+    engine = create_async_engine(target)
+    factory = create_session_factory(engine)
+    try:
+        async with factory() as session:
+            merchant = await MerchantRepository(session).create(slug="downgrade", name="Downgrade")
+            mandate = await MandateRepository(session).create(
+                merchant_id=merchant.id,
+                max_total_amount_minor=250000,
+                currency="INR",
+                valid_from=datetime.now(UTC) - HOUR,
+                valid_until=datetime.now(UTC) + HOUR,
+            )
+            catalog = CatalogRepository(session)
+            product = await catalog.create_product(
+                merchant_id=merchant.id, external_id="dg-1", title="Charger", category="chargers"
+            )
+            variant = await catalog.create_variant(
+                product=product,
+                sku="DG-1",
+                price_amount_minor=250000,
+                currency="INR",
+                inventory_quantity=3,
+                attributes={"color": "black"},
+            )
+            checkout = await CheckoutRepository(session).create(
+                merchant_id=merchant.id,
+                mandate_id=mandate.id,
+                currency="INR",
+                lines=[
+                    QuotedLine(
+                        variant_id=variant.id,
+                        quantity=1,
+                        unit_price_amount_minor=250000,
+                        product_category="chargers",
+                        variant_attributes={"color": "black"},
+                    )
+                ],
+                expires_at=datetime.now(UTC) + HOUR,
+            )
+            reservation = await InventoryReservationRepository(session).create(
+                merchant_id=merchant.id,
+                checkout_id=checkout.id,
+                expires_at=datetime.now(UTC) + HOUR,
+                quantities={variant.id: 1},
+            )
+            attempt = await PaymentAttemptRepository(session).create(
+                merchant_id=merchant.id,
+                checkout_id=checkout.id,
+                mandate_id=mandate.id,
+                reservation_id=reservation.id,
+                idempotency_key="pay-downgrade-01",
+                amount_minor=checkout.total_amount_minor,
+                currency=checkout.currency,
+            )
+            await session.commit()
+            return attempt.id
+    finally:
+        await engine.dispose()
+
+
+def execute(target: Settings, statement: str, **parameters: Any) -> None:
+    """Run one statement against a migrated database, outside the ORM.
+
+    Used to put a row into a state the application would reach through a service, without
+    running the service. The statements are constants in this file and never caller supplied.
+    """
+    engine = create_engine(target.database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(statement), parameters)
     finally:
         engine.dispose()
 
@@ -484,3 +573,66 @@ async def test_migrations_apply_to_a_database_that_already_holds_data(
     # still here.
     assert row_count(throwaway_database, InventoryReservation) == 0
     assert row_count(throwaway_database, PaymentAttempt) == 0
+
+
+@pytest.mark.anyio
+async def test_downgrading_past_operator_abandonment_refuses_rather_than_falsifying_it(
+    throwaway_database: Settings, alembic_config_factory: AlembicConfigFactory
+) -> None:
+    """An operator decision about money cannot be represented by a schema that has no word for it.
+
+    The previous constraint allows EXECUTION and RECONCILIATION only. Narrowing back with an
+    abandoned attempt present would have to either rewrite the source, which would claim a
+    provider answered when none did, or drop the row, which would erase the decision. Both
+    falsify financial history, so the migration refuses and says which rows and why.
+
+    The refusal is intentional rather than a constraint violation. The whole run is one
+    transaction, so nothing is half applied and the database stays at head.
+    """
+    config = alembic_config_factory(throwaway_database)
+    command.upgrade(config, "head")
+    head = ScriptDirectory.from_config(config).get_current_head()
+    attempt_id = await seed_payment_chain(throwaway_database)
+    execute(
+        throwaway_database,
+        "UPDATE payment_attempt SET status = 'IN_FLIGHT', dispatched_at = now() WHERE id = :id",
+        id=attempt_id,
+    )
+    execute(
+        throwaway_database,
+        "UPDATE payment_attempt SET status = 'FAILED', resolved_at = now(),"
+        " outcome_source = 'OPERATOR', failure_code = 'OPERATOR_ABANDONED' WHERE id = :id",
+        id=attempt_id,
+    )
+
+    with pytest.raises(RuntimeError, match="not lossless"):
+        command.downgrade(config, PHASE_1F_HEAD)
+
+    assert current_revision(throwaway_database) == head
+    assert row_count(throwaway_database, PaymentAttempt) == 1
+
+
+@pytest.mark.anyio
+async def test_downgrading_past_operator_abandonment_succeeds_without_one(
+    throwaway_database: Settings, alembic_config_factory: AlembicConfigFactory
+) -> None:
+    """A provider resolved payment is representable either side, so nothing stands in the way."""
+    config = alembic_config_factory(throwaway_database)
+    command.upgrade(config, "head")
+    attempt_id = await seed_payment_chain(throwaway_database)
+    execute(
+        throwaway_database,
+        "UPDATE payment_attempt SET status = 'IN_FLIGHT', dispatched_at = now() WHERE id = :id",
+        id=attempt_id,
+    )
+    execute(
+        throwaway_database,
+        "UPDATE payment_attempt SET status = 'FAILED', resolved_at = now(),"
+        " outcome_source = 'EXECUTION', failure_code = 'CARD_DECLINED' WHERE id = :id",
+        id=attempt_id,
+    )
+
+    command.downgrade(config, PHASE_1F_HEAD)
+
+    assert current_revision(throwaway_database) == PHASE_1F_HEAD
+    assert row_count(throwaway_database, PaymentAttempt) == 1

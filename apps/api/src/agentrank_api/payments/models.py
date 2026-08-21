@@ -103,10 +103,24 @@ class OutcomeSource(StrEnum):
     Not called `resolved_by`, because UNKNOWN carries a source and is explicitly not
     resolved. The question this answers is where the information came from, which stays
     answerable in every state that has any information at all.
+
+    EXECUTION
+        A dispatch received the answer from the provider.
+
+    RECONCILIATION
+        A query received it from the provider afterwards.
+
+    OPERATOR
+        Nobody received it. An operator decided an unresolved payment would never be
+        resolved and terminalized it deliberately, accepting the residual risk that the
+        provider may yet reveal that money moved. It is its own value rather than borrowed
+        from RECONCILIATION because the authoritative row must not claim a provider said
+        something no provider said. See `agentrank_api.payments.recovery`.
     """
 
     EXECUTION = "EXECUTION"
     RECONCILIATION = "RECONCILIATION"
+    OPERATOR = "OPERATOR"
 
 
 # Stored as text with a check constraint rather than as a native PostgreSQL enum, for the
