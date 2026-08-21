@@ -44,7 +44,7 @@ from agentrank_api.constraints.rules import ConstraintOperator, IntentConstraint
 from agentrank_api.database import create_session_factory
 from agentrank_api.inventory.models import InventoryReservation, ReservationStatus
 from agentrank_api.inventory.repository import InventoryReservationRepository
-from agentrank_api.locking import LOCK_ORDER
+from agentrank_api.locking import LOCK_ORDER, respects_lock_order
 from agentrank_api.mandates.models import MandateStatus, SpendingMandate
 from agentrank_api.mandates.repository import MandateRepository
 from agentrank_api.mandates.service import MANDATE_RESOURCE, MandateService
@@ -187,7 +187,7 @@ async def reservation_count(session: AsyncSession) -> int:
 async def active_reservation(
     session: AsyncSession, checkout_id: uuid.UUID
 ) -> InventoryReservation | None:
-    return await InventoryReservationRepository(session).get_active_for_checkout(checkout_id)
+    return await InventoryReservationRepository(session).get_holding_for_checkout(checkout_id)
 
 
 async def test_a_cancellation_in_flight_blocks_and_then_refuses_preparation(
@@ -443,7 +443,19 @@ def row_locks(catalog_engine: AsyncEngine) -> Iterator[list[str]]:
 
 def test_the_lock_order_is_one_rule_in_one_place() -> None:
     """The rule the test below asserts against is the one the code documents."""
-    assert LOCK_ORDER == ("spending_mandate", "checkout_session", "variant")
+    assert LOCK_ORDER == (
+        "spending_mandate",
+        "checkout_session",
+        "variant",
+        "inventory_reservation",
+        "payment_attempt",
+    )
+
+
+def test_a_reversal_is_not_the_documented_order() -> None:
+    """The checker has to be capable of failing, or asserting with it proves nothing."""
+    assert not respects_lock_order(["checkout_session", "spending_mandate"])
+    assert not respects_lock_order(["payment_attempt", "variant"])
 
 
 async def test_preparation_takes_its_locks_in_the_documented_order(
@@ -451,10 +463,14 @@ async def test_preparation_takes_its_locks_in_the_documented_order(
 ) -> None:
     """Deadlock freedom is a property of the order, so the order is what is asserted.
 
-    Preparation is the only operation that needs all three classes, which makes it the one
-    that can put them in the wrong order. Consecutive repeats collapse because the variant
-    rows are locked twice on purpose, once to establish the wait and once inside the
-    reservation itself, and taking a lock already held is free.
+    Preparation needs three of the five classes, which makes it one of the operations that
+    can put them in the wrong order. What is asserted is that nothing was taken out of order,
+    not that everything was taken: no operation needs every class, and requiring that would
+    make the rule impossible to satisfy rather than easy to keep.
+
+    Repeats are ignored because the variant rows are locked twice on purpose, once to
+    establish the wait and once inside the reservation itself, and taking a lock already held
+    is free.
     """
     checkout = await quote(session, shop)
     # Nothing above takes a row lock, but clearing says so rather than assuming it.
@@ -463,4 +479,9 @@ async def test_preparation_takes_its_locks_in_the_documented_order(
     readiness = await CheckoutExecutionService(session).prepare_execution(checkout.id, at=NOW)
 
     assert readiness.ready
-    assert [table for table, _ in groupby(row_locks)] == list(LOCK_ORDER)
+    assert [table for table, _ in groupby(row_locks)] == [
+        "spending_mandate",
+        "checkout_session",
+        "variant",
+    ]
+    assert respects_lock_order(row_locks)

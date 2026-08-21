@@ -25,10 +25,11 @@ from agentrank_api.constraints.rules import ConstraintOperator, IntentConstraint
 from agentrank_api.database import create_engine as create_async_engine
 from agentrank_api.database import create_session_factory
 from agentrank_api.inventory.models import InventoryReservation, InventoryReservationLine
-from agentrank_api.inventory.repository import InventoryReservationRepository
 from agentrank_api.mandates.models import SpendingMandate
 from agentrank_api.mandates.repository import MandateRepository
 from agentrank_api.models import Base
+from agentrank_api.payments.models import PaymentAttempt, PaymentAttemptStatus
+from agentrank_api.payments.repository import PaymentAttemptRepository
 
 AlembicConfigFactory = Callable[[Settings], Config]
 
@@ -39,9 +40,11 @@ PHASE_1A_HEAD = "ace599f8cce9"
 PHASE_1B_HEAD = "9360057d8773"
 PHASE_1C_HEAD = "4dc1a0f57b18"
 PHASE_1D_HEAD = "70b5c985a47a"
+PHASE_1E_HEAD = "637598637298"
 
 HOUR = timedelta(hours=1)
 CHECKOUT_ID = uuid.uuid7()
+RESERVATION_ID = uuid.uuid7()
 
 
 def catalog_snapshot(settings: Settings) -> dict[str, Any]:
@@ -111,6 +114,28 @@ def quote_snapshot(settings: Settings) -> dict[str, Any]:
                 ),
                 "line_unit_prices": sorted(
                     connection.execute(select(CheckoutLine.unit_price_amount_minor)).scalars().all()
+                ),
+            }
+    finally:
+        engine.dispose()
+
+
+def reservation_snapshot(settings: Settings) -> dict[str, Any]:
+    """The Phase 1E rows, which the Phase 1F migration adds a column and states to.
+
+    The status is read because the Phase 1F migration rebuilds the partial unique index over
+    a wider predicate and rewrites the guard as a whitelist. A reservation written before any
+    of that has to come through still ACTIVE and still holding exactly what it held.
+    """
+    engine = create_engine(settings.database_url)
+    try:
+        with engine.connect() as connection:
+            return {
+                "statuses": sorted(
+                    connection.execute(select(InventoryReservation.status)).scalars().all()
+                ),
+                "quantities": sorted(
+                    connection.execute(select(InventoryReservationLine.quantity)).scalars().all()
                 ),
             }
     finally:
@@ -339,34 +364,102 @@ async def test_migrations_apply_to_a_database_that_already_holds_data(
 
         # Phase 1E data: stock held against that existing quote, so the downgrade below has
         # rows to remove rather than only tables.
+        command.upgrade(config, PHASE_1E_HEAD)
+        assert catalog_snapshot(throwaway_database) == seeded
+        assert authorization_snapshot(throwaway_database) == authorized
+        assert quote_snapshot(throwaway_database) == quoted
+        assert constraint_snapshot(throwaway_database) == constrained
+        assert line_snapshots(throwaway_database) == [(None, {})]
+        assert "inventory_reservation" in table_names(throwaway_database)
+
+        # Written as SQL rather than through the repository, for the same reason the quote
+        # above was. The ORM models always describe head, and at this revision
+        # inventory_reservation has no consumed_at column. Writing the row the way the Phase
+        # 1E release wrote it is the only way to meet the next migration with the data it
+        # will actually find.
+        async with factory() as session:
+            line = (await session.execute(select(CheckoutLine))).scalars().one()
+            await session.execute(
+                text(
+                    "INSERT INTO inventory_reservation (id, merchant_id, checkout_id, status,"
+                    " expires_at) VALUES (:id, :merchant_id, :checkout_id, 'ACTIVE',"
+                    " now() + interval '1 hour')"
+                ),
+                {
+                    "id": RESERVATION_ID,
+                    "merchant_id": merchant_id,
+                    "checkout_id": CHECKOUT_ID,
+                },
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO inventory_reservation_line (id, reservation_id, merchant_id,"
+                    " variant_id, quantity) VALUES (:id, :reservation_id, :merchant_id,"
+                    " :variant_id, :quantity)"
+                ),
+                {
+                    "id": uuid.uuid7(),
+                    "reservation_id": RESERVATION_ID,
+                    "merchant_id": merchant_id,
+                    "variant_id": line.variant_id,
+                    "quantity": line.quantity,
+                },
+            )
+            await session.commit()
+
+        assert row_count(throwaway_database, InventoryReservation) == 1
+        assert row_count(throwaway_database, InventoryReservationLine) == 1
+        held = reservation_snapshot(throwaway_database)
+        assert held["statuses"] == ["ACTIVE"]
+
+        # Phase 1F data: a payment admitted against all of it. The migration that runs here
+        # is the one that adds statuses to two tables whose rows already exist, rebuilds a
+        # partial unique index over a wider predicate, and replaces three triggers. None of
+        # those is a thing an empty database can say anything about.
         command.upgrade(config, "head")
         assert catalog_snapshot(throwaway_database) == seeded
         assert authorization_snapshot(throwaway_database) == authorized
         assert quote_snapshot(throwaway_database) == quoted
         assert constraint_snapshot(throwaway_database) == constrained
         assert line_snapshots(throwaway_database) == [(None, {})]
+        # A reservation written before COMMITTED existed comes through ACTIVE, holding the
+        # same units, with the new column defaulted rather than backfilled.
+        assert reservation_snapshot(throwaway_database) == held
         assert {table.name for table in Base.metadata.sorted_tables} <= table_names(
             throwaway_database
         )
 
         async with factory() as session:
-            line = (await session.execute(select(CheckoutLine))).scalars().one()
-            await InventoryReservationRepository(session).create(
+            checkout = (await session.execute(select(CheckoutSession))).scalars().one()
+            attempt = await PaymentAttemptRepository(session).create(
                 merchant_id=merchant_id,
-                checkout_id=CHECKOUT_ID,
-                expires_at=datetime.now(UTC) + HOUR,
-                quantities={line.variant_id: line.quantity},
+                checkout_id=checkout.id,
+                mandate_id=mandate_id,
+                reservation_id=RESERVATION_ID,
+                idempotency_key="pay-migration-01",
+                amount_minor=checkout.total_amount_minor,
+                currency=checkout.currency,
             )
             await session.commit()
+            assert attempt.status is PaymentAttemptStatus.ADMITTED
 
-        assert row_count(throwaway_database, InventoryReservation) == 1
-        assert row_count(throwaway_database, InventoryReservationLine) == 1
+        assert row_count(throwaway_database, PaymentAttempt) == 1
     finally:
         await engine.dispose()
 
-    # A downgrade removes what this phase added and leaves everything earlier untouched.
-    # The reservation's foreign key onto the checkout is RESTRICT and a trigger refuses
-    # every update, and a DROP TABLE is neither, so neither may block the reversal.
+    # A downgrade removes what this phase added and leaves everything earlier untouched. The
+    # payment attempt's foreign keys are RESTRICT and a trigger refuses every update, and a
+    # DROP TABLE is neither, so neither may block the reversal. The three guards it replaced
+    # go back to the blacklists they were, which is correct again once the statuses they did
+    # not cover no longer exist.
+    command.downgrade(config, PHASE_1E_HEAD)
+    assert catalog_snapshot(throwaway_database) == seeded
+    assert authorization_snapshot(throwaway_database) == authorized
+    assert quote_snapshot(throwaway_database) == quoted
+    assert constraint_snapshot(throwaway_database) == constrained
+    assert reservation_snapshot(throwaway_database) == held
+    assert "payment_attempt" not in table_names(throwaway_database)
+
     command.downgrade(config, PHASE_1D_HEAD)
     assert catalog_snapshot(throwaway_database) == seeded
     assert authorization_snapshot(throwaway_database) == authorized
@@ -386,6 +479,8 @@ async def test_migrations_apply_to_a_database_that_already_holds_data(
     assert catalog_snapshot(throwaway_database) == seeded
     assert authorization_snapshot(throwaway_database) == authorized
     assert quote_snapshot(throwaway_database) == quoted
-    # The reservation is gone with the table that held it, which is what a downgrade of
-    # this phase means. Everything written before it is still here.
+    # The reservation is gone with the table that held it, and the payment attempt with it,
+    # which is what a downgrade of these phases means. Everything written before them is
+    # still here.
     assert row_count(throwaway_database, InventoryReservation) == 0
+    assert row_count(throwaway_database, PaymentAttempt) == 0

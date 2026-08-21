@@ -199,7 +199,7 @@ class InventoryReservationService:
             merchant_id=checkout.merchant_id, variant_ids=sorted(quantities, key=str)
         )
 
-        existing = await self._reservations.get_active_for_checkout(checkout.id)
+        existing = await self._reservations.get_holding_for_checkout(checkout.id)
         if existing is not None:
             if is_effective(existing, at=at):
                 # Idempotent. The same claim on the same stock, not a second one.
@@ -256,7 +256,7 @@ class InventoryReservationService:
         The lookup and the release are one step so that a caller withdrawing a checkout
         cannot release the stock without recording it, or record it without releasing.
         """
-        reservation = await self._reservations.get_active_for_checkout(checkout_id)
+        reservation = await self._reservations.get_holding_for_checkout(checkout_id)
         if reservation is None:
             return False
         return await self.release(reservation, reason=reason)

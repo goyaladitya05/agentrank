@@ -13,6 +13,9 @@ is good for:
 - a reservation is effective while it is ACTIVE and its expiry has not been reached. At
   exactly `expires_at` it is no longer effective, which is the same half open convention a
   mandate window and a checkout expiry already use
+- a COMMITTED reservation is effective regardless of the clock. Expiry stops governing the
+  moment a payment attempt is admitted against it, because admission was the instant the
+  purchase was authorized and a provider operation cannot be withdrawn by time passing
 """
 
 from datetime import datetime
@@ -39,10 +42,22 @@ def reservation_expires_at(
 def is_effective(reservation: InventoryReservation, *, at: datetime) -> bool:
     """Whether this reservation is holding stock at `at`.
 
-    Released is terminal, so a released reservation is never effective again. An expired
-    one stops being effective without any row being touched, which is what makes the
-    accounting correct with no sweeper job to fail.
+    Three answers in one function, and the middle one is the Phase 1F addition.
+
+    ACTIVE is expiry governed: it stops being effective without any row being touched, which
+    is what makes the accounting correct with no sweeper job to fail.
+
+    COMMITTED is not. Once a payment attempt has been admitted against a reservation, the
+    hold is what that payment rests on, and the clock cannot take it back. A provider
+    operation admitted while everything was valid stays valid while it completes, so the
+    stock behind it stays held until that operation has a definitive answer.
+
+    RELEASED and CONSUMED are terminal and hold nothing. CONSUMED specifically holds nothing
+    because the units have already been taken out of `variant.inventory_quantity`, and
+    counting them again as a hold would subtract the same purchase twice.
     """
     if at.tzinfo is None:
         raise ValueError("evaluation time must be timezone aware")
+    if reservation.status is ReservationStatus.COMMITTED:
+        return True
     return reservation.status is ReservationStatus.ACTIVE and at < reservation.expires_at

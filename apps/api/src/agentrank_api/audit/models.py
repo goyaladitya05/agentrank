@@ -23,13 +23,16 @@ from agentrank_api.models import Base
 class ActorType(StrEnum):
     """Who or what caused an event.
 
-    Two values, because two are real today. `BUYER_AGENT`, `POLICY_ENGINE`,
-    `PAYMENT_PROVIDER` and `MERCHANT` will be added when the thing they name exists and
-    can actually appear here.
+    Three values, because three are real. `PAYMENT_PROVIDER` was added when a payment
+    provider first existed and could actually appear here: a payment outcome is reported by
+    the provider, not decided by this application, and attributing it to the buyer would
+    claim the buyer chose whether their card was declined. `BUYER_AGENT`, `POLICY_ENGINE` and
+    `MERCHANT` are still absent for the same reason they always were.
     """
 
     SYSTEM = "SYSTEM"
     BUYER = "BUYER"
+    PAYMENT_PROVIDER = "PAYMENT_PROVIDER"
 
 
 # Event types are lowercase dotted identifiers such as `mandate.created`. They are stable

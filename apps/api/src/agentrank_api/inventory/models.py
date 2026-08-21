@@ -14,8 +14,9 @@ database is the only layer that cannot be bypassed:
   through composite foreign keys
 - a reservation quantity is positive, and one variant appears at most once on a reservation
 - a reservation cannot be created already expired
-- at most one reservation per checkout is ACTIVE, through a partial unique index
-- ownership, expiry and line quantities are immutable, and release is terminal
+- at most one reservation per checkout is holding stock, through a partial unique index
+- ownership, expiry and line quantities are immutable, and every status change is a
+  transition on a whitelist rather than an update that merely avoids a terminal value
 
 The last one is a pair of triggers rather than constraints, because they are rules about a
 transition rather than about a row. See the migration for the statements themselves.
@@ -23,6 +24,12 @@ transition rather than about a row. See the migration for the statements themsel
 Expiry is derived by comparing `expires_at` with the current time, exactly as a mandate's
 and a checkout's are. An ACTIVE reservation whose expiry has passed stops consuming
 capacity on its own, so no sweeper job exists whose failure would leave stock held forever.
+
+Commitment is where that stops. Once a reservation is bound to an admitted payment attempt
+it is COMMITTED, and expiry no longer governs it: the authorization instant was admission,
+and a provider operation that completes after the original `expires_at` is still the
+operation that was authorized. A hold that lapsed under a payment nobody can recall would
+be stock sold twice.
 """
 
 import uuid
@@ -49,21 +56,36 @@ from agentrank_api.models import Base
 class ReservationStatus(StrEnum):
     """The states a reservation can be in.
 
-    Deliberately two. Expiry is derived from `expires_at` and the current time rather than
-    written into this column, so an expired reservation needs no database mutation to stop
-    holding stock.
+    ACTIVE
+        Stock held before any payment was admitted. Expiry governs it: at `expires_at` it
+        stops holding anything, with no database mutation and no sweeper job.
 
-    There is no CONSUMED value. Nothing in this system pays for anything yet, and a status
-    naming a state the code cannot reach would be a promise rather than a record.
+    COMMITTED
+        Stock bound to a payment attempt that has been admitted and has not reached a
+        definitive outcome. It holds stock exactly as ACTIVE does, and expiry no longer
+        governs it. The reservation was effective at the instant the payment was authorized,
+        and that instant is what the provider operation rests on.
+
+    RELEASED
+        The stock was given back, on purpose, with a recorded reason. Terminal.
+
+    CONSUMED
+        A payment succeeded and the units were permanently taken out of
+        `variant.inventory_quantity`. Terminal, and deliberately distinct from RELEASED: one
+        says the merchant got the stock back and the other says a buyer took it away. A
+        CONSUMED reservation holds nothing, because the total it would have been subtracted
+        from has already been reduced. That is what stops the same units being counted twice.
     """
 
     ACTIVE = "ACTIVE"
+    COMMITTED = "COMMITTED"
     RELEASED = "RELEASED"
+    CONSUMED = "CONSUMED"
 
 
 # Stored as text with a check constraint rather than as a native PostgreSQL enum, for the
-# same reason as every other enumeration here: this set grows when payment execution
-# arrives, and adding a value should be an ordinary constraint change, not ALTER TYPE.
+# same reason as every other enumeration here: adding COMMITTED and CONSUMED was an ordinary
+# constraint change in an ordinary migration rather than an ALTER TYPE.
 RESERVATION_STATUS = Enum(
     ReservationStatus,
     native_enum=False,
@@ -75,25 +97,37 @@ RESERVATION_STATUS = Enum(
 
 _STATUS_VALUES = ", ".join(f"'{status.value}'" for status in ReservationStatus)
 
-# The partial unique index guaranteeing one active reservation per checkout. Named here
+# The two statuses under which a reservation is still a claim on stock. Everything else is
+# terminal and holds nothing. Named once here because the model, the migration, the
+# accounting query and the service all have to mean the same set.
+HOLDING_STATUSES: tuple[ReservationStatus, ...] = (
+    ReservationStatus.ACTIVE,
+    ReservationStatus.COMMITTED,
+)
+
+# The partial unique index guaranteeing one holding reservation per checkout. Named here
 # because both the model and the migration have to state the same predicate, and because
-# the accounting query in the repository has to filter on the same status value.
-ACTIVE_PREDICATE = f"status = '{ReservationStatus.ACTIVE.value}'"
+# the accounting query in the repository has to filter on the same status values.
+HOLDING_PREDICATE = (
+    "status IN (" + ", ".join(f"'{status.value}'" for status in HOLDING_STATUSES) + ")"
+)
 
 
 class InventoryReservation(Base):
     """Stock held for one checkout, for a bounded time.
 
-    There is no `updated_at`. Everything except `status` and `released_at` is immutable,
-    and the one transition that exists stamps its own timestamp, so a general purpose
-    modification time would only be a second name for `released_at`.
+    There is no `updated_at`. Everything except `status`, `released_at` and `consumed_at` is
+    immutable, and each terminal transition stamps its own timestamp, so a general purpose
+    modification time would only be an ambiguous third name for one of them. Commitment
+    stamps nothing here: the instant a reservation was bound to a payment is the payment
+    attempt's `created_at`, and recording it twice would create two answers to one question.
 
     `expires_at` is derived by the server from the checkout and the mandate and is never
     supplied by a caller. A reservation that outlived either would hold stock for a quote
     nobody may act on any more.
 
     A checkout may accumulate several reservations over its life, at most one of which is
-    ACTIVE. That keeps a released reservation as history rather than rewriting it, which is
+    holding stock. That keeps a released reservation as history rather than rewriting it, which is
     the same choice this project makes everywhere else authorization adjacent data is
     written. See docs/decisions.md.
     """
@@ -119,17 +153,26 @@ class InventoryReservation(Base):
         # Redundant against the primary key, and present only as a composite foreign key
         # target, so a reservation line carries its merchant structurally.
         UniqueConstraint("id", "merchant_id"),
+        # The target a payment attempt is bound through. Carrying the checkout into it is
+        # what makes "this payment is for the stock held for this quote" structural rather
+        # than something the admission code has to remember to compare.
+        UniqueConstraint("id", "merchant_id", "checkout_id"),
         CheckConstraint(f"status IN ({_STATUS_VALUES})", name="status_known"),
         # A reservation that has already expired holds nothing. The comparison is against
         # the row's own creation time, which the database supplies, so it cannot be fooled
         # by a caller's clock.
         CheckConstraint("expires_at > created_at", name="expiry_after_creation"),
-        # Status and released_at are two views of one fact, so they cannot disagree.
+        # Status and released_at are two views of one fact, so they cannot disagree. The
+        # same for status and consumed_at.
         CheckConstraint(
             "(status = 'RELEASED') = (released_at IS NOT NULL)",
             name="released_at_matches_status",
         ),
-        # One active reservation per checkout, structurally. The predicate is static: it
+        CheckConstraint(
+            "(status = 'CONSUMED') = (consumed_at IS NOT NULL)",
+            name="consumed_at_matches_status",
+        ),
+        # One holding reservation per checkout, structurally. The predicate is static: it
         # says nothing about expiry, because a predicate mentioning now() would not be
         # immutable and PostgreSQL will not index on one. Expiry is handled by the
         # accounting query instead, and the two together give the property that matters,
@@ -138,7 +181,7 @@ class InventoryReservation(Base):
             "uq_inventory_reservation_active_checkout",
             "checkout_id",
             unique=True,
-            postgresql_where=text(ACTIVE_PREDICATE),
+            postgresql_where=text(HOLDING_PREDICATE),
         ),
         # The partial index above covers active rows only, so it serves neither a read of
         # a checkout's reservation history nor the RESTRICT check when a checkout is
@@ -160,6 +203,7 @@ class InventoryReservation(Base):
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     lines: Mapped[list[InventoryReservationLine]] = relationship(
         back_populates="reservation",

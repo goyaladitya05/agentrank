@@ -207,7 +207,7 @@ async def test_a_multi_line_reservation_is_all_or_nothing(
     assert [violation.variant_id for violation in outcome.violations] == [shop.cable]
 
     repository = InventoryReservationRepository(session)
-    assert await repository.get_active_for_checkout(both.id) is None
+    assert await repository.get_holding_for_checkout(both.id) is None
     # The charger was available and stays available: nothing was held for this checkout.
     assert await repository.effective_reserved_quantities(variant_ids=[shop.charger], at=NOW) == {}
 

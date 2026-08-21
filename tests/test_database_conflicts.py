@@ -20,7 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from agentrank_api.commerce.repository import MerchantRepository
-from agentrank_api.conflicts import conflict_for
+from agentrank_api.conflicts import CONFLICTS, conflict_for
 from agentrank_api.constraints.repository import IntentConstraintRepository
 from agentrank_api.constraints.rules import ConstraintOperator, IntentConstraintSpec
 from agentrank_api.constraints.service import (
@@ -69,15 +69,20 @@ def test_a_known_constraint_becomes_the_refusal_it_means() -> None:
     assert conflict.identifier == "m"
 
 
-def test_every_mapped_constraint_names_a_reservation_or_a_mandate() -> None:
-    """The two reservation invariants are unreachable through the services and mapped anyway.
+def test_every_mapped_constraint_names_the_refusal_a_caller_already_knows() -> None:
+    """Most of these are unreachable through the services and mapped anyway.
 
-    Both are prevented by locking rather than by this map. They are here so that if either is
-    ever violated the answer is a refusal a caller can act on rather than a driver error.
+    The reservation and payment invariants are prevented by locking rather than by this map.
+    They are here so that if any of them is ever violated the answer is a refusal a caller can
+    act on rather than a driver error.
     """
     for name, reason in (
         ("uq_inventory_reservation_active_checkout", "reservation_already_active"),
         ("ck_inventory_reservation_expiry_after_creation", "reservation_expired"),
+        ("uq_payment_attempt_identity", "payment_already_requested"),
+        ("uq_payment_attempt_mandate_open", "payment_in_progress"),
+        ("uq_payment_attempt_mandate_succeeded", "mandate_already_consumed"),
+        ("uq_payment_attempt_checkout_succeeded", "checkout_already_paid"),
     ):
         conflict = conflict_for(an_integrity_error(name))
         assert conflict is not None
@@ -96,11 +101,7 @@ def test_an_error_with_no_diagnostic_is_not_translated() -> None:
 
 def test_no_translated_message_repeats_what_the_database_said() -> None:
     """A caller learns which of its own invariants it broke, not which index enforced it."""
-    for name in (
-        "uq_intent_constraint_set_mandate_id",
-        "uq_inventory_reservation_active_checkout",
-        "ck_inventory_reservation_expiry_after_creation",
-    ):
+    for name in CONFLICTS:
         conflict = conflict_for(an_integrity_error(name))
         assert conflict is not None
         assert name not in conflict.detail

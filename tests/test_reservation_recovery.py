@@ -145,7 +145,7 @@ async def test_releasing_gives_the_stock_back_and_says_why(
 
     assert released is True
     repository = InventoryReservationRepository(committed)
-    assert await repository.get_active_for_checkout(checkout.id) is None
+    assert await repository.get_holding_for_checkout(checkout.id) is None
     assert total_reserved(await repository.list_for_checkout(checkout.id), at=NOW) == 0
 
     events = await events_for(committed, reservation.id)

@@ -53,8 +53,9 @@ CONFLICTS: dict[str, InvariantConflict] = {
         detail="this mandate is already qualified by a constraint set",
         resource="mandate",
     ),
-    # One active reservation per checkout. Unreachable through execution preparation now that
-    # it holds the checkout lock, so this is the backstop rather than the mechanism.
+    # One holding reservation per checkout, where holding is ACTIVE or COMMITTED. Unreachable
+    # through execution preparation now that it holds the checkout lock, so this is the
+    # backstop rather than the mechanism.
     "uq_inventory_reservation_active_checkout": InvariantConflict(
         reason="reservation_already_active",
         detail="this checkout already holds an active reservation",
@@ -65,6 +66,35 @@ CONFLICTS: dict[str, InvariantConflict] = {
     "ck_inventory_reservation_expiry_after_creation": InvariantConflict(
         reason="reservation_expired",
         detail="this checkout can no longer hold stock for long enough to be worth holding",
+        resource="checkout",
+    ),
+    # One payment attempt per logical payment operation. Unreachable through payment
+    # admission now that it holds the checkout lock and looks the identity up first, so this
+    # is the backstop rather than the mechanism.
+    "uq_payment_attempt_identity": InvariantConflict(
+        reason="payment_already_requested",
+        detail="this checkout already has a payment attempt under that idempotency key",
+        resource="checkout",
+    ),
+    # One non terminal payment attempt per mandate. This is what stops two candidate
+    # checkouts under one mandate from both reaching a provider, and the admission service
+    # checks it under the mandate lock first so that an ordinary refusal names the reason.
+    "uq_payment_attempt_mandate_open": InvariantConflict(
+        reason="payment_in_progress",
+        detail="a payment under this mandate is already in progress",
+        resource="mandate",
+    ),
+    # The single purchase mandate rule. At most one payment attempt under a mandate may ever
+    # be SUCCEEDED, and this index is what makes that true rather than merely intended.
+    "uq_payment_attempt_mandate_succeeded": InvariantConflict(
+        reason="mandate_already_consumed",
+        detail="a successful payment has already consumed this mandate",
+        resource="mandate",
+    ),
+    # One successful payment per checkout, by the same mechanism.
+    "uq_payment_attempt_checkout_succeeded": InvariantConflict(
+        reason="checkout_already_paid",
+        detail="this checkout has already been paid",
         resource="checkout",
     ),
 }

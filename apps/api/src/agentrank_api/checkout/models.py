@@ -15,10 +15,14 @@ database is the only layer that cannot be bypassed:
 - a checkout, its mandate, its lines and their variants all belong to one merchant, and
   every line is priced in the checkout's own currency, all through composite foreign keys
 - a quote expires, and it cannot be created already expired
-- the quote fields are immutable once written, and cancellation is terminal
+- the quote fields are immutable once written, and every status change is a transition on a
+  whitelist: OPEN may become CANCELLED or PAID, and both of those are terminal
 
 The last one is a trigger rather than a constraint, because it is a rule about a
-transition rather than about a row. See the migration for the statement itself.
+transition rather than about a row. It is a whitelist rather than a blacklist of terminal
+values on purpose: a guard that names the one status it protects leaves every status added
+after it unprotected, which is exactly what would have happened when PAID arrived. See the
+migration for the statement itself.
 """
 
 import uuid
@@ -49,21 +53,28 @@ from agentrank_api.money import CURRENCY_PATTERN
 class CheckoutStatus(StrEnum):
     """The states a checkout can be in.
 
-    Deliberately two. Expiry is derived by comparing `expires_at` with the current time
-    rather than written into this column, exactly as a mandate's expiry is, so no
-    background job exists whose failure would leave an expired quote looking usable.
+    Three. Expiry is derived by comparing `expires_at` with the current time rather than
+    written into this column, exactly as a mandate's expiry is, so no background job exists
+    whose failure would leave an expired quote looking usable.
 
-    `PAID`, `FAILED` and `COMPLETED` are absent because payment does not exist. A status
-    value naming a state the system cannot reach would be a promise, not a record.
+    `PAID` is terminal business success and is set by exactly one operation, the transaction
+    that records a definitive provider success. It is the reason a quote existed.
+
+    There is no `FAILED`, and adding one would be a category error. A declined payment is a
+    fact about a `PaymentAttempt`, not about the quote: the price is still good, the mandate
+    may still authorize it, and a later attempt may succeed. Marking the quote failed would
+    destroy an offer the merchant never withdrew. `COMPLETED` is absent too, because
+    fulfilment is not in this system.
     """
 
     OPEN = "OPEN"
     CANCELLED = "CANCELLED"
+    PAID = "PAID"
 
 
 # Stored as text with a check constraint rather than as a native PostgreSQL enum, for the
-# same reason as the mandate status: this set will grow when payment execution arrives,
-# and adding a value should be an ordinary constraint change rather than ALTER TYPE.
+# same reason as the mandate status: adding PAID was an ordinary constraint change in an
+# ordinary migration rather than an ALTER TYPE, which is exactly what this choice was for.
 CHECKOUT_STATUS = Enum(
     CheckoutStatus,
     native_enum=False,
@@ -79,9 +90,9 @@ _STATUS_VALUES = ", ".join(f"'{status.value}'" for status in CheckoutStatus)
 class CheckoutSession(Base):
     """One merchant quote, fixed at the moment it was made.
 
-    There is no `updated_at`. Every field except `status` and `cancelled_at` is immutable,
-    and the one transition that exists stamps its own timestamp, so a general purpose
-    modification time would only be a second name for `cancelled_at`.
+    There is no `updated_at`. Every field except `status`, `cancelled_at` and `paid_at` is
+    immutable, and each transition stamps its own timestamp, so a general purpose
+    modification time would only be an ambiguous third name for one of them.
 
     There is no relationship to the mandate either. The composite foreign key ties the two
     together structurally, and authorization loads the mandate deliberately rather than
@@ -109,6 +120,23 @@ class CheckoutSession(Base):
         # merchant_id), and PostgreSQL requires a unique constraint on exactly those two
         # columns to point at.
         UniqueConstraint("id", "merchant_id"),
+        # The target a payment attempt is bound through. Carrying the mandate, the currency
+        # and the total into it is what makes four separate invariants one foreign key: a
+        # payment cannot name another merchant's quote, cannot claim a mandate the quote was
+        # not written against, and cannot carry an amount or a currency that differ from what
+        # was quoted. Every column in it is immutable at the database, so the amount an
+        # attempt froze cannot drift from the amount that was authorized.
+        #
+        # Named explicitly, because the convention would produce a name longer than the 63
+        # bytes PostgreSQL keeps.
+        UniqueConstraint(
+            "id",
+            "merchant_id",
+            "mandate_id",
+            "currency",
+            "total_amount_minor",
+            name="uq_checkout_session_payment_target",
+        ),
         CheckConstraint(f"status IN ({_STATUS_VALUES})", name="status_known"),
         CheckConstraint(f"currency ~ '{CURRENCY_PATTERN}'", name="currency_format"),
         CheckConstraint("subtotal_amount_minor >= 0", name="subtotal_not_negative"),
@@ -124,10 +152,15 @@ class CheckoutSession(Base):
         # row's own creation time, which the database supplies, so it cannot be fooled by
         # a caller's clock.
         CheckConstraint("expires_at > created_at", name="expiry_after_creation"),
-        # Status and cancelled_at are two views of one fact, so they cannot disagree.
+        # Status and cancelled_at are two views of one fact, so they cannot disagree. The
+        # same for status and paid_at.
         CheckConstraint(
             "(status = 'CANCELLED') = (cancelled_at IS NOT NULL)",
             name="cancelled_at_matches_status",
+        ),
+        CheckConstraint(
+            "(status = 'PAID') = (paid_at IS NOT NULL)",
+            name="paid_at_matches_status",
         ),
     )
 
@@ -149,6 +182,7 @@ class CheckoutSession(Base):
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     lines: Mapped[list[CheckoutLine]] = relationship(
         back_populates="checkout",

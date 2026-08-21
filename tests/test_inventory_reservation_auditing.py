@@ -214,7 +214,7 @@ async def test_cancelling_a_checkout_releases_the_stock_it_was_holding(
     assert cancelled.status is CheckoutStatus.CANCELLED
 
     repository = InventoryReservationRepository(committed)
-    assert await repository.get_active_for_checkout(checkout.id) is None
+    assert await repository.get_holding_for_checkout(checkout.id) is None
     assert total_reserved(await repository.list_for_checkout(checkout.id), at=NOW) == 0
 
     checkout_events = await AuditRepository(committed).list_for_resource(
