@@ -10,15 +10,27 @@ The composition is short and every line of it is a decision:
 
 ```text
 admit
-    refused          -> report the refusal, no provider is involved
-    already existed  -> return it as it is, whatever state it is in
-    newly admitted   -> dispatch it
+    refused              -> report the refusal, no provider is involved
+    attempt is ADMITTED  -> dispatch it
+    anything else        -> return it as it is, whatever state it is in
 ```
 
-The middle branch is the one that matters. A repeated request resolves to an attempt that may
-already have succeeded, failed or become unresolved, and none of those may be dispatched. So
-the composition dispatches only what it just admitted, and a retry is answered with the answer
-the first request produced rather than being sent to a provider again.
+The branch is on the attempt's state and deliberately not on whether this call created it. An
+ADMITTED attempt has provably never reached a provider, whoever wrote it, so dispatching one
+that a previous request left behind is the recovery path for a process that died between the
+admission commit and the dispatch commit. Refusing to dispatch it because somebody else
+admitted it would leave the payment stranded in exactly the state it is safe to act on.
+
+Every other state either has an answer already or may have one arriving, and none of them may
+be dispatched. A retry that resolves to one of those is answered with what the first request
+produced rather than being sent to a provider again.
+
+The race between those two branches is real and is handled rather than raced. Two requests
+carrying one key can both see ADMITTED, because the read that decides is not the lock that
+dispatches. One of them wins the dispatch lock and the other finds the attempt has moved on,
+which is not an error: it is the idempotent answer arriving a moment late. The loser re-reads
+the authoritative attempt and returns it. It does not dispatch it, and finding an existing
+attempt is never permission to.
 """
 
 import uuid
@@ -26,7 +38,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from agentrank_api.errors import NotFoundError
+from agentrank_api.errors import ConflictError, NotFoundError
 from agentrank_api.payments.admission import PaymentAdmission, PaymentAdmissionService
 from agentrank_api.payments.execution import PaymentExecutionService, PaymentOutcome
 from agentrank_api.payments.models import PaymentAttempt, PaymentAttemptStatus
@@ -59,12 +71,25 @@ class PaymentService:
         self._attempts = PaymentAttemptRepository(session)
 
     async def pay(self, checkout_id: uuid.UUID, *, idempotency_key: str) -> PaymentResult:
-        """Admit a payment for this checkout and, if it is new, send it to the provider.
+        """Admit a payment for this checkout and, if it may be dispatched, send it.
 
-        Only a freshly admitted attempt is dispatched. A repeat under the same identity is
-        returned as it stands, because it may already have succeeded, failed or become
-        unresolved, and dispatching any of those would be the second provider operation this
+        An ADMITTED attempt is dispatched whether this call created it or found it. ADMITTED
+        means the provider has provably never heard of the identity, because IN_FLIGHT is
+        committed before any network call begins, so acting on one is safe regardless of who
+        wrote it. That is also the recovery path for a request whose process died after
+        admission committed: the retry finds the attempt and completes it.
+
+        Any other state is returned as it stands. It has an answer already or may have one
+        arriving, and dispatching any of those would be the second provider operation this
         whole phase exists to prevent.
+
+        A same key retry racing the original is answered with the attempt rather than with a
+        conflict. Both requests can read ADMITTED, because the read that decides is not the
+        lock that dispatches, and the one that loses the lock finds the attempt already
+        IN_FLIGHT. That is the idempotent answer arriving a moment late rather than an error,
+        so it re-reads the authoritative row and returns it. It does not dispatch it: having
+        an attempt in hand is never permission to send one, and only the ADMITTED branch above
+        may do that.
 
         A refusal reaches no provider at all. That is worth saying explicitly: the ordinary
         reasons a payment is not allowed, from a lapsed mandate to a payment somebody else is
@@ -76,10 +101,25 @@ class PaymentService:
         attempt = admission.attempt
         if attempt is None:
             return PaymentResult(admission=admission)
+        # Read before the dispatch below, because a refusal inside it rolls back and the
+        # rollback expires every attribute on this object.
+        attempt_id = attempt.id
         if attempt.status is not PaymentAttemptStatus.ADMITTED:
             return PaymentResult(admission=admission, attempt=attempt)
 
-        outcome = await self._execution.dispatch(attempt.id)
+        try:
+            outcome = await self._execution.dispatch(attempt_id)
+        except ConflictError:
+            # Re-read rather than reused. The object admitted above was read before the
+            # refusal rolled back, and what a caller needs is the state that actually stands
+            # now, which is whatever the request that won the lock left behind.
+            overtaken = await self.get_attempt(attempt_id)
+            if overtaken.status is PaymentAttemptStatus.ADMITTED:
+                # Not a lost race. The dispatch refused for a reason this path cannot answer,
+                # and swallowing it would hide it. Unreachable while `dispatch` refuses only a
+                # non ADMITTED attempt, and stated rather than assumed.
+                raise
+            return PaymentResult(admission=admission, attempt=overtaken)
         return PaymentResult(admission=admission, attempt=outcome.attempt)
 
     async def get_attempt(self, attempt_id: uuid.UUID) -> PaymentAttempt:

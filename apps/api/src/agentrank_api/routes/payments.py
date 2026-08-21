@@ -65,8 +65,15 @@ async def pay_checkout(
 
     Idempotent when the caller supplies `idempotency_key`. Two requests carrying the same key
     against the same checkout are one operation: the second answers with the first one's
-    attempt, `created: false`, and no second provider call. Without a key each request is a new
+    attempt, `created: false`, and no second provider call. That holds when the two arrive at
+    the same instant as well as when one follows the other, so a client that retried on a
+    timeout gets the payment rather than a conflict. Without a key each request is a new
     identity, which is safe and is not the same as idempotent.
+
+    An attempt that a previous request admitted and never dispatched is dispatched by the
+    retry. ADMITTED means the provider has provably never heard of it, so completing it is the
+    recovery path for a request whose process died after admission committed. Every other
+    state is returned as it stands and is never sent again.
 
     Admitted does not mean paid. Read `attempt.status`: SUCCEEDED means the money moved, FAILED
     means it definitively did not, and UNKNOWN means nobody knows yet and the payment has to be
