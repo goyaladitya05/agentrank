@@ -34,6 +34,7 @@ class AuditRepository:
         resource_type: str,
         resource_id: uuid.UUID,
         payload: dict[str, Any],
+        credential_id: uuid.UUID | None = None,
     ) -> AuditEvent:
         """Record one event.
 
@@ -58,10 +59,22 @@ class AuditRepository:
         The rule that follows, and it matters most for the phase that adds payments: never
         infer that one thing happened before another from the relative order of these rows.
         Authoritative state and its locked transitions decide that. See docs/decisions.md.
+
+        `credential_id` defaults to absent, and absent means nobody knows rather than nobody
+        did. Two kinds of caller legitimately leave it unset: everything written before Phase
+        1H, and the operator command line, which has no authenticated identity of any kind. A
+        default was chosen over a required parameter because the alternative is every internal
+        and operator path passing None explicitly, which reads as a decision being made where
+        none is.
+
+        The safety of that default is that it cannot grant anything. Attribution being absent
+        weakens the evidence an event carries; it does not weaken the authorization that
+        produced it, which was decided by merchant scoped SQL before this was ever called.
         """
         event = AuditEvent(
             merchant_id=merchant_id,
             actor_type=actor_type,
+            credential_id=credential_id,
             event_type=event_type,
             resource_type=resource_type,
             resource_id=resource_id,

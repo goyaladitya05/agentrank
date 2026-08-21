@@ -13,7 +13,6 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, func, inspect, select, text
 
 from agentrank_api.audit.models import ActorType, AuditEvent
-from agentrank_api.audit.repository import AuditRepository
 from agentrank_api.checkout.models import CheckoutLine, CheckoutSession
 from agentrank_api.checkout.quote import QuotedLine
 from agentrank_api.checkout.repository import CheckoutRepository
@@ -46,6 +45,7 @@ PHASE_1C_HEAD = "4dc1a0f57b18"
 PHASE_1D_HEAD = "70b5c985a47a"
 PHASE_1E_HEAD = "637598637298"
 PHASE_1F_HEAD = "ab60fc05d747"
+PHASE_1G_HEAD = "4c8de0a1b562"
 
 HOUR = timedelta(hours=1)
 CHECKOUT_ID = uuid.uuid7()
@@ -163,6 +163,30 @@ def constraint_snapshot(settings: Settings) -> dict[str, Any]:
                     key=str,
                 ),
             }
+    finally:
+        engine.dispose()
+
+
+def attribution_snapshot(settings: Settings) -> dict[str, int]:
+    """How many audit events name a credential, which for historical rows must be none.
+
+    The point of counting both sides is that a migration which backfilled every row and one
+    which backfilled none would both leave the table with the same number of rows in it.
+    """
+    engine = create_engine(settings.database_url)
+    try:
+        with engine.connect() as connection:
+            attributed = connection.execute(
+                select(func.count())
+                .select_from(AuditEvent)
+                .where(AuditEvent.credential_id.is_not(None))
+            ).scalar_one()
+            unattributed = connection.execute(
+                select(func.count())
+                .select_from(AuditEvent)
+                .where(AuditEvent.credential_id.is_(None))
+            ).scalar_one()
+            return {"attributed": attributed, "unattributed": unattributed}
     finally:
         engine.dispose()
 
@@ -368,13 +392,25 @@ async def test_migrations_apply_to_a_database_that_already_holds_data(
                 valid_from=datetime.now(UTC),
                 valid_until=datetime.now(UTC) + HOUR,
             )
-            await AuditRepository(session).append(
-                merchant_id=merchant_id,
-                actor_type=ActorType.BUYER,
-                event_type="mandate.created",
-                resource_type="spending_mandate",
-                resource_id=mandate.id,
-                payload={"currency": "INR"},
+            # SQL rather than the repository, for the reason the checkout line below states:
+            # the ORM model always describes head, and at this revision `audit_event` has no
+            # `credential_id` column. Writing the row the way the Phase 1B release wrote it is
+            # the only way to meet the Phase 1H migration with the data it will actually find,
+            # which is an event that predates authentication entirely.
+            await session.execute(
+                text(
+                    "INSERT INTO audit_event (id, merchant_id, actor_type, event_type,"
+                    " resource_type, resource_id, payload)"
+                    " VALUES (:id, :merchant_id, :actor_type, 'mandate.created',"
+                    " 'spending_mandate', :resource_id, :payload)"
+                ),
+                {
+                    "id": uuid.uuid7(),
+                    "merchant_id": merchant_id,
+                    "actor_type": ActorType.BUYER.value,
+                    "resource_id": mandate.id,
+                    "payload": '{"currency": "INR"}',
+                },
             )
             await session.commit()
             mandate_id = mandate.id
@@ -515,7 +551,7 @@ async def test_migrations_apply_to_a_database_that_already_holds_data(
         # is the one that adds statuses to two tables whose rows already exist, rebuilds a
         # partial unique index over a wider predicate, and replaces three triggers. None of
         # those is a thing an empty database can say anything about.
-        command.upgrade(config, "head")
+        command.upgrade(config, PHASE_1G_HEAD)
         assert catalog_snapshot(throwaway_database) == seeded
         assert authorization_snapshot(throwaway_database) == authorized
         assert quote_snapshot(throwaway_database) == quoted
@@ -524,9 +560,6 @@ async def test_migrations_apply_to_a_database_that_already_holds_data(
         # A reservation written before COMMITTED existed comes through ACTIVE, holding the
         # same units, with the new column defaulted rather than backfilled.
         assert reservation_snapshot(throwaway_database) == held
-        assert {table.name for table in Base.metadata.sorted_tables} <= table_names(
-            throwaway_database
-        )
 
         async with factory() as session:
             checkout = (await session.execute(select(CheckoutSession))).scalars().one()
@@ -543,6 +576,23 @@ async def test_migrations_apply_to_a_database_that_already_holds_data(
             assert attempt.status is PaymentAttemptStatus.ADMITTED
 
         assert row_count(throwaway_database, PaymentAttempt) == 1
+        unattributed = authorization_snapshot(throwaway_database)
+
+        # Phase 1H data: authentication arrives on a database whose whole history predates it.
+        # The audit event written above was recorded when nothing authenticated anybody, and
+        # the migration must add the column without inventing a value for it. A backfill here
+        # would be manufacturing the exact evidence the column exists to provide.
+        command.upgrade(config, "head")
+        assert catalog_snapshot(throwaway_database) == seeded
+        assert authorization_snapshot(throwaway_database) == unattributed
+        assert quote_snapshot(throwaway_database) == quoted
+        assert constraint_snapshot(throwaway_database) == constrained
+        assert reservation_snapshot(throwaway_database) == held
+        assert row_count(throwaway_database, PaymentAttempt) == 1
+        assert {table.name for table in Base.metadata.sorted_tables} <= table_names(
+            throwaway_database
+        )
+        assert attribution_snapshot(throwaway_database) == {"attributed": 0, "unattributed": 1}
     finally:
         await engine.dispose()
 

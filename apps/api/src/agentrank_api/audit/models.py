@@ -61,6 +61,14 @@ class AuditEvent(Base):
     `resource_id` is a UUID rather than free text: every resource in this system has one,
     and a column that could hold anything would eventually hold a string nobody can join
     on.
+
+    `credential_id` answers a sixth question that only became answerable in Phase 1H: which
+    merchant API credential authorized the request that caused this. It is beside `actor_type`
+    rather than instead of it, because they say different things. The actor type is the role
+    the operation belongs to, and the credential is the evidence that a particular key was
+    presented. Neither is a person, and this column must never be described as one: a machine
+    credential identifies an integration, and who was holding it is not recorded anywhere
+    because nothing in this system knows.
     """
 
     __tablename__ = "audit_event"
@@ -89,6 +97,18 @@ class AuditEvent(Base):
         server_default=func.now(),
     )
     actor_type: Mapped[ActorType] = mapped_column(ACTOR_TYPE, nullable=False)
+    # Nullable, and it stays nullable. Every event written before Phase 1H was written with no
+    # authenticated caller behind it, and every event written since by the operator command line
+    # still is. Backfilling any of those would be inventing attribution, so none of them is
+    # touched: absent means nobody knows, which is the truth about them.
+    #
+    # RESTRICT for the same reason the merchant reference is: history must not lose the evidence
+    # that explains it as a side effect of deleting a credential.
+    credential_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("merchant_api_credential.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     resource_type: Mapped[str] = mapped_column(String(32), nullable=False)
     resource_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
