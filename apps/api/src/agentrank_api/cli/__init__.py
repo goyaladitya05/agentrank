@@ -19,7 +19,9 @@ list unresolved payments       select a provider
 inspect one payment            set a status
 query a provider               release a reservation on its own
 dispatch an admitted payment   rewrite a terminal outcome
-abandon an unresolved payment  do any of it over the network
+abandon an unresolved payment  show a secret it already printed
+issue a merchant API key       do any of it over the network
+revoke a merchant API key
 ```
 
 Every command delegates. There is no SQL here, no lock, no transaction and no rule about what
@@ -41,6 +43,9 @@ uv run python -m agentrank_api.cli payments reconcile-unresolved --limit 20
 uv run python -m agentrank_api.cli payments resume <attempt-id>
 uv run python -m agentrank_api.cli payments abandon <attempt-id> --reason provider_unreachable
 uv run python -m agentrank_api.cli payments status
+uv run python -m agentrank_api.cli credentials create --merchant-slug ampere-supply --label local
+uv run python -m agentrank_api.cli credentials list --merchant-slug ampere-supply
+uv run python -m agentrank_api.cli credentials revoke <credential-id>
 ```
 
 Exit codes are meant to be acted on by a script as well as read by a person:
@@ -49,7 +54,7 @@ Exit codes are meant to be acted on by a script as well as read by a person:
 0  the command ran and reported what it found
 1  an unexpected internal failure, with the traceback, because this is a trusted tool
 2  the arguments were wrong
-3  the payment named does not exist
+3  the payment, merchant or credential named does not exist
 4  the current state refuses the operation
 ```
 
@@ -57,12 +62,18 @@ A payment that is still UNKNOWN after a successful reconciliation is a zero. The
 what it was asked, the provider answered, and "nobody knows yet" is a finding rather than a
 failure. Only a refusal, a missing payment, bad arguments or a crash are non zero.
 
-Operator identity is not recorded, because there is nothing to record. Audit events written
-through these commands are attributed to a role, exactly as they are everywhere else in this
-system, and the role is honest: `SYSTEM` for an abandonment, because this application acted,
-and `PAYMENT_PROVIDER` for an outcome, because a provider reported it. Nothing here reads a
-Unix username and calls it authentication. Attributing an abandonment to a person requires an
-authenticated person, which is Phase 1H. See docs/security.md.
+Operator identity is still not recorded, because there is still nothing to record. Audit events
+written through these commands are attributed to a role, exactly as they are everywhere else in
+this system, and the role is honest: `SYSTEM` for an abandonment and for credential provisioning,
+because this application acted, and `PAYMENT_PROVIDER` for an outcome, because a provider
+reported it. Nothing here reads a Unix username and calls it authentication.
+
+Phase 1H did not change that, and it is worth being exact about why rather than leaving it
+looking like an oversight. What that phase built is merchant authentication: a credential proves
+which merchant an HTTP request acts for, and HTTP events now record which credential authorized
+them. An operator is not a merchant and holds no credential, so there is nothing for these
+commands to record that would be more than a guess. Operator identity remains open. See
+docs/security.md.
 """
 
 import argparse
@@ -71,7 +82,8 @@ import sys
 from collections.abc import Sequence
 from typing import TextIO
 
-from agentrank_api.cli import payments
+from agentrank_api.cli import credentials, payments
+from agentrank_api.cli.command import Command
 from agentrank_api.cli.exits import ExitCode
 from agentrank_api.config import Settings, get_settings
 from agentrank_api.database import create_engine, create_session_factory
@@ -85,9 +97,15 @@ PROGRAM = "agentrank"
 def build_parser() -> argparse.ArgumentParser:
     """The whole command surface, declared in one place.
 
-    argparse rather than a framework. There are seven commands, none of them has a nested
+    argparse rather than a framework. There are ten commands, none of them has a nested
     option group, and a dependency added for this would be a dependency in the deployment
     artifact for the sake of coloured help text.
+
+    Two groups, and the second one is the reason the first was grouped at all. `credentials`
+    provisions merchant API keys, which is deliberately not an HTTP surface: an endpoint that
+    issued one could issue it for anybody, and nothing could authenticate the caller asking,
+    because a credential is what makes authentication possible. See
+    `agentrank_api.cli.credentials`.
     """
     parser = argparse.ArgumentParser(
         prog=PROGRAM,
@@ -95,6 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     groups = parser.add_subparsers(dest="group", required=True)
     payments.add_commands(groups.add_parser("payments", help="payment operations and recovery"))
+    credentials.add_commands(groups.add_parser("credentials", help="merchant API key provisioning"))
     return parser
 
 
@@ -163,10 +182,10 @@ async def _run(
     try:
         factory = create_session_factory(engine)
         async with factory() as session:
-            command: payments.Command = arguments.command
-            return await command(session, provider, arguments, out)
+            command: Command = arguments.command
+            return await command(session, provider, arguments, out, settings)
     finally:
         await engine.dispose()
 
 
-__all__ = ["ExitCode", "build_parser", "main"]
+__all__ = ["Command", "ExitCode", "build_parser", "main"]

@@ -32,6 +32,7 @@ make install
 make db-up
 make migrate
 make seed-dev
+make credentials ARGS="create --merchant-slug ampere-supply --label local-dev"
 ```
 
 `make install` creates the Python virtual environment at `.venv` and installs frontend
@@ -39,6 +40,18 @@ dependencies from the lock files. `make db-up` starts PostgreSQL and waits for i
 become healthy. `make seed-dev` loads a small development catalog: one merchant, five
 products, ten variants. It is safe to run repeatedly and is never run by the application
 itself. Run `make help` to list every target.
+
+The last command mints a merchant API key and prints it once. Every commerce endpoint needs
+one, presented as `Authorization: Bearer <key>`; `/health` and `/ready` do not. There is no
+fixed development key in this repository and there will not be one: a key that is written down
+somewhere is a key that ends up somewhere it should not, so each developer mints their own and
+it exists only in their own database and their own shell history. Lose it and issue another,
+then revoke the first:
+
+```bash
+make credentials ARGS="list --merchant-slug ampere-supply"
+make credentials ARGS="revoke <credential-id>"
+```
 
 The values in `.env.example` are development defaults that match the local Docker Compose
 service. They are not secrets and must not be reused anywhere real.

@@ -35,15 +35,15 @@ an operator the pieces of an inconsistent state.
 """
 
 import argparse
-import json
 import uuid
-from collections.abc import Awaitable, Mapping
 from datetime import datetime, timedelta
-from typing import Any, Protocol, TextIO
+from typing import Any, TextIO
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentrank_api.cli.exits import ExitCode
+from agentrank_api.cli.output import write_json
+from agentrank_api.config import Settings
 from agentrank_api.payments.operations import (
     DEFAULT_EVENT_LIMIT,
     PaymentAuditEntry,
@@ -63,24 +63,6 @@ from agentrank_api.payments.recovery import (
 )
 from agentrank_api.payments.repository import DEFAULT_UNRESOLVED_LIMIT, PaymentOperationRow
 from agentrank_api.payments.service import PaymentService
-
-
-class Command(Protocol):
-    """One operator command, given everything it needs and no way to find anything else.
-
-    The session and the provider are handed in rather than discovered, which is what keeps a
-    command from building its own of either. A command that could construct a provider could
-    be pointed at one the application is not running with.
-    """
-
-    def __call__(
-        self,
-        session: AsyncSession,
-        provider: PaymentProvider,
-        arguments: argparse.Namespace,
-        out: TextIO,
-    ) -> Awaitable[int]: ...
-
 
 # A version 7 identifier is thirty six characters, and every listing column is sized so that a
 # row is one line on an ordinary terminal. Written here rather than inline so the header and
@@ -250,11 +232,12 @@ async def list_unresolved(
     provider: PaymentProvider,
     arguments: argparse.Namespace,
     out: TextIO,
+    settings: Settings,
 ) -> int:
     """The work list. Reads only, and never reaches the provider it was handed."""
     listing = await PaymentOperationsService(session).list_unresolved(limit=arguments.limit)
     if arguments.as_json:
-        _write_json(out, _listing_json(listing))
+        write_json(out, _listing_json(listing))
         return ExitCode.OK
     _render_listing(listing, out)
     return ExitCode.OK
@@ -265,13 +248,14 @@ async def show(
     provider: PaymentProvider,
     arguments: argparse.Namespace,
     out: TextIO,
+    settings: Settings,
 ) -> int:
     """One payment, understandable without joining anything by hand."""
     view = await PaymentOperationsService(session).show(
         arguments.attempt_id, events=arguments.events
     )
     if arguments.as_json:
-        _write_json(out, _view_json(view))
+        write_json(out, _view_json(view))
         return ExitCode.OK
     _render_view(view, out)
     return ExitCode.OK
@@ -282,11 +266,12 @@ async def status(
     provider: PaymentProvider,
     arguments: argparse.Namespace,
     out: TextIO,
+    settings: Settings,
 ) -> int:
     """Counts per status, so an operator can tell a quiet system from a stuck one."""
     counts = await PaymentOperationsService(session).counts()
     if arguments.as_json:
-        _write_json(out, _counts_json(counts))
+        write_json(out, _counts_json(counts))
         return ExitCode.OK
     _render_counts(counts, out)
     return ExitCode.OK
@@ -297,6 +282,7 @@ async def reconcile(
     provider: PaymentProvider,
     arguments: argparse.Namespace,
     out: TextIO,
+    settings: Settings,
 ) -> int:
     """Ask the provider about one payment, and report what that did to it.
 
@@ -332,6 +318,7 @@ async def reconcile_unresolved(
     provider: PaymentProvider,
     arguments: argparse.Namespace,
     out: TextIO,
+    settings: Settings,
 ) -> int:
     """Run one bounded sweep and report every payment in it.
 
@@ -343,7 +330,7 @@ async def reconcile_unresolved(
     """
     swept = await PaymentService(session, provider).reconcile_unresolved(limit=arguments.limit)
     if arguments.as_json:
-        _write_json(out, _sweep_json(swept))
+        write_json(out, _sweep_json(swept))
         return ExitCode.OK
     _render_sweep(swept, out)
     return ExitCode.OK
@@ -354,6 +341,7 @@ async def resume(
     provider: PaymentProvider,
     arguments: argparse.Namespace,
     out: TextIO,
+    settings: Settings,
 ) -> int:
     """Dispatch a payment that was admitted and never sent. This one can move money.
 
@@ -387,6 +375,7 @@ async def abandon(
     provider: PaymentProvider,
     arguments: argparse.Namespace,
     out: TextIO,
+    settings: Settings,
 ) -> int:
     """Give up on one unresolved payment, atomically, through the domain service.
 
@@ -444,7 +433,7 @@ def _report(
     whether that line is a lookup or a payment.
     """
     if as_json:
-        _write_json(
+        write_json(
             out,
             {
                 "attempt_id": str(after.attempt_id),
@@ -574,15 +563,6 @@ def _render_counts(counts: PaymentStatusCounts, out: TextIO) -> None:
 def _field(out: TextIO, label: str, value: str) -> None:
     """One labelled line, padded so a column of them reads as a column."""
     print(f"{label:<{LABEL_WIDTH}}  {value}", file=out)
-
-
-def _write_json(out: TextIO, payload: Mapping[str, Any]) -> None:
-    """One JSON document and nothing else, with keys in a stable order.
-
-    Sorted rather than insertion ordered, so a script diffing two runs sees a difference only
-    when something actually differs.
-    """
-    print(json.dumps(payload, indent=2, sort_keys=True), file=out)
 
 
 def _listing_json(listing: UnresolvedPayments) -> dict[str, Any]:
