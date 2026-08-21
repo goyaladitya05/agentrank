@@ -31,37 +31,44 @@ from agentrank_api.constraints.service import NewIntentConstraints
 from agentrank_api.mandates.intent import MAX_HARD_CONSTRAINTS, HardConstraint
 from agentrank_api.mandates.schemas import HardConstraintInput
 
+# Stands in for the authenticated merchant while a request is being validated, and never
+# leaves the validator that uses it. The route builds the real command from the credential.
+_UNVALIDATED_MERCHANT = uuid.UUID(int=0)
+
 
 class CreateIntentConstraintsRequest(BaseModel):
     """The hard constraints a purchase under one mandate must satisfy.
 
-    The mandate is in the path. The merchant is in the body and is not derived from the
-    mandate on purpose: without it, knowing a mandate identifier would be the whole
-    authorization needed to decide what that mandate may buy. The service checks that the
-    two agree and reports a mandate belonging to anyone else as not found.
+    The mandate is in the path and the merchant is the authenticated one. It used to be a body
+    field, for a reason that was real at the time: without it, knowing a mandate identifier was
+    the whole authorization needed to decide what that mandate may buy. A credential is a
+    better answer to the same problem than a second identifier a caller supplies, and it is the
+    only answer that also covers the reads. So the field is gone, and the mandate is resolved
+    scoped to the credential's merchant.
 
     A financial constraint may appear here and is validated against the mandate rather than
     stored. At least one semantic constraint is required, because a constraint set with
     nothing in it is the absence of an authorization rather than a permissive one.
     """
 
-    merchant_id: uuid.UUID
     constraints: list[HardConstraintInput] = Field(min_length=1, max_length=MAX_HARD_CONSTRAINTS)
 
     @model_validator(mode="after")
     def is_an_authorizable_request(self) -> Self:
         # Building the command applies every domain rule, including the ones the field
         # constraints above cannot express. Doing it during validation is what makes a
-        # refusal a 422 rather than an error raised from inside a route.
-        self.to_command(uuid.uuid7())
+        # refusal a 422 rather than an error raised from inside a route. Neither identifier is
+        # known here and neither is read by any of those rules, so placeholders stand in for
+        # both. The route builds the command that carries the real ones.
+        self.to_command(uuid.uuid7(), _UNVALIDATED_MERCHANT)
         return self
 
-    def to_command(self, mandate_id: uuid.UUID) -> NewIntentConstraints:
+    def to_command(self, mandate_id: uuid.UUID, merchant_id: uuid.UUID) -> NewIntentConstraints:
         constraints: tuple[HardConstraint, ...] = tuple(
             constraint.to_domain() for constraint in self.constraints
         )
         return NewIntentConstraints(
-            merchant_id=self.merchant_id,
+            merchant_id=merchant_id,
             mandate_id=mandate_id,
             hard_constraints=constraints,
         )

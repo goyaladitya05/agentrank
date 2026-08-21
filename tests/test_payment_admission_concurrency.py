@@ -153,10 +153,10 @@ async def cancel_in_new_session(
 
 
 async def revoke_in_new_session(
-    factory: async_sessionmaker[AsyncSession], mandate_id: uuid.UUID
+    factory: async_sessionmaker[AsyncSession], mandate_id: uuid.UUID, merchant_id: uuid.UUID
 ) -> SpendingMandate:
     async with factory() as session:
-        return await MandateService(session).revoke_mandate(mandate_id)
+        return await MandateService(session).revoke_mandate(mandate_id, merchant_id=merchant_id)
 
 
 async def still_waiting(*attempts: asyncio.Task[object]) -> bool:
@@ -257,7 +257,9 @@ async def test_two_checkouts_under_one_mandate_admit_one_payment(
 
     async with asyncio.timeout(CONCURRENCY_TIMEOUT):
         async with factory() as gate:
-            await MandateRepository(gate).get_for_update(shop.mandate.id)
+            await MandateRepository(gate).get_for_update(
+                shop.mandate.id, merchant_id=shop.merchant_id
+            )
             attempts: list[asyncio.Task[PaymentAdmission]] = [
                 asyncio.create_task(admit_in_new_session(factory, first.id, key=KEY)),
                 asyncio.create_task(admit_in_new_session(factory, second.id, key=OTHER_KEY)),
@@ -319,7 +321,9 @@ async def test_a_revocation_in_flight_blocks_and_then_refuses_admission(
 
     async with asyncio.timeout(CONCURRENCY_TIMEOUT):
         async with factory() as revoker:
-            withdrawn = await MandateRepository(revoker).get_for_update(shop.mandate.id)
+            withdrawn = await MandateRepository(revoker).get_for_update(
+                shop.mandate.id, merchant_id=shop.merchant_id
+            )
             assert withdrawn is not None
             assert await MandateRepository(revoker).revoke(withdrawn) is True
 
@@ -402,7 +406,9 @@ async def test_a_revocation_after_admission_does_not_invalidate_the_attempt(
             attempt = asyncio.create_task(admit_in_new_session(factory, checkout.id, key=KEY))
             assert await still_waiting(attempt)
 
-            revocation = asyncio.create_task(revoke_in_new_session(factory, shop.mandate.id))
+            revocation = asyncio.create_task(
+                revoke_in_new_session(factory, shop.mandate.id, shop.merchant_id)
+            )
             assert await still_waiting(revocation)
             await gate.rollback()
 

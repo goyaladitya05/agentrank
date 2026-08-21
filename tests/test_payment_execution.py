@@ -517,7 +517,7 @@ async def test_a_revocation_after_admission_does_not_stop_the_payment(
     """Revocation prevents the next admission. It does not retract one that committed."""
     provider.default = FakeOutcome.SUCCESS
     attempt = await admitted(session, shop)
-    await MandateService(session).revoke_mandate(shop.mandate.id)
+    await MandateService(session).revoke_mandate(shop.mandate.id, merchant_id=shop.merchant_id)
 
     outcome = await PaymentExecutionService(session, provider).dispatch(attempt.id)
 

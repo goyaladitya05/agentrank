@@ -141,11 +141,13 @@ class CheckoutService:
         if merchant is None:
             raise NotFoundError("merchant", str(request.merchant_id))
 
-        mandate = await self._mandates.get(request.mandate_id)
         # A mandate granted to another merchant does not exist as far as this merchant is
         # concerned. Saying so is both the isolation rule and the honest answer: a caller
-        # scoped to one merchant must not learn what another merchant has authorized.
-        if mandate is None or mandate.merchant_id != request.merchant_id:
+        # scoped to one merchant must not learn what another merchant has authorized. The
+        # merchant is in the query rather than compared afterwards, so there is nothing to
+        # forget.
+        mandate = await self._mandates.get(request.mandate_id, merchant_id=request.merchant_id)
+        if mandate is None:
             raise NotFoundError("mandate", str(request.mandate_id))
 
         validate_checkout_expiry(request.expires_at, now=datetime.now(UTC))
@@ -194,7 +196,7 @@ class CheckoutService:
         made against.
         """
         checkout = await self.get_checkout(checkout_id)
-        mandate = await self._mandates.get(checkout.mandate_id)
+        mandate = await self._mandates.get(checkout.mandate_id, merchant_id=checkout.merchant_id)
         if mandate is None:
             # Not reachable through the schema: the foreign key onto the mandate is
             # RESTRICT, so the mandate cannot have been removed while this quote exists.
@@ -220,7 +222,9 @@ class CheckoutService:
         what it was made against.
         """
         checkout = await self.get_checkout(checkout_id)
-        constraint_set = await self._constraints.get_for_mandate(checkout.mandate_id)
+        constraint_set = await self._constraints.get_for_mandate(
+            checkout.mandate_id, merchant_id=checkout.merchant_id
+        )
         if constraint_set is None:
             raise NotFoundError("intent_constraints", str(checkout.mandate_id))
         return evaluate_intent_constraints(checkout, constraint_set)

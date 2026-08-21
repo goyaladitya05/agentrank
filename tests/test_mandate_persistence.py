@@ -45,7 +45,7 @@ async def test_a_mandate_persists_and_can_be_retrieved(
     await session.commit()
     session.expunge_all()
 
-    found = await repository.get(created.id)
+    found = await repository.get(created.id, merchant_id=merchant.id)
     assert found is not None
     assert found.merchant_id == merchant.id
     assert found.max_total_amount_minor == 500000

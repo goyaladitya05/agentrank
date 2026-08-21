@@ -154,10 +154,10 @@ async def cancel_in_new_session(
 
 
 async def revoke_in_new_session(
-    factory: async_sessionmaker[AsyncSession], mandate_id: uuid.UUID
+    factory: async_sessionmaker[AsyncSession], mandate_id: uuid.UUID, merchant_id: uuid.UUID
 ) -> SpendingMandate:
     async with factory() as session:
-        return await MandateService(session).revoke_mandate(mandate_id)
+        return await MandateService(session).revoke_mandate(mandate_id, merchant_id=merchant_id)
 
 
 async def still_waiting(*attempts: asyncio.Task[object]) -> bool:
@@ -236,7 +236,9 @@ async def test_a_revocation_in_flight_blocks_and_then_refuses_preparation(
 
     async with asyncio.timeout(CONCURRENCY_TIMEOUT):
         async with factory() as revoker:
-            withdrawn = await MandateRepository(revoker).get_for_update(shop.mandate.id)
+            withdrawn = await MandateRepository(revoker).get_for_update(
+                shop.mandate.id, merchant_id=shop.merchant_id
+            )
             assert withdrawn is not None
             assert await MandateRepository(revoker).revoke(withdrawn) is True
 
@@ -282,7 +284,9 @@ async def test_preparation_holds_the_mandate_and_the_checkout_against_withdrawal
 
             withdrawals: list[asyncio.Task[object]] = [
                 asyncio.create_task(cancel_in_new_session(factory, checkout.id)),
-                asyncio.create_task(revoke_in_new_session(factory, shop.mandate.id)),
+                asyncio.create_task(
+                    revoke_in_new_session(factory, shop.mandate.id, shop.merchant_id)
+                ),
             ]
             assert await still_waiting(*withdrawals)
             await gate.rollback()
@@ -386,10 +390,16 @@ async def test_two_concurrent_revocations_transition_once(
     """The same contention one level up, for the same reason."""
     async with asyncio.timeout(CONCURRENCY_TIMEOUT):
         async with factory() as gate:
-            await MandateRepository(gate).get_for_update(shop.mandate.id)
+            await MandateRepository(gate).get_for_update(
+                shop.mandate.id, merchant_id=shop.merchant_id
+            )
             attempts: list[asyncio.Task[object]] = [
-                asyncio.create_task(revoke_in_new_session(factory, shop.mandate.id)),
-                asyncio.create_task(revoke_in_new_session(factory, shop.mandate.id)),
+                asyncio.create_task(
+                    revoke_in_new_session(factory, shop.mandate.id, shop.merchant_id)
+                ),
+                asyncio.create_task(
+                    revoke_in_new_session(factory, shop.mandate.id, shop.merchant_id)
+                ),
             ]
             assert await still_waiting(*attempts)
             await gate.rollback()

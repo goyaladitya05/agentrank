@@ -388,7 +388,9 @@ async def test_an_expired_checkout_is_refused(session: AsyncSession, shop: Shop)
 async def test_a_revoked_mandate_is_refused(session: AsyncSession, shop: Shop) -> None:
     """Revocation before admission stops the admission. After it, it stops the next one."""
     checkout = await prepared(session, shop)
-    mandate = await MandateRepository(session).get_for_update(shop.mandate.id)
+    mandate = await MandateRepository(session).get_for_update(
+        shop.mandate.id, merchant_id=shop.merchant_id
+    )
     assert mandate is not None
     await MandateRepository(session).revoke(mandate)
     await session.commit()
@@ -671,18 +673,20 @@ async def test_the_locked_mandate_read_defeats_a_stale_identity_map(
     `populate_existing` the second read returns ACTIVE.
     """
     repository = MandateRepository(session)
-    stale = await repository.get(shop.mandate.id)
+    stale = await repository.get(shop.mandate.id, merchant_id=shop.merchant_id)
     assert stale is not None
     assert stale.status is MandateStatus.ACTIVE
     await session.commit()
 
     async with factory() as revoker:
-        withdrawn = await MandateRepository(revoker).get_for_update(shop.mandate.id)
+        withdrawn = await MandateRepository(revoker).get_for_update(
+            shop.mandate.id, merchant_id=shop.merchant_id
+        )
         assert withdrawn is not None
         await MandateRepository(revoker).revoke(withdrawn)
         await revoker.commit()
 
-    fresh = await repository.get_for_update(shop.mandate.id)
+    fresh = await repository.get_for_update(shop.mandate.id, merchant_id=shop.merchant_id)
 
     assert fresh is not None
     # The same Python object, because the identity map is per session. Different attributes,

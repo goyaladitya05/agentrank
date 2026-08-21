@@ -246,7 +246,9 @@ async def test_a_mandate_may_be_qualified_only_once(
 async def test_a_revoked_mandate_cannot_be_qualified(
     session: AsyncSession, authorization: Authorization
 ) -> None:
-    mandate = await MandateRepository(session).get(authorization.mandate_id)
+    mandate = await MandateRepository(session).get(
+        authorization.mandate_id, merchant_id=authorization.merchant_id
+    )
     assert mandate is not None
     await MandateRepository(session).revoke(mandate)
     await session.commit()
@@ -296,7 +298,9 @@ async def test_constraints_are_read_back_by_mandate(
     written = await service.create_constraints(request_for(authorization, BLACK, CHARGERS))
     session.expunge_all()
 
-    found = await service.get_constraints(authorization.mandate_id)
+    found = await service.get_constraints(
+        authorization.mandate_id, merchant_id=authorization.merchant_id
+    )
 
     assert found.id == written.id
     assert len(found.constraints) == 2
@@ -307,7 +311,9 @@ async def test_a_mandate_with_no_constraints_raises_rather_than_reporting_none(
 ) -> None:
     """Absence is not satisfaction, and it must not be reachable as a permissive default."""
     with pytest.raises(NotFoundError) as missing:
-        await IntentConstraintService(session).get_constraints(authorization.mandate_id)
+        await IntentConstraintService(session).get_constraints(
+            authorization.mandate_id, merchant_id=authorization.merchant_id
+        )
 
     assert missing.value.resource == "intent_constraints"
 

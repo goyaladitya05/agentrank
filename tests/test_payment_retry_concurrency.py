@@ -252,7 +252,9 @@ async def test_two_simultaneous_first_requests_produce_one_payment(
         async with factory() as gate:
             # The first lock admission takes, so both requests queue before either can decide
             # whether an attempt already exists.
-            await MandateRepository(gate).get_for_update(shop.mandate.id)
+            await MandateRepository(gate).get_for_update(
+                shop.mandate.id, merchant_id=shop.merchant_id
+            )
             retries: list[asyncio.Task[PaymentResult]] = [
                 asyncio.create_task(pay_in_new_session(factory, checkout_id, provider)),
                 asyncio.create_task(pay_in_new_session(factory, checkout_id, provider)),

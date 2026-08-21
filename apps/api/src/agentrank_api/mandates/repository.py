@@ -17,8 +17,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from agentrank_api.mandates.models import MandateStatus, SpendingMandate
 
 
-def mandate_lock_statement(mandate_id: uuid.UUID) -> Select[tuple[SpendingMandate]]:
+def mandate_lock_statement(
+    mandate_id: uuid.UUID, merchant_id: uuid.UUID
+) -> Select[tuple[SpendingMandate]]:
     """The statement that locks one mandate, written where a test can read it.
+
+    Merchant scoped, like every other read of this table. An authorization granted to somebody
+    else is not locked and not returned, and the caller sees exactly what it would see for a
+    mandate that does not exist.
 
     `FOR UPDATE` rather than a weaker mode. It is the only row lock that conflicts with
     every other one, including the `FOR KEY SHARE` a foreign key reference takes, so the
@@ -32,7 +38,7 @@ def mandate_lock_statement(mandate_id: uuid.UUID) -> Select[tuple[SpendingMandat
     """
     return (
         select(SpendingMandate)
-        .where(SpendingMandate.id == mandate_id)
+        .where(SpendingMandate.id == mandate_id, SpendingMandate.merchant_id == merchant_id)
         .with_for_update()
         .execution_options(populate_existing=True)
     )
@@ -70,11 +76,28 @@ class MandateRepository:
         await self._session.flush()
         return mandate
 
-    async def get(self, mandate_id: uuid.UUID) -> SpendingMandate | None:
-        return await self._session.get(SpendingMandate, mandate_id)
+    async def get(self, mandate_id: uuid.UUID, *, merchant_id: uuid.UUID) -> SpendingMandate | None:
+        """Fetch one merchant's mandate.
 
-    async def get_for_update(self, mandate_id: uuid.UUID) -> SpendingMandate | None:
-        """Fetch one mandate and hold it against every other transaction until commit.
+        There is no unscoped counterpart. Every way of reading an authorization out of this
+        repository names the merchant it must have been granted to, so a caller cannot
+        authenticate as one merchant and then read another merchant's mandate by identifier:
+        the method that would allow it does not exist.
+
+        The merchant is a condition in the SQL rather than a comparison afterwards, so a
+        mandate granted to somebody else is absent rather than refused, and a caller learns
+        nothing about whether it exists.
+        """
+        statement = select(SpendingMandate).where(
+            SpendingMandate.id == mandate_id, SpendingMandate.merchant_id == merchant_id
+        )
+        return (await self._session.execute(statement)).scalar_one_or_none()
+
+    async def get_for_update(
+        self, mandate_id: uuid.UUID, *, merchant_id: uuid.UUID
+    ) -> SpendingMandate | None:
+        """Fetch one merchant's mandate and hold it against every other transaction until
+        commit.
 
         For an operation that is about to treat this mandate's status and validity window
         as authoritative. An unlocked read answers what was true when it was issued, and
@@ -87,8 +110,12 @@ class MandateRepository:
 
         First in the lock order. A caller that also needs the checkout or the variant rows
         takes this one before either. See agentrank_api.locking.
+
+        Merchant scoped, exactly as the unlocked read is. Locking a row and then discovering it
+        belongs to somebody else would mean a foreign caller could make a merchant's own
+        request wait.
         """
-        statement = mandate_lock_statement(mandate_id)
+        statement = mandate_lock_statement(mandate_id, merchant_id)
         return (await self._session.execute(statement)).scalar_one_or_none()
 
     async def revoke(self, mandate: SpendingMandate) -> bool:

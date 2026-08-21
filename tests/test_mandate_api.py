@@ -2,12 +2,18 @@
 
 Deliberately thin. Workflow and transaction behavior are asserted once at the service
 level; what is checked here is the wire contract.
+
+Every request here carries a merchant API key, because every one of these routes requires one.
+Which merchant a request acts for is the credential's and is not in any body, which is why
+`creation_body` no longer takes a merchant. Cross merchant behavior is
+`tests/test_mandate_authorization_scope.py`.
 """
 
 import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from conftest import CredentialIssuer, bearer
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,9 +35,13 @@ async def merchant_id(session: AsyncSession) -> uuid.UUID:
     return merchant.id
 
 
-def creation_body(merchant_id: uuid.UUID, **overrides: object) -> dict[str, object]:
+@pytest.fixture
+async def token(issue_credential: CredentialIssuer, merchant_id: uuid.UUID) -> str:
+    return await issue_credential(merchant_id)
+
+
+def creation_body(**overrides: object) -> dict[str, object]:
     return {
-        "merchant_id": str(merchant_id),
         "max_total_amount_minor": 500000,
         "currency": "INR",
         "max_quantity": 1,
@@ -40,16 +50,18 @@ def creation_body(merchant_id: uuid.UUID, **overrides: object) -> dict[str, obje
 
 
 async def test_a_mandate_is_created_and_can_be_read_back(
-    catalog_settings: Settings, merchant_id: uuid.UUID
+    catalog_settings: Settings, merchant_id: uuid.UUID, token: str
 ) -> None:
-    with TestClient(create_app(catalog_settings)) as client:
-        created = client.post(MANDATES_URL, json=creation_body(merchant_id))
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
+        created = client.post(MANDATES_URL, json=creation_body())
         assert created.status_code == 201
         body = created.json()
         assert body["max_total_amount_minor"] == 500000
         assert body["currency"] == "INR"
         assert body["status"] == "ACTIVE"
         assert body["revoked_at"] is None
+        # The merchant came from the credential and from nowhere else.
+        assert body["merchant_id"] == str(merchant_id)
 
         fetched = client.get(f"{MANDATES_URL}/{body['id']}")
         assert fetched.status_code == 200
@@ -59,11 +71,9 @@ async def test_a_mandate_is_created_and_can_be_read_back(
         assert usable.json() == {"valid": True, "violations": []}
 
 
-async def test_revoking_is_idempotent_over_http(
-    catalog_settings: Settings, merchant_id: uuid.UUID
-) -> None:
-    with TestClient(create_app(catalog_settings)) as client:
-        mandate_id = client.post(MANDATES_URL, json=creation_body(merchant_id)).json()["id"]
+async def test_revoking_is_idempotent_over_http(catalog_settings: Settings, token: str) -> None:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
+        mandate_id = client.post(MANDATES_URL, json=creation_body()).json()["id"]
 
         first = client.post(f"{MANDATES_URL}/{mandate_id}/revoke")
         assert first.status_code == 200
@@ -78,7 +88,7 @@ async def test_revoking_is_idempotent_over_http(
 
 
 async def test_an_intent_may_accompany_a_mandate_and_is_type_checked(
-    catalog_settings: Settings, merchant_id: uuid.UUID
+    catalog_settings: Settings, token: str
 ) -> None:
     intent = {
         "description": "One 100W USB-C charger",
@@ -87,18 +97,20 @@ async def test_an_intent_may_accompany_a_mandate_and_is_type_checked(
         ],
         "preferences": ["prefer next day delivery"],
     }
-    with TestClient(create_app(catalog_settings)) as client:
-        accepted = client.post(MANDATES_URL, json=creation_body(merchant_id, intent=intent))
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
+        accepted = client.post(MANDATES_URL, json=creation_body(intent=intent))
         assert accepted.status_code == 201
 
         unknown_kind = dict(intent, hard_constraints=[{"kind": "vibes", "value": "good"}])
-        refused = client.post(MANDATES_URL, json=creation_body(merchant_id, intent=unknown_kind))
+        refused = client.post(MANDATES_URL, json=creation_body(intent=unknown_kind))
         assert refused.status_code == 422
 
 
-async def test_an_unknown_mandate_is_a_structured_404(catalog_settings: Settings) -> None:
+async def test_an_unknown_mandate_is_a_structured_404(
+    catalog_settings: Settings, token: str
+) -> None:
     missing = uuid.uuid7()
-    with TestClient(create_app(catalog_settings)) as client:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         response = client.get(f"{MANDATES_URL}/{missing}")
 
     assert response.status_code == 404
@@ -107,25 +119,33 @@ async def test_an_unknown_mandate_is_a_structured_404(catalog_settings: Settings
     assert response.json()["identifier"] == str(missing)
 
 
-async def test_a_mandate_for_an_unknown_merchant_is_a_structured_404(
-    catalog_settings: Settings,
+async def test_a_merchant_named_in_the_body_is_ignored(
+    catalog_settings: Settings, session: AsyncSession, merchant_id: uuid.UUID, token: str
 ) -> None:
-    with TestClient(create_app(catalog_settings)) as client:
-        response = client.post(MANDATES_URL, json=creation_body(uuid.uuid7()))
+    """The field is gone, and a caller who sends it anyway does not get what they asked for.
 
-    assert response.status_code == 404
-    assert response.json()["resource"] == "merchant"
+    Worth asserting rather than assuming. Pydantic ignores unknown fields by default, so
+    removing `merchant_id` from the request model would have silently accepted a body that
+    still named one, and a reader of the old API would have every reason to keep sending it.
+    """
+    other = await MerchantRepository(session).create(slug="volt-works", name="Volt")
+    await session.commit()
+
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
+        created = client.post(MANDATES_URL, json=creation_body(merchant_id=str(other.id)))
+
+    assert created.status_code == 201
+    assert created.json()["merchant_id"] == str(merchant_id)
 
 
 async def test_malformed_authorizations_are_refused_with_422(
-    catalog_settings: Settings, merchant_id: uuid.UUID
+    catalog_settings: Settings, token: str
 ) -> None:
     """Each of these would otherwise reach the database and come back as a 500."""
-    with TestClient(create_app(catalog_settings)) as client:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         inverted = client.post(
             MANDATES_URL,
             json=creation_body(
-                merchant_id,
                 valid_from=(NOW + HOUR).isoformat(),
                 valid_until=NOW.isoformat(),
             ),
@@ -134,16 +154,8 @@ async def test_malformed_authorizations_are_refused_with_422(
         assert "valid_until" in inverted.text
 
         assert (
-            client.post(
-                MANDATES_URL, json=creation_body(merchant_id, max_total_amount_minor=-1)
-            ).status_code
+            client.post(MANDATES_URL, json=creation_body(max_total_amount_minor=-1)).status_code
             == 422
         )
-        assert (
-            client.post(MANDATES_URL, json=creation_body(merchant_id, currency="inr")).status_code
-            == 422
-        )
-        assert (
-            client.post(MANDATES_URL, json=creation_body(merchant_id, max_quantity=0)).status_code
-            == 422
-        )
+        assert client.post(MANDATES_URL, json=creation_body(currency="inr")).status_code == 422
+        assert client.post(MANDATES_URL, json=creation_body(max_quantity=0)).status_code == 422

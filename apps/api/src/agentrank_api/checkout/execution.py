@@ -231,7 +231,9 @@ class CheckoutExecutionService:
         one this operation cannot be delayed past.
         """
         checkout, mandate = await self._load_locked(checkout_id)
-        constraint_set = await self._constraints.get_for_mandate(checkout.mandate_id)
+        constraint_set = await self._constraints.get_for_mandate(
+            checkout.mandate_id, merchant_id=checkout.merchant_id
+        )
 
         evaluated_at = at or datetime.now(UTC)
         authorization = authorize_checkout_execution(
@@ -414,13 +416,15 @@ class CheckoutExecutionService:
         if checkout is None:
             raise NotFoundError("checkout", str(checkout_id))
 
-        mandate = await self._mandates.get(checkout.mandate_id)
+        mandate = await self._mandates.get(checkout.mandate_id, merchant_id=checkout.merchant_id)
         if mandate is None:
             # Not reachable through the schema: the foreign key onto the mandate is
             # RESTRICT, so the mandate cannot have been removed while this quote exists.
             raise NotFoundError("mandate", str(checkout.mandate_id))
 
-        constraint_set = await self._constraints.get_for_mandate(checkout.mandate_id)
+        constraint_set = await self._constraints.get_for_mandate(
+            checkout.mandate_id, merchant_id=checkout.merchant_id
+        )
         return authorize_checkout_execution(
             checkout, mandate, constraint_set, at=at or datetime.now(UTC)
         )
@@ -443,7 +447,13 @@ class CheckoutExecutionService:
         if found is None:
             raise NotFoundError("checkout", str(checkout_id))
 
-        mandate = await self._mandates.get_for_update(found.mandate_id)
+        # The merchant comes from the checkout that names this mandate, which the composite
+        # foreign key already ties them together through, so this selects the same row an
+        # unscoped read would have. It is required because the repository offers no unscoped
+        # read, which is what makes one impossible to write by accident.
+        mandate = await self._mandates.get_for_update(
+            found.mandate_id, merchant_id=found.merchant_id
+        )
         if mandate is None:
             # Not reachable through the schema: the foreign key onto the mandate is
             # RESTRICT, so the mandate cannot have been removed while this quote exists.

@@ -212,7 +212,9 @@ async def test_two_writers_disagreeing_settle_one_outcome_and_neither_raises(
         async with factory() as gate:
             # The first lock every outcome transaction takes, so holding it queues both
             # writers after their provider call and before any decision.
-            await MandateRepository(gate).get_for_update(shop.mandate.id)
+            await MandateRepository(gate).get_for_update(
+                shop.mandate.id, merchant_id=shop.merchant_id
+            )
             writers: list[asyncio.Task[PaymentOutcome]] = [
                 asyncio.create_task(reconcile_in_new_session(factory, attempt_id, says_yes)),
                 asyncio.create_task(reconcile_in_new_session(factory, attempt_id, says_no)),
@@ -284,7 +286,9 @@ async def test_the_conflict_event_records_what_stands_and_what_was_observed(
 
     async with asyncio.timeout(CONCURRENCY_TIMEOUT):
         async with factory() as gate:
-            await MandateRepository(gate).get_for_update(shop.mandate.id)
+            await MandateRepository(gate).get_for_update(
+                shop.mandate.id, merchant_id=shop.merchant_id
+            )
             writers: list[asyncio.Task[PaymentOutcome]] = [
                 asyncio.create_task(reconcile_in_new_session(factory, attempt_id, says_yes)),
                 asyncio.create_task(reconcile_in_new_session(factory, attempt_id, says_no)),

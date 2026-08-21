@@ -55,8 +55,10 @@ class IntentConstraintRepository:
         await self._session.flush()
         return constraint_set
 
-    async def get_for_mandate(self, mandate_id: uuid.UUID) -> IntentConstraintSet | None:
-        """Fetch the constraint set attached to one mandate, with every constraint loaded.
+    async def get_for_mandate(
+        self, mandate_id: uuid.UUID, *, merchant_id: uuid.UUID
+    ) -> IntentConstraintSet | None:
+        """Fetch one merchant's constraint set for one mandate, with every constraint loaded.
 
         Loaded eagerly and completely. Evaluation checks every constraint, and a
         collection that was loaded lazily or partially would make a decision depend on how
@@ -65,10 +67,20 @@ class IntentConstraintRepository:
 
         The lookup is by mandate rather than by identifier, because that is the only
         binding that exists: a caller cannot choose which constraints apply to a mandate.
+
+        Merchant scoped, and the merchant is required rather than optional even though the
+        composite foreign key already ties a set to its mandate's merchant. Two kinds of caller
+        reach this: an authenticated request, where the merchant is the credential's and the
+        scope is doing real work, and the evaluation paths, where it comes from a checkout that
+        was itself found by a merchant scoped read. Requiring it in both is what makes an
+        unscoped read impossible to write rather than merely unusual.
         """
         statement = (
             select(IntentConstraintSet)
             .options(selectinload(IntentConstraintSet.constraints))
-            .where(IntentConstraintSet.mandate_id == mandate_id)
+            .where(
+                IntentConstraintSet.mandate_id == mandate_id,
+                IntentConstraintSet.merchant_id == merchant_id,
+            )
         )
         return (await self._session.execute(statement)).scalar_one_or_none()

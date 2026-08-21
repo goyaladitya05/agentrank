@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from conftest import CredentialIssuer, bearer
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -71,9 +72,14 @@ async def shop(session: AsyncSession) -> dict[str, uuid.UUID]:
     }
 
 
-def constraints_body(shop: dict[str, uuid.UUID], **overrides: Any) -> dict[str, Any]:
+@pytest.fixture
+async def token(issue_credential: CredentialIssuer, shop: dict[str, uuid.UUID]) -> str:
+    """A key for the shop above. The constraint routes take the merchant from it."""
+    return await issue_credential(shop["merchant_id"])
+
+
+def constraints_body(**overrides: Any) -> dict[str, Any]:
     return {
-        "merchant_id": str(shop["merchant_id"]),
         "constraints": [
             {"kind": "required_attribute", "name": "color", "value": "black"},
             {"kind": "required_attribute", "name": "wattage", "operator": "GTE", "value": 100},
@@ -96,11 +102,11 @@ def quote(client: TestClient, shop: dict[str, uuid.UUID], variant_id: uuid.UUID)
 
 
 async def test_constraints_are_created_and_read_back(
-    catalog_settings: Settings, shop: dict[str, uuid.UUID]
+    catalog_settings: Settings, shop: dict[str, uuid.UUID], token: str
 ) -> None:
-    with TestClient(create_app(catalog_settings)) as client:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         url = f"{COMMERCE_URL}/mandates/{shop['mandate_id']}/constraints"
-        created = client.post(url, json=constraints_body(shop))
+        created = client.post(url, json=constraints_body())
         assert created.status_code == 201
         body = created.json()
         assert body["mandate_id"] == str(shop["mandate_id"])
@@ -117,12 +123,12 @@ async def test_constraints_are_created_and_read_back(
 
 
 async def test_a_matching_checkout_passes_both_gates(
-    catalog_settings: Settings, shop: dict[str, uuid.UUID]
+    catalog_settings: Settings, shop: dict[str, uuid.UUID], token: str
 ) -> None:
-    with TestClient(create_app(catalog_settings)) as client:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         client.post(
             f"{COMMERCE_URL}/mandates/{shop['mandate_id']}/constraints",
-            json=constraints_body(shop),
+            json=constraints_body(),
         )
         checkout_id = quote(client, shop, shop["black"])
 
@@ -136,13 +142,13 @@ async def test_a_matching_checkout_passes_both_gates(
 
 
 async def test_a_violating_checkout_is_affordable_and_still_denied(
-    catalog_settings: Settings, shop: dict[str, uuid.UUID]
+    catalog_settings: Settings, shop: dict[str, uuid.UUID], token: str
 ) -> None:
     """The exact safety distinction, over HTTP: allowed by one gate, denied by the other."""
-    with TestClient(create_app(catalog_settings)) as client:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         client.post(
             f"{COMMERCE_URL}/mandates/{shop['mandate_id']}/constraints",
-            json=constraints_body(shop),
+            json=constraints_body(),
         )
         checkout_id = quote(client, shop, shop["blue"])
 
@@ -164,10 +170,10 @@ async def test_a_violating_checkout_is_affordable_and_still_denied(
 
 
 async def test_a_checkout_whose_mandate_has_no_constraints_is_a_structured_404(
-    catalog_settings: Settings, shop: dict[str, uuid.UUID]
+    catalog_settings: Settings, shop: dict[str, uuid.UUID], token: str
 ) -> None:
     """Absence of a semantic authorization is not a passed one."""
-    with TestClient(create_app(catalog_settings)) as client:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         checkout_id = quote(client, shop, shop["black"])
 
         answer = client.get(f"{COMMERCE_URL}/checkouts/{checkout_id}/intent-authorization")
@@ -177,9 +183,9 @@ async def test_a_checkout_whose_mandate_has_no_constraints_is_a_structured_404(
 
 
 async def test_unknown_mandates_and_checkouts_are_structured_404s(
-    catalog_settings: Settings, shop: dict[str, uuid.UUID]
+    catalog_settings: Settings, shop: dict[str, uuid.UUID], token: str
 ) -> None:
-    with TestClient(create_app(catalog_settings)) as client:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         missing_mandate = client.get(f"{COMMERCE_URL}/mandates/{uuid.uuid7()}/constraints")
         assert missing_mandate.status_code == 404
         assert missing_mandate.json()["resource"] == "intent_constraints"
@@ -192,13 +198,13 @@ async def test_unknown_mandates_and_checkouts_are_structured_404s(
 
 
 async def test_a_mandate_may_be_qualified_only_once_over_http(
-    catalog_settings: Settings, shop: dict[str, uuid.UUID]
+    catalog_settings: Settings, shop: dict[str, uuid.UUID], token: str
 ) -> None:
-    with TestClient(create_app(catalog_settings)) as client:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         url = f"{COMMERCE_URL}/mandates/{shop['mandate_id']}/constraints"
-        assert client.post(url, json=constraints_body(shop)).status_code == 201
+        assert client.post(url, json=constraints_body()).status_code == 201
 
-        repeated = client.post(url, json=constraints_body(shop))
+        repeated = client.post(url, json=constraints_body())
         assert repeated.status_code == 409
         assert repeated.json()["error"] == "constraints_already_exist"
 
@@ -230,12 +236,15 @@ async def test_a_mandate_may_be_qualified_only_once_over_http(
     ],
 )
 async def test_a_request_that_cannot_become_an_authorization_is_a_422(
-    catalog_settings: Settings, shop: dict[str, uuid.UUID], constraints: list[dict[str, Any]]
+    catalog_settings: Settings,
+    shop: dict[str, uuid.UUID],
+    token: str,
+    constraints: list[dict[str, Any]],
 ) -> None:
-    with TestClient(create_app(catalog_settings)) as client:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         answer = client.post(
             f"{COMMERCE_URL}/mandates/{shop['mandate_id']}/constraints",
-            json=constraints_body(shop, constraints=constraints),
+            json=constraints_body(constraints=constraints),
         )
 
         assert answer.status_code == 422

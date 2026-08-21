@@ -47,8 +47,10 @@ from agentrank_api.mandates.repository import MandateRepository
 CONSTRAINTS_RESOURCE = "intent_constraint_set"
 CONSTRAINTS_CREATED = "intent_constraints.created"
 
-# Stating what must be bought is the buyer's act, exactly as granting spending authority
-# is. This names a role and not a verified identity: nothing authenticates a caller yet.
+# Stating what must be bought is the buyer's act, exactly as granting spending authority is.
+# This names a role and not a person, and it still does now that requests are authenticated: a
+# credential proves which merchant integration asked, not who was holding the key. The
+# credential is recorded beside the role rather than instead of it.
 CONSTRAINTS_ACTOR = ActorType.BUYER
 
 
@@ -144,7 +146,9 @@ class IntentConstraintService:
         self._constraints = IntentConstraintRepository(session)
         self._audit = AuditRepository(session)
 
-    async def create_constraints(self, request: NewIntentConstraints) -> IntentConstraintSet:
+    async def create_constraints(
+        self, request: NewIntentConstraints, *, credential_id: uuid.UUID | None = None
+    ) -> IntentConstraintSet:
         """Qualify a mandate with the constraints a purchase must satisfy, in one
         transaction.
 
@@ -165,11 +169,12 @@ class IntentConstraintService:
         if merchant is None:
             raise NotFoundError("merchant", str(request.merchant_id))
 
-        mandate = await self._mandates.get(request.mandate_id)
         # Another merchant's mandate does not exist as far as this merchant is concerned.
         # That is both the isolation rule and the honest answer: a caller scoped to one
-        # merchant must not learn what another merchant has authorized.
-        if mandate is None or mandate.merchant_id != request.merchant_id:
+        # merchant must not learn what another merchant has authorized. The merchant is in the
+        # query rather than compared afterwards, so there is nothing to forget.
+        mandate = await self._mandates.get(request.mandate_id, merchant_id=request.merchant_id)
+        if mandate is None:
             raise NotFoundError("mandate", str(request.mandate_id))
 
         if mandate.status is not MandateStatus.ACTIVE:
@@ -180,7 +185,10 @@ class IntentConstraintService:
                 identifier=str(mandate.id),
             )
 
-        if await self._constraints.get_for_mandate(mandate.id) is not None:
+        if (
+            await self._constraints.get_for_mandate(mandate.id, merchant_id=mandate.merchant_id)
+            is not None
+        ):
             # Terminal, like every other authorization transition here. A second set would
             # mean the terms of an authorization could be chosen after the fact.
             raise ConflictError(
@@ -207,6 +215,7 @@ class IntentConstraintService:
         await self._audit.append(
             merchant_id=constraint_set.merchant_id,
             actor_type=CONSTRAINTS_ACTOR,
+            credential_id=credential_id,
             event_type=CONSTRAINTS_CREATED,
             resource_type=CONSTRAINTS_RESOURCE,
             resource_id=constraint_set.id,
@@ -215,15 +224,23 @@ class IntentConstraintService:
         await self._session.commit()
         return constraint_set
 
-    async def get_constraints(self, mandate_id: uuid.UUID) -> IntentConstraintSet:
-        """Fetch the constraint set qualifying one mandate, raising rather than returning
+    async def get_constraints(
+        self, mandate_id: uuid.UUID, *, merchant_id: uuid.UUID
+    ) -> IntentConstraintSet:
+        """Fetch one merchant's constraint set for a mandate, raising rather than returning
         None.
 
         Absence is not satisfaction. A mandate with no constraint set has no semantic
         authorization at all, and answering "nothing was required, so everything passes"
         would be the single most dangerous default in this system.
+
+        Another merchant's constraint set is absent for the same reason a missing one is, and
+        produces the same error. What a buyer required of a purchase is as private as the
+        mandate it qualifies.
         """
-        constraint_set = await self._constraints.get_for_mandate(mandate_id)
+        constraint_set = await self._constraints.get_for_mandate(
+            mandate_id, merchant_id=merchant_id
+        )
         if constraint_set is None:
             raise NotFoundError("intent_constraints", str(mandate_id))
         return constraint_set

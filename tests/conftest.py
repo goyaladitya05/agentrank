@@ -6,8 +6,10 @@ the Docker Compose service, and in CI it is a service container.
 
 import re
 import socket
-from collections.abc import AsyncIterator, Callable, Iterator
+import uuid
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from pathlib import Path
+from typing import Protocol
 
 import pytest
 from alembic import command
@@ -17,6 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from agentrank_api.audit import models as audit_models  # noqa: F401  registers tables
 from agentrank_api.auth import models as auth_models  # noqa: F401  registers tables
+from agentrank_api.auth.service import MerchantCredentialService
+from agentrank_api.auth.tokens import TokenMarker
 from agentrank_api.checkout import models as checkout_models  # noqa: F401  registers tables
 from agentrank_api.commerce import models as commerce_models  # noqa: F401  registers tables
 from agentrank_api.config import Settings, get_settings
@@ -176,3 +180,46 @@ def row_locks(catalog_engine: AsyncEngine) -> Iterator[list[str]]:
         yield taken
     finally:
         event.remove(catalog_engine.sync_engine, "before_cursor_execute", record)
+
+
+class CredentialIssuer(Protocol):
+    """What `issue_credential` hands back: call it with a merchant, await a raw token.
+
+    A protocol rather than a `Callable` alias because the label is optional, and a callable
+    alias cannot express a default argument.
+    """
+
+    def __call__(self, merchant_id: uuid.UUID, label: str = ...) -> Awaitable[str]: ...
+
+
+def bearer(token: str) -> dict[str, str]:
+    """The header that presents one merchant API key.
+
+    A function rather than a fixture so that it can be used inside the small helpers each API
+    test file already has, and imported by the ones that build a client per test.
+    """
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def issue_credential(session: AsyncSession) -> CredentialIssuer:
+    """Mint a merchant API key and hand back the raw token.
+
+    Every credential a test uses comes from the real service, so the tokens are real tokens:
+    generated with the real generator, stored as the real verifier, and verified by the real
+    authentication path. A fixture that fabricated a row would be a fixture that could keep
+    passing after authentication broke.
+
+    The secret is synthetic in the only sense that matters, which is that nothing outside the
+    test database has ever seen it. It is generated per test rather than written down, so there
+    is no fixed development key anywhere in this repository for a scanner to find or for
+    somebody to copy into an environment that matters.
+    """
+
+    async def issue(merchant_id: uuid.UUID, label: str = "test suite") -> str:
+        issued = await MerchantCredentialService(session).issue(
+            merchant_id=merchant_id, label=label, marker=TokenMarker.DEVELOPMENT
+        )
+        return issued.token
+
+    return issue

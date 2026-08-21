@@ -107,11 +107,11 @@ async def test_revoking_records_one_event_and_repeating_records_none(
     service = MandateService(session)
     mandate = await service.create_mandate(request_for(merchant))
 
-    revoked = await service.revoke_mandate(mandate.id)
+    revoked = await service.revoke_mandate(mandate.id, merchant_id=merchant.id)
     assert revoked.status is MandateStatus.REVOKED
     assert revoked.revoked_at is not None
 
-    again = await service.revoke_mandate(mandate.id)
+    again = await service.revoke_mandate(mandate.id, merchant_id=merchant.id)
     assert again.revoked_at == revoked.revoked_at
 
     events = await AuditRepository(committed).list_for_resource(
@@ -128,8 +128,8 @@ async def test_validation_answers_at_the_instant_it_is_asked_about(
     service = MandateService(session)
     mandate = await service.create_mandate(request_for(merchant))
 
-    assert (await service.validate_mandate(mandate.id)).valid
-    later = await service.validate_mandate(mandate.id, at=NOW + 2 * HOUR)
+    assert (await service.validate_mandate(mandate.id, merchant_id=merchant.id)).valid
+    later = await service.validate_mandate(mandate.id, merchant_id=merchant.id, at=NOW + 2 * HOUR)
     assert later.violations == (MandateViolation.MANDATE_EXPIRED,)
 
 
@@ -140,7 +140,7 @@ async def test_an_unknown_mandate_and_an_unknown_merchant_are_not_found(
     missing = uuid.uuid7()
 
     with pytest.raises(NotFoundError) as unknown_mandate:
-        await service.get_mandate(missing)
+        await service.get_mandate(missing, merchant_id=uuid.uuid7())
     assert unknown_mandate.value.resource == "mandate"
 
     absent_merchant = Merchant(id=missing, slug="nobody", name="Nobody")

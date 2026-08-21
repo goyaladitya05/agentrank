@@ -35,10 +35,10 @@ MANDATE_RESOURCE = "spending_mandate"
 MANDATE_CREATED = "mandate.created"
 MANDATE_REVOKED = "mandate.revoked"
 
-# Every mandate event is attributed to the buyer, because granting and withdrawing
-# spending authority is the buyer's act. This names a role, not a verified identity:
-# nothing authenticates a caller yet, so an audit event is not evidence of who acted. An
-# actor identifier belongs with authentication, and arrives with it.
+# Every mandate event is attributed to the buyer, because granting and withdrawing spending
+# authority is the buyer's act. This names a role and not a person, and it still does now that
+# requests are authenticated: a credential proves which merchant integration asked, not who was
+# holding the key. The credential is recorded beside the role rather than instead of it.
 MANDATE_ACTOR = ActorType.BUYER
 
 
@@ -79,7 +79,9 @@ class MandateService:
         self._mandates = MandateRepository(session)
         self._audit = AuditRepository(session)
 
-    async def create_mandate(self, request: NewMandate) -> SpendingMandate:
+    async def create_mandate(
+        self, request: NewMandate, *, credential_id: uuid.UUID | None = None
+    ) -> SpendingMandate:
         """Create a mandate and record that it was created, in one transaction.
 
         The merchant is looked up first so that an unknown one is a 404 naming the
@@ -88,6 +90,10 @@ class MandateService:
         Both writes happen in one transaction and one commit. If the audit append fails
         for any reason, the mandate is not persisted either: an authorization with no
         record of being granted is exactly what the audit trail exists to prevent.
+
+        `request.merchant_id` is the authenticated merchant. It arrives on the command rather
+        than in the request body, because over HTTP the route builds the command from the
+        principal and there is no field a caller could put a different one in.
         """
         merchant = await self._merchants.get_by_id(request.merchant_id)
         if merchant is None:
@@ -101,23 +107,35 @@ class MandateService:
             valid_from=request.valid_from,
             valid_until=request.valid_until,
         )
-        await self._append(mandate, MANDATE_CREATED, _created_payload(mandate, request.intent))
+        await self._append(
+            mandate,
+            MANDATE_CREATED,
+            _created_payload(mandate, request.intent),
+            credential_id=credential_id,
+        )
         await self._session.commit()
         return mandate
 
-    async def get_mandate(self, mandate_id: uuid.UUID) -> SpendingMandate:
-        """Fetch a mandate, raising rather than returning None.
+    async def get_mandate(
+        self, mandate_id: uuid.UUID, *, merchant_id: uuid.UUID
+    ) -> SpendingMandate:
+        """Fetch one merchant's mandate, raising rather than returning None.
 
         A caller naming a mandate has already decided it should exist, and every caller
         turning None into the same error is worse than raising it once.
+
+        Another merchant's mandate raises the same error as one that was never granted,
+        because the merchant is in the query and the query found nothing. What a merchant has
+        authorized, and for how much, is exactly the sort of thing a competitor should not be
+        able to read by walking identifiers.
         """
-        mandate = await self._mandates.get(mandate_id)
+        mandate = await self._mandates.get(mandate_id, merchant_id=merchant_id)
         if mandate is None:
             raise NotFoundError("mandate", str(mandate_id))
         return mandate
 
     async def validate_mandate(
-        self, mandate_id: uuid.UUID, *, at: datetime | None = None
+        self, mandate_id: uuid.UUID, *, merchant_id: uuid.UUID, at: datetime | None = None
     ) -> MandateValidationResult:
         """Report whether a mandate is usable, at `at` or at the current time.
 
@@ -128,10 +146,16 @@ class MandateService:
         read would turn the trail into a request log. The event worth recording is a
         refusal at execution time, which is Phase 1C.
         """
-        mandate = await self.get_mandate(mandate_id)
+        mandate = await self.get_mandate(mandate_id, merchant_id=merchant_id)
         return validate_mandate(mandate, at=at or datetime.now(UTC))
 
-    async def revoke_mandate(self, mandate_id: uuid.UUID) -> SpendingMandate:
+    async def revoke_mandate(
+        self,
+        mandate_id: uuid.UUID,
+        *,
+        merchant_id: uuid.UUID,
+        credential_id: uuid.UUID | None = None,
+    ) -> SpendingMandate:
         """Revoke a mandate and record it, once.
 
         Idempotent. Revoking an already revoked mandate returns it unchanged and appends
@@ -150,27 +174,38 @@ class MandateService:
         waits for it. There is no schedule where a revocation commits and a preparation
         then succeeds on an active reading taken before it.
         """
-        mandate = await self._locked(mandate_id)
+        mandate = await self._locked(mandate_id, merchant_id=merchant_id)
         if await self._mandates.revoke(mandate):
-            await self._append(mandate, MANDATE_REVOKED, {"status": MandateStatus.REVOKED.value})
+            await self._append(
+                mandate,
+                MANDATE_REVOKED,
+                {"status": MandateStatus.REVOKED.value},
+                credential_id=credential_id,
+            )
         # Committed either way. When nothing changed this just closes the read.
         await self._session.commit()
         return mandate
 
-    async def _locked(self, mandate_id: uuid.UUID) -> SpendingMandate:
-        """Fetch a mandate held against other transactions, raising rather than returning
-        None."""
-        mandate = await self._mandates.get_for_update(mandate_id)
+    async def _locked(self, mandate_id: uuid.UUID, *, merchant_id: uuid.UUID) -> SpendingMandate:
+        """Fetch one merchant's mandate held against other transactions, raising rather than
+        returning None."""
+        mandate = await self._mandates.get_for_update(mandate_id, merchant_id=merchant_id)
         if mandate is None:
             raise NotFoundError("mandate", str(mandate_id))
         return mandate
 
     async def _append(
-        self, mandate: SpendingMandate, event_type: str, payload: dict[str, Any]
+        self,
+        mandate: SpendingMandate,
+        event_type: str,
+        payload: dict[str, Any],
+        *,
+        credential_id: uuid.UUID | None = None,
     ) -> None:
         await self._audit.append(
             merchant_id=mandate.merchant_id,
             actor_type=MANDATE_ACTOR,
+            credential_id=credential_id,
             event_type=event_type,
             resource_type=MANDATE_RESOURCE,
             resource_id=mandate.id,

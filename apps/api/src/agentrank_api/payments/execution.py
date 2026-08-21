@@ -573,7 +573,13 @@ class PaymentExecutionService:
         if found is None:
             raise NotFoundError("payment_attempt", str(attempt_id))
 
-        await self._mandates.get_for_update(found.mandate_id)
+        # The merchant comes from the attempt rather than from a caller, and there is nowhere
+        # else it could come from: recording an outcome is reached from the operator command
+        # line as well as from a buyer's request, and only one of those has an authenticated
+        # merchant. It is not a check either. The composite foreign keys already tie the
+        # attempt and the mandate to one merchant, so this selects the same row an unscoped
+        # read would have.
+        await self._mandates.get_for_update(found.mandate_id, merchant_id=found.merchant_id)
         checkout = await self._checkouts.get_for_update(found.checkout_id)
         if checkout is None:
             # Not reachable through the schema: the foreign key onto the checkout is RESTRICT.

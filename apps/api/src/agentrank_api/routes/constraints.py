@@ -26,13 +26,18 @@ from agentrank_api.constraints.schemas import (
     IntentConstraintSetView,
 )
 from agentrank_api.constraints.service import IntentConstraintService
-from agentrank_api.dependencies import SessionDep
+from agentrank_api.dependencies import MerchantDep, SessionDep
 from agentrank_api.errors import ErrorResponse
 
 router = APIRouter(prefix="/api/v1/commerce", tags=["intent constraints"])
 
 # Annotated because FastAPI types this parameter as an invariant mapping of Any.
-NOT_FOUND: dict[int | str, dict[str, Any]] = {status.HTTP_404_NOT_FOUND: {"model": ErrorResponse}}
+UNAUTHENTICATED: dict[int | str, dict[str, Any]] = {
+    status.HTTP_401_UNAUTHORIZED: {"model": ErrorResponse}
+}
+NOT_FOUND: dict[int | str, dict[str, Any]] = UNAUTHENTICATED | {
+    status.HTTP_404_NOT_FOUND: {"model": ErrorResponse}
+}
 NOT_FOUND_OR_CONFLICT: dict[int | str, dict[str, Any]] = NOT_FOUND | {
     status.HTTP_409_CONFLICT: {"model": ErrorResponse}
 }
@@ -45,7 +50,10 @@ NOT_FOUND_OR_CONFLICT: dict[int | str, dict[str, Any]] = NOT_FOUND | {
     responses=NOT_FOUND_OR_CONFLICT,
 )
 async def create_intent_constraints(
-    mandate_id: uuid.UUID, request: CreateIntentConstraintsRequest, session: SessionDep
+    mandate_id: uuid.UUID,
+    request: CreateIntentConstraintsRequest,
+    session: SessionDep,
+    merchant: MerchantDep,
 ) -> IntentConstraintSetView:
     """Qualify a mandate with the hard constraints a purchase must satisfy.
 
@@ -56,9 +64,15 @@ async def create_intent_constraints(
     A financial constraint may be stated and is validated against the mandate rather than
     stored. A mandate that permits more than the buyer said is refused, so a stated limit
     cannot be quietly widened by the authorization that replaces it.
+
+    The merchant is the authenticated one and the body cannot name one. A mandate granted to
+    anybody else answers 404, so knowing a mandate identifier is no longer enough to decide
+    what that mandate may buy.
     """
-    command = request.to_command(mandate_id)
-    constraint_set = await IntentConstraintService(session).create_constraints(command)
+    command = request.to_command(mandate_id, merchant.merchant_id)
+    constraint_set = await IntentConstraintService(session).create_constraints(
+        command, credential_id=merchant.credential_id
+    )
     return IntentConstraintSetView.from_model(constraint_set)
 
 
@@ -68,15 +82,20 @@ async def create_intent_constraints(
     responses=NOT_FOUND,
 )
 async def get_intent_constraints(
-    mandate_id: uuid.UUID, session: SessionDep
+    mandate_id: uuid.UUID, session: SessionDep, merchant: MerchantDep
 ) -> IntentConstraintSetView:
     """Fetch the constraints qualifying one mandate.
 
     A mandate with none answers 404 rather than an empty set. Absence of a semantic
     authorization is not a permissive one, and a body that looked like "no requirements"
     would invite exactly that reading.
+
+    Another merchant's constraint set answers 404 for the same reason a missing one does. What
+    a buyer required of a purchase is as private as the mandate it qualifies.
     """
-    constraint_set = await IntentConstraintService(session).get_constraints(mandate_id)
+    constraint_set = await IntentConstraintService(session).get_constraints(
+        mandate_id, merchant_id=merchant.merchant_id
+    )
     return IntentConstraintSetView.from_model(constraint_set)
 
 

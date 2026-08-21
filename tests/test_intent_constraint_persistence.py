@@ -93,7 +93,9 @@ async def test_a_constraint_set_round_trips_with_its_constraints(session: AsyncS
     written = await a_set(session)
     session.expunge_all()
 
-    found = await IntentConstraintRepository(session).get_for_mandate(written.mandate_id)
+    found = await IntentConstraintRepository(session).get_for_mandate(
+        written.mandate_id, merchant_id=written.merchant_id
+    )
 
     assert found is not None
     assert found.id == written.id
@@ -106,7 +108,10 @@ async def test_a_mandate_without_constraints_has_no_set(session: AsyncSession) -
     mandate = await a_mandate(session, "bare")
     await session.commit()
 
-    assert await IntentConstraintRepository(session).get_for_mandate(mandate.id) is None
+    missing = await IntentConstraintRepository(session).get_for_mandate(
+        mandate.id, merchant_id=mandate.merchant_id
+    )
+    assert missing is None
 
 
 async def test_a_mandate_cannot_hold_two_constraint_sets(session: AsyncSession) -> None:

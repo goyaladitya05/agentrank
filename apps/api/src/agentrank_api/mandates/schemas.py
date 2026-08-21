@@ -42,6 +42,10 @@ from agentrank_api.mandates.validation import (
 )
 from agentrank_api.money import CURRENCY_PATTERN
 
+# Stands in for the authenticated merchant while a request is being validated, and never
+# leaves the validator that uses it. The route builds the real command from the credential.
+_UNVALIDATED_MERCHANT = uuid.UUID(int=0)
+
 
 class MaxTotalAmountInput(BaseModel):
     kind: Literal[ConstraintKind.MAX_TOTAL_AMOUNT]
@@ -130,6 +134,10 @@ class BuyerIntentInput(BaseModel):
 class CreateMandateRequest(BaseModel):
     """What a caller must state to authorize spending.
 
+    There is no `merchant_id`. It was a field until Phase 1H, and removing it is the point
+    rather than a simplification: the merchant is the authenticated one, and a body that could
+    name a different one would be a body that could authorize spending at somebody else's shop.
+
     `valid_until` is required. There is no perpetual authorization: an authorization that
     never lapses can only be ended by remembering to revoke it.
 
@@ -138,7 +146,6 @@ class CreateMandateRequest(BaseModel):
     the database clock the way `created_at` does.
     """
 
-    merchant_id: uuid.UUID
     max_total_amount_minor: int = Field(ge=0)
     currency: str = Field(pattern=CURRENCY_PATTERN)
     max_quantity: int | None = Field(default=None, gt=0)
@@ -151,19 +158,23 @@ class CreateMandateRequest(BaseModel):
         # Building the command applies every domain rule, including the ones the field
         # constraints above cannot express. Doing it during validation is what makes a
         # refusal a 422 rather than an error raised from inside a route.
+        # The merchant is not known here, so a placeholder stands in for it. Every rule
+        # `NewMandate` enforces is about the money, the window and the intent, and none of them
+        # reads the merchant except to check that the intent names the same one, which it does
+        # by construction below.
         validate_validity_window(self.valid_from, self.valid_until)
-        self.to_command()
+        self.to_command(_UNVALIDATED_MERCHANT)
         return self
 
-    def to_command(self) -> NewMandate:
+    def to_command(self, merchant_id: uuid.UUID) -> NewMandate:
         return NewMandate(
-            merchant_id=self.merchant_id,
+            merchant_id=merchant_id,
             max_total_amount_minor=self.max_total_amount_minor,
             currency=self.currency,
             max_quantity=self.max_quantity,
             valid_from=self.valid_from,
             valid_until=self.valid_until,
-            intent=self.intent.to_domain(self.merchant_id) if self.intent else None,
+            intent=self.intent.to_domain(merchant_id) if self.intent else None,
         )
 
 
