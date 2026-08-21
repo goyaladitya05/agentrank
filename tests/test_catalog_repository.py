@@ -34,7 +34,7 @@ async def test_a_product_is_stored_with_its_variants_and_read_back_loaded(
     await session.commit()
     session.expunge_all()
 
-    loaded = await catalog.get_product(product.id)
+    loaded = await catalog.get_product(product.id, merchant_id=product.merchant_id)
 
     assert loaded is not None
     assert loaded.title == "100W USB-C Charger"
@@ -44,7 +44,8 @@ async def test_a_product_is_stored_with_its_variants_and_read_back_loaded(
 
 
 async def test_get_product_returns_nothing_for_an_unknown_id(session: AsyncSession) -> None:
-    assert await CatalogRepository(session).get_product(uuid.uuid7()) is None
+    missing = await CatalogRepository(session).get_product(uuid.uuid7(), merchant_id=uuid.uuid7())
+    assert missing is None
 
 
 async def test_a_variant_takes_its_merchant_from_its_product(session: AsyncSession) -> None:
@@ -78,7 +79,7 @@ async def test_variants_are_returned_in_a_deterministic_order(session: AsyncSess
     await session.commit()
     session.expunge_all()
 
-    loaded = await catalog.get_product(product.id)
+    loaded = await catalog.get_product(product.id, merchant_id=product.merchant_id)
 
     assert loaded is not None
     assert [variant.sku for variant in loaded.variants] == ["AMP-A", "AMP-B", "AMP-C"]

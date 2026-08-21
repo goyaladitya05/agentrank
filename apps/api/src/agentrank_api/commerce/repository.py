@@ -158,12 +158,20 @@ class CatalogRepository:
         )
         return list((await self._session.execute(statement)).unique().scalars().all())
 
-    async def get_product(self, product_id: uuid.UUID) -> Product | None:
-        """Fetch one product with its merchant and every variant loaded."""
+    async def get_product(self, product_id: uuid.UUID, *, merchant_id: uuid.UUID) -> Product | None:
+        """Fetch one merchant's product with its merchant and every variant loaded.
+
+        Merchant scoped, like `get_variants` beside it and like every other resource read in
+        this application. Another merchant's product is absent rather than refused, so a
+        product identifier is worth nothing to anybody who is not its merchant.
+
+        `selectinload(Product.variants)` loads every variant, active or not, which is one of
+        the reasons this read is not public. See docs/decisions.md.
+        """
         statement = (
             select(Product)
             .options(joinedload(Product.merchant), selectinload(Product.variants))
-            .where(Product.id == product_id)
+            .where(Product.id == product_id, Product.merchant_id == merchant_id)
         )
         result = await self._session.execute(statement)
         return result.unique().scalar_one_or_none()

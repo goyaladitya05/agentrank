@@ -115,7 +115,12 @@ class ProductSearchResult(ProductIdentity):
 
 
 class ProductSearchRequest(BaseModel):
-    merchant_id: uuid.UUID
+    """What a caller is looking for in their own catalog.
+
+    There is no `merchant_id`. It was a field until Phase 1H and the merchant is now the
+    authenticated one, so a search cannot be pointed at somebody else's shelves.
+    """
+
     query: str | None = Field(default=None, max_length=200)
     max_price_amount_minor: int | None = Field(default=None, ge=0)
     currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")
@@ -129,9 +134,9 @@ class ProductSearchRequest(BaseModel):
         validate_price_filter(self.max_price_amount_minor, self.currency)
         return self
 
-    def to_criteria(self) -> ProductSearchCriteria:
+    def to_criteria(self, merchant_id: uuid.UUID) -> ProductSearchCriteria:
         return ProductSearchCriteria(
-            merchant_id=self.merchant_id,
+            merchant_id=merchant_id,
             query=self.query,
             max_price_amount_minor=self.max_price_amount_minor,
             currency=self.currency,

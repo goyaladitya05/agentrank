@@ -255,4 +255,4 @@ async def test_results_are_ordered_deterministically(
 
 async def test_getting_an_unknown_product_raises_not_found(session: AsyncSession) -> None:
     with pytest.raises(NotFoundError):
-        await CatalogService(session).get_product(uuid.uuid7())
+        await CatalogService(session).get_product(uuid.uuid7(), merchant_id=uuid.uuid7())

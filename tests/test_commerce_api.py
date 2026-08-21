@@ -2,11 +2,16 @@
 
 Deliberately thin. Search semantics are covered once at the service level; these tests
 check the wire contract, not the query.
+
+Both routes require a merchant API key. Whether they should is a product decision rather than a
+consequence of scoping the rest of the API, and it is stated and pinned in
+`tests/test_catalog_access.py`.
 """
 
 import uuid
 
 import pytest
+from conftest import CredentialIssuer, bearer
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -56,10 +61,21 @@ async def seeded(session: AsyncSession) -> dict[str, uuid.UUID]:
     return {"ampere": ampere.id, "voltline": voltline.id, "charger": charger.id}
 
 
+@pytest.fixture
+async def token(issue_credential: CredentialIssuer, seeded: dict[str, uuid.UUID]) -> str:
+    """A key for the first merchant. The catalog routes take the merchant from it."""
+    return await issue_credential(seeded["ampere"])
+
+
+@pytest.fixture
+async def rival_token(issue_credential: CredentialIssuer, seeded: dict[str, uuid.UUID]) -> str:
+    return await issue_credential(seeded["voltline"], "voltline")
+
+
 async def test_a_product_is_returned_with_its_variants(
-    catalog_settings: Settings, seeded: dict[str, uuid.UUID]
+    catalog_settings: Settings, seeded: dict[str, uuid.UUID], token: str
 ) -> None:
-    with TestClient(create_app(catalog_settings)) as client:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         response = client.get(f"/api/v1/commerce/products/{seeded['charger']}")
 
     assert response.status_code == 200
@@ -72,9 +88,11 @@ async def test_a_product_is_returned_with_its_variants(
     assert variant["attributes"] == {"color": "black", "wattage": 100}
 
 
-async def test_an_unknown_product_is_a_structured_404(catalog_settings: Settings) -> None:
+async def test_an_unknown_product_is_a_structured_404(
+    catalog_settings: Settings, seeded: dict[str, uuid.UUID], token: str
+) -> None:
     missing = uuid.uuid7()
-    with TestClient(create_app(catalog_settings)) as client:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         response = client.get(f"/api/v1/commerce/products/{missing}")
 
     assert response.status_code == 404
@@ -84,13 +102,12 @@ async def test_an_unknown_product_is_a_structured_404(catalog_settings: Settings
 
 
 async def test_search_returns_eligible_variants(
-    catalog_settings: Settings, seeded: dict[str, uuid.UUID]
+    catalog_settings: Settings, seeded: dict[str, uuid.UUID], token: str
 ) -> None:
-    with TestClient(create_app(catalog_settings)) as client:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         response = client.post(
             SEARCH_URL,
             json={
-                "merchant_id": str(seeded["ampere"]),
                 "query": "charger",
                 "max_price_amount_minor": 500000,
                 "currency": "INR",
@@ -107,25 +124,27 @@ async def test_search_returns_eligible_variants(
 
 
 async def test_search_never_crosses_merchants(
-    catalog_settings: Settings, seeded: dict[str, uuid.UUID]
+    catalog_settings: Settings, seeded: dict[str, uuid.UUID], token: str, rival_token: str
 ) -> None:
-    with TestClient(create_app(catalog_settings)) as client:
-        response = client.post(
-            SEARCH_URL,
-            json={"merchant_id": str(seeded["voltline"]), "query": "100W USB-C Charger"},
-        )
+    """Two merchants, one search body, two catalogs. The credential is the whole difference."""
+    body = {"query": "100W USB-C Charger"}
 
-    body = response.json()
-    assert [result["external_id"] for result in body["results"]] == ["VLT-CHG-100"]
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
+        mine = client.post(SEARCH_URL, json=body).json()
+    with TestClient(create_app(catalog_settings), headers=bearer(rival_token)) as client:
+        theirs = client.post(SEARCH_URL, json=body).json()
+
+    assert [result["external_id"] for result in mine["results"]] == ["AMP-CHG-100"]
+    assert [result["external_id"] for result in theirs["results"]] == ["VLT-CHG-100"]
 
 
 async def test_a_price_ceiling_without_a_currency_is_rejected(
-    catalog_settings: Settings, seeded: dict[str, uuid.UUID]
+    catalog_settings: Settings, seeded: dict[str, uuid.UUID], token: str
 ) -> None:
-    with TestClient(create_app(catalog_settings)) as client:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         response = client.post(
             SEARCH_URL,
-            json={"merchant_id": str(seeded["ampere"]), "max_price_amount_minor": 500000},
+            json={"max_price_amount_minor": 500000},
         )
 
     assert response.status_code == 422
@@ -133,11 +152,9 @@ async def test_a_price_ceiling_without_a_currency_is_rejected(
 
 
 async def test_a_limit_above_the_maximum_is_rejected(
-    catalog_settings: Settings, seeded: dict[str, uuid.UUID]
+    catalog_settings: Settings, seeded: dict[str, uuid.UUID], token: str
 ) -> None:
-    with TestClient(create_app(catalog_settings)) as client:
-        response = client.post(
-            SEARCH_URL, json={"merchant_id": str(seeded["ampere"]), "limit": 10_000}
-        )
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
+        response = client.post(SEARCH_URL, json={"limit": 10_000})
 
     assert response.status_code == 422

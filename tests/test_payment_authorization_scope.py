@@ -15,6 +15,9 @@ three exactly where it found them.
 Idempotency is checked under authentication too. One key against one checkout is still one
 payment, and because a checkout belongs to one merchant, two merchants using the same key string
 are two payments that cannot see each other.
+
+That every commerce operation declares the bearer scheme in the generated schema is asserted
+once, over the whole namespace, in `tests/test_catalog_access.py`.
 """
 
 import uuid
@@ -349,36 +352,6 @@ async def test_a_revoked_credential_cannot_pay(
 
     assert response.status_code == 401
     untouched(provider)
-
-
-def test_every_commerce_operation_declares_the_bearer_scheme(catalog_settings: Settings) -> None:
-    """Read off the generated schema rather than off the route table.
-
-    The schema is what a client generator reads, so it is what has to be right. Asserting it
-    across a whole namespace at once is what catches a route added later without the dependency:
-    a new path with no `security` fails here rather than being noticed in production.
-
-    The catalog namespace is asserted separately, by `tests/test_catalog_access.py`, because
-    what it publishes is a product decision rather than a consequence of this one.
-    """
-    schema = create_app(catalog_settings).openapi()
-    scoped = (
-        "/api/v1/commerce/mandates",
-        "/api/v1/commerce/checkouts",
-        "/api/v1/commerce/payments",
-    )
-
-    unprotected = [
-        path
-        for path, operations in schema["paths"].items()
-        if path.startswith(scoped)
-        for operation in operations.values()
-        if operation.get("security") != [{"MerchantApiKey": []}]
-    ]
-
-    assert unprotected == []
-    # A positive count beside the negative assertion, so an empty set cannot pass as clean.
-    assert len([path for path in schema["paths"] if path.startswith(scoped)]) == 15
 
 
 def test_the_schema_still_publishes_no_operator_recovery(catalog_settings: Settings) -> None:
