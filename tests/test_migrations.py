@@ -8,7 +8,9 @@ from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect
 
+from agentrank_api.commerce import models as commerce_models  # noqa: F401  registers tables
 from agentrank_api.config import Settings
+from agentrank_api.models import Base
 
 AlembicConfigFactory = Callable[[Settings], Config]
 
@@ -38,6 +40,10 @@ def test_migrations_upgrade_downgrade_and_upgrade_again(
 
     command.upgrade(config, "head")
     assert current_revision(throwaway_database) == head
+    # Every table the models declare must actually exist. Asserting against the metadata
+    # rather than a hardcoded list means new tables are covered without editing this test.
+    expected = {table.name for table in Base.metadata.sorted_tables}
+    assert expected <= table_names(throwaway_database)
 
     command.downgrade(config, "base")
     # Every migration must undo its own schema. Anything left behind other than the
@@ -46,6 +52,7 @@ def test_migrations_upgrade_downgrade_and_upgrade_again(
 
     command.upgrade(config, "head")
     assert current_revision(throwaway_database) == head
+    assert expected <= table_names(throwaway_database)
 
 
 def test_models_match_migrations(
