@@ -26,56 +26,51 @@ Ubuntu is the reference platform. All scripts assume Bash.
 
 ## Setup
 
-Install the Python toolchain and create the local virtual environment at `.venv`:
-
-```bash
-uv sync
-```
-
-Install frontend dependencies:
-
-```bash
-pnpm install --frozen-lockfile
-```
-
-Create a local environment file:
-
 ```bash
 cp .env.example .env
+make install
+make db-up
+make migrate
 ```
+
+`make install` creates the Python virtual environment at `.venv` and installs frontend
+dependencies from the lock files. `make db-up` starts PostgreSQL and waits for it to
+become healthy. Run `make help` to list every target.
 
 The values in `.env.example` are development defaults that match the local Docker Compose
 service. They are not secrets and must not be reused anywhere real.
 
+## Checks
+
+One command validates the repository. It must pass before every commit and every push.
+
+```bash
+make check
+```
+
+It runs backend linting and formatting, mypy, pytest, frontend linting and formatting,
+TypeScript, Vitest, a production Next.js build, the text style scanner and whitespace
+validation. Backend tests need PostgreSQL running, so run `make db-up` first.
+
 ## Local database
 
-PostgreSQL 18 runs through Docker Compose. Start it and wait for it to become healthy:
+PostgreSQL 18 runs through Docker Compose.
 
 ```bash
-docker compose up -d --wait
-```
-
-Confirm it is reachable and running the expected major version:
-
-```bash
-./scripts/check-postgres.sh
-```
-
-Stop it, keeping the data volume:
-
-```bash
-docker compose down
+make db-up       # start and wait for healthy
+make db-verify   # confirm it is reachable and is PostgreSQL 18
+make db-down     # stop, keeping data
+make db-reset    # destroy the data volume and start clean
 ```
 
 Data lives in the named volume `agentrank_postgres_data` and survives container restarts.
-Remove it with `docker compose down -v` when a clean database is wanted.
 
 ## Backend
 
 Start PostgreSQL first, then run the API:
 
 ```bash
-uv run uvicorn agentrank_api.main:create_app --factory --reload --port 8000
+make api
 ```
 
 | Endpoint | Meaning |
@@ -86,7 +81,7 @@ uv run uvicorn agentrank_api.main:create_app --factory --reload --port 8000
 Run the backend tests, which need a running database:
 
 ```bash
-uv run pytest
+make test-backend
 ```
 
 ## Frontend
@@ -96,9 +91,9 @@ from the Next.js server rather than the browser, so no CORS configuration is nee
 API URL is not exposed to the client.
 
 ```bash
-pnpm --filter @agentrank/web dev     # http://localhost:3000
-pnpm --filter @agentrank/web test
-pnpm --filter @agentrank/web build
+make web             # http://localhost:3000
+make test-frontend
+make build-frontend
 ```
 
 `AGENTRANK_API_BASE_URL` selects the backend. It defaults to `http://localhost:8000`.
