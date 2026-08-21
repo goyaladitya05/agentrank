@@ -5,7 +5,8 @@ boundary, which is what lets a checkout, its lines and its audit event be one un
 work.
 
 There is deliberately no update method and no way to add a line to an existing checkout.
-A quote is written once. The only transition it has is cancellation.
+A quote is written once, and the only things that ever change on it are its two terminal
+transitions: cancellation, which withdraws it, and payment, which completes it.
 """
 
 import uuid
@@ -142,6 +143,37 @@ class CheckoutRepository:
         """
         statement = checkout_lock_statement(checkout_id)
         return (await self._session.execute(statement)).scalar_one_or_none()
+
+    async def mark_paid(self, checkout: CheckoutSession) -> bool:
+        """Record that this quote became a purchase, and report whether this call changed it.
+
+        The only transition into PAID, called by the only operation allowed to make it: the
+        transaction that records a definitive provider success. It is terminal and the database
+        agrees, so there is no counterpart that reopens one and no path from PAID to CANCELLED.
+
+        Idempotent, and only if the row was read under `get_for_update`. The decision below is
+        made from the status this object was loaded with.
+
+        Refuses anything that is not OPEN rather than silently ignoring it. A cancelled quote
+        becoming paid would mean money moved for something that was withdrawn, and the trigger
+        refuses it too.
+
+        The timestamp comes from the database clock, so the transition and the event recording
+        it carry the same instant.
+        """
+        if checkout.status is CheckoutStatus.PAID:
+            return False
+        if checkout.status is not CheckoutStatus.OPEN:
+            raise ValueError(f"a {checkout.status.value.lower()} checkout cannot be paid")
+
+        checkout.status = CheckoutStatus.PAID
+        checkout.paid_at = func.now()
+        await self._session.flush()
+        # Explicitly reloaded rather than left expired. A SQL expression assigned to an
+        # attribute is not readable until it is fetched back, and an implicit fetch inside an
+        # async session raises MissingGreenlet.
+        await self._session.refresh(checkout, ["paid_at"])
+        return True
 
     async def cancel(self, checkout: CheckoutSession) -> bool:
         """Cancel a checkout, and report whether this call is what changed it.
