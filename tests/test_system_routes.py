@@ -1,8 +1,9 @@
 """Behavior of the liveness and readiness endpoints."""
 
+from fastapi.testclient import TestClient
+
 from agentrank_api.config import Settings
 from agentrank_api.main import create_app
-from fastapi.testclient import TestClient
 
 
 def test_health_reports_the_process_is_running(settings: Settings) -> None:

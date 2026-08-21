@@ -89,6 +89,22 @@ Run the backend tests, which need a running database:
 uv run pytest
 ```
 
+## Migrations
+
+Every schema change is an Alembic migration. Schema is never created or altered as an
+application startup side effect.
+
+```bash
+uv run alembic upgrade head          # apply
+uv run alembic downgrade -1          # undo one revision
+uv run alembic revision -m "message" # new empty revision
+uv run alembic revision --autogenerate -m "message"
+uv run alembic check                 # models and migrations agree
+```
+
+Autogenerate is a starting point, not an answer. Read every generated revision and make
+sure `downgrade` really reverses `upgrade`.
+
 ## Layout
 
 ```text
