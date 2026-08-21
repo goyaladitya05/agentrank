@@ -47,6 +47,29 @@ cp .env.example .env
 The values in `.env.example` are development defaults that match the local Docker Compose
 service. They are not secrets and must not be reused anywhere real.
 
+## Local database
+
+PostgreSQL 18 runs through Docker Compose. Start it and wait for it to become healthy:
+
+```bash
+docker compose up -d --wait
+```
+
+Confirm it is reachable and running the expected major version:
+
+```bash
+./scripts/check-postgres.sh
+```
+
+Stop it, keeping the data volume:
+
+```bash
+docker compose down
+```
+
+Data lives in the named volume `agentrank_postgres_data` and survives container restarts.
+Remove it with `docker compose down -v` when a clean database is wanted.
+
 ## Layout
 
 ```text
