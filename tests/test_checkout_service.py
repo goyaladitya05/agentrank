@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from agentrank_api.audit.models import ActorType, AuditEvent
 from agentrank_api.audit.repository import AuditRepository
+from agentrank_api.checkout.authorization import CheckoutAuthorizationViolation
 from agentrank_api.checkout.models import CheckoutSession, CheckoutStatus
 from agentrank_api.checkout.service import (
     CHECKOUT_RESOURCE,
@@ -393,3 +394,67 @@ async def test_cancelling_an_unknown_checkout_is_not_found(session: AsyncSession
     with pytest.raises(NotFoundError) as unknown:
         await CheckoutService(session).cancel_checkout(uuid.uuid7())
     assert unknown.value.resource == "checkout"
+
+
+async def test_a_quote_above_the_ceiling_is_a_valid_quote_that_is_denied(
+    session: AsyncSession, committed: AsyncSession, shop: Shop
+) -> None:
+    """The separation the whole phase rests on.
+
+    Creating a quote and authorizing one are different operations. A checkout for more than
+    a buyer may spend is not malformed: it is a correct merchant quote that this mandate
+    does not authorize, and both facts have to survive together.
+    """
+    tight = await MandateRepository(session).create(
+        merchant_id=shop.merchant_id,
+        max_total_amount_minor=CHARGER,
+        currency="INR",
+        valid_from=NOW,
+        valid_until=NOW + HOUR,
+    )
+    await session.commit()
+
+    service = CheckoutService(session)
+    checkout = await service.create_checkout(
+        request_for(shop, CheckoutItem(variant_id=shop.charger.id, quantity=2), mandate_id=tight.id)
+    )
+
+    assert await committed.get(CheckoutSession, checkout.id) is not None
+    assert checkout.total_amount_minor == 2 * CHARGER
+
+    decision = await service.authorize_checkout(checkout.id)
+    assert not decision.allowed
+    assert decision.violations == (CheckoutAuthorizationViolation.MAX_TOTAL_EXCEEDED,)
+
+    # One charger against the same mandate is exactly at the ceiling, and allowed.
+    affordable = await service.create_checkout(
+        request_for(shop, CheckoutItem(variant_id=shop.charger.id, quantity=1), mandate_id=tight.id)
+    )
+    assert (await service.authorize_checkout(affordable.id)).allowed
+
+
+async def test_a_quote_in_another_currency_than_the_mandate_is_denied(
+    session: AsyncSession, shop: Shop
+) -> None:
+    service = CheckoutService(session)
+    checkout = await service.create_checkout(
+        request_for(shop, CheckoutItem(variant_id=shop.euro.id, quantity=1))
+    )
+    assert checkout.currency == "EUR"
+
+    decision = await service.authorize_checkout(checkout.id)
+    assert decision.violations == (CheckoutAuthorizationViolation.CURRENCY_MISMATCH,)
+
+
+async def test_authorization_answers_about_the_instant_it_is_asked_about(
+    session: AsyncSession, shop: Shop
+) -> None:
+    service = CheckoutService(session)
+    checkout = await service.create_checkout(request_for(shop))
+
+    assert (await service.authorize_checkout(checkout.id)).allowed
+    later = await service.authorize_checkout(checkout.id, at=NOW + 2 * HOUR)
+    assert later.violations == (
+        CheckoutAuthorizationViolation.MANDATE_EXPIRED,
+        CheckoutAuthorizationViolation.CHECKOUT_EXPIRED,
+    )

@@ -25,6 +25,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentrank_api.audit.models import ActorType
 from agentrank_api.audit.repository import AuditRepository
+from agentrank_api.checkout.authorization import (
+    CheckoutAuthorizationDecision,
+    authorize_checkout,
+)
 from agentrank_api.checkout.models import CheckoutSession, CheckoutStatus
 from agentrank_api.checkout.quote import (
     MAX_CHECKOUT_LINES,
@@ -159,6 +163,26 @@ class CheckoutService:
         if checkout is None:
             raise NotFoundError("checkout", str(checkout_id))
         return checkout
+
+    async def authorize_checkout(
+        self, checkout_id: uuid.UUID, *, at: datetime | None = None
+    ) -> CheckoutAuthorizationDecision:
+        """Report whether this checkout is financially authorized, at `at` or right now.
+
+        This is the layer allowed to read the clock. The rule underneath it takes the
+        instant as an argument and reads nothing, which is what keeps it deterministic.
+
+        Nothing is written, and no catalog row is read. The decision is made against the
+        quote as it was recorded, so a price change since then cannot alter what it was
+        made against.
+        """
+        checkout = await self.get_checkout(checkout_id)
+        mandate = await self._mandates.get(checkout.mandate_id)
+        if mandate is None:
+            # Not reachable through the schema: the foreign key onto the mandate is
+            # RESTRICT, so the mandate cannot have been removed while this quote exists.
+            raise NotFoundError("mandate", str(checkout.mandate_id))
+        return authorize_checkout(checkout, mandate, at=at or datetime.now(UTC))
 
     async def cancel_checkout(self, checkout_id: uuid.UUID) -> CheckoutSession:
         """Withdraw a quote and record it, once.
