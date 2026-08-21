@@ -13,6 +13,9 @@ agentrank-api = { workspace = true }
 
 [tool.uv.workspace]
 members = ["apps/*", "packages/*"]
+# apps/web is the Next.js console. It sits under apps/ but is not a Python package, and
+# uv treats every glob match as a workspace member unless it is excluded.
+exclude = ["apps/web"]
 
 [dependency-groups]
 dev = [

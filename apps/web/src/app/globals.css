@@ -1,0 +1,65 @@
+:root {
+  color-scheme: light dark;
+
+  --surface: #fbfbfa;
+  --surface-raised: #ffffff;
+  --surface-header: #f2f2f0;
+  --border: #d7d6d1;
+  --border-strong: #a8a7a1;
+  --text: #17191a;
+  --text-muted: #62666a;
+  --accent: #245c8a;
+
+  --state-ok: #1f6b45;
+  --state-warn: #8a6412;
+  --state-fail: #9b2c2c;
+
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --sans:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial,
+    sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #121415;
+    --surface-raised: #191c1d;
+    --surface-header: #1e2223;
+    --border: #2d3234;
+    --border-strong: #474d50;
+    --text: #e5e8e8;
+    --text-muted: #99a0a3;
+    --accent: #7fb0dd;
+
+    --state-ok: #56b389;
+    --state-warn: #d3a444;
+    --state-fail: #e1786f;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2 {
+  margin: 0;
+  font-weight: 600;
+}

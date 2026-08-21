@@ -1,2 +1,11 @@
 packages:
   - "apps/*"
+
+# unrs-resolver ships a postinstall that picks the native binary for the platform.
+# The eslint import resolver does not work without it.
+allowBuilds:
+  unrs-resolver: true
+
+minimumReleaseAgeExclude:
+  - '@next/eslint-plugin-next@16.3.2'
+  - eslint-config-next@16.3.2

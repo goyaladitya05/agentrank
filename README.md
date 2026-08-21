@@ -89,6 +89,20 @@ Run the backend tests, which need a running database:
 uv run pytest
 ```
 
+## Frontend
+
+The console is a Next.js app in `apps/web`. It renders on the server and fetches the API
+from the Next.js server rather than the browser, so no CORS configuration is needed and the
+API URL is not exposed to the client.
+
+```bash
+pnpm --filter @agentrank/web dev     # http://localhost:3000
+pnpm --filter @agentrank/web test
+pnpm --filter @agentrank/web build
+```
+
+`AGENTRANK_API_BASE_URL` selects the backend. It defaults to `http://localhost:8000`.
+
 ## Migrations
 
 Every schema change is an Alembic migration. Schema is never created or altered as an
