@@ -25,6 +25,30 @@ class NotFoundError(AgentRankError):
         self.identifier = identifier
 
 
+class AuthenticationError(AgentRankError):
+    """A request that did not establish which merchant it is acting for.
+
+    Deliberately carries nothing. There is no field for which credential was presented, no
+    field for how far verification got and no constructor parameter that could become one,
+    because every one of those distinctions is a distinction worth keeping: whether a
+    credential identifier exists, whether a key was revoked, whether a secret was merely wrong.
+
+    One error for six situations. A missing header, a header in another scheme, a malformed
+    token, an unknown credential, a revoked credential and a wrong secret all raise this and
+    all produce the same response, which is what makes them indistinguishable from outside
+    rather than merely undocumented.
+
+    It is not a `NotFoundError` and not a `ConflictError`. Those two say something about a
+    resource; this one says something about the caller, and the caller is nobody yet.
+    """
+
+    reason = "unauthenticated"
+    detail = "a valid merchant API credential is required"
+
+    def __init__(self) -> None:
+        super().__init__(self.detail)
+
+
 class ConflictError(AgentRankError):
     """A well formed request that the current state of the system refuses.
 

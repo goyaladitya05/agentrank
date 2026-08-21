@@ -9,7 +9,12 @@ from fastapi.responses import JSONResponse
 
 from agentrank_api.config import Settings, get_settings
 from agentrank_api.database import create_engine, create_session_factory
-from agentrank_api.errors import ConflictError, ErrorResponse, NotFoundError
+from agentrank_api.errors import (
+    AuthenticationError,
+    ConflictError,
+    ErrorResponse,
+    NotFoundError,
+)
 from agentrank_api.payments.provider import PaymentProvider
 from agentrank_api.payments.wiring import build_payment_provider
 from agentrank_api.routes import checkouts, commerce, constraints, mandates, payments, system
@@ -51,6 +56,30 @@ def create_app(
         version="0.0.0",
         lifespan=lifespan,
     )
+
+    @app.exception_handler(AuthenticationError)
+    async def handle_unauthenticated(_: Request, error: AuthenticationError) -> JSONResponse:
+        """The caller did not establish who they are, so nothing about the resource is said.
+
+        401 and not 403. The distinction is the whole of this phase: 403 would mean an
+        identified caller is not permitted, and there is no identified caller here. A request
+        that authenticates and then asks for somebody else's resource gets a 404 instead, from
+        the merchant scoped query that found nothing.
+
+        `WWW-Authenticate` because the status code requires it. It names the scheme and nothing
+        else: no realm carrying a merchant name, and no parameter that could differ between a
+        revoked credential and an unknown one.
+
+        The body is the same for every way authentication can fail, and it is built from
+        constants on the error rather than from anything the request supplied. Nothing here
+        echoes a header, a token, a credential identifier or any fragment of one.
+        """
+        body = ErrorResponse(error=error.reason, detail=error.detail)
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content=body.model_dump(),
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     @app.exception_handler(NotFoundError)
     async def handle_not_found(_: Request, error: NotFoundError) -> JSONResponse:

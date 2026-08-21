@@ -1,11 +1,22 @@
-"""FastAPI dependencies shared by routes."""
+"""FastAPI dependencies shared by routes.
+
+Authentication lives here rather than in `agentrank_api.auth` on purpose. Bearer parsing,
+status codes and OpenAPI security are HTTP concerns, and the package underneath knows nothing
+about any of them: it takes a string and answers with a principal or with nothing. That split
+is what lets the command line provision credentials without importing FastAPI, and what keeps
+the one place a 401 is decided in the one layer that can answer with one.
+"""
 
 from collections.abc import AsyncIterator
 from typing import Annotated
 
 from fastapi import Depends, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from agentrank_api.auth.principal import AuthenticatedMerchant
+from agentrank_api.auth.service import MerchantCredentialService
+from agentrank_api.errors import AuthenticationError
 from agentrank_api.payments.provider import PaymentProvider
 
 
@@ -41,3 +52,60 @@ def get_payment_provider(request: Request) -> PaymentProvider:
 
 
 ProviderDep = Annotated[PaymentProvider, Depends(get_payment_provider)]
+
+
+# `auto_error=False` because FastAPI's own refusal is the wrong one twice over. It answers 403
+# for a missing header, which says "you may not" to a caller who has not said who they are, and
+# its body is a bare `detail` string rather than this application's structured error shape. With
+# the flag off this returns None for a missing header and for a header in any other scheme, and
+# the one refusal below covers both.
+#
+# It is still an `HTTPBearer`, so FastAPI records it in the generated OpenAPI document as an
+# HTTP bearer security scheme and marks every operation that depends on it. Writing the header
+# parsing by hand would have cost that, and an API whose schema does not say it needs a
+# credential is an API nobody can generate a working client for.
+_bearer = HTTPBearer(
+    scheme_name="MerchantApiKey",
+    description=(
+        "A merchant API key, presented as `Authorization: Bearer ar_dev_<credential>_<secret>`."
+        " Keys are issued by the operator command line and are never returned by this API."
+    ),
+    auto_error=False,
+)
+
+
+async def require_merchant(
+    session: SessionDep,
+    presented: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+) -> AuthenticatedMerchant:
+    """Establish which merchant this request acts for, or refuse it.
+
+    The one place an HTTP caller acquires a merchant identity. Every route that touches
+    merchant owned state depends on this, and the identifier it returns is what every scoped
+    query is filtered by. Nothing else in this application turns a request into a merchant: no
+    body field, no path parameter and no header other than this one.
+
+    The read is rolled back before the principal is returned, and that is load bearing rather
+    than tidiness. Without it, the transaction the service goes on to use would have begun at
+    the instant the caller was authenticated, and `audit_event.occurred_at` is
+    `transaction_timestamp()`. Every event a request wrote would then carry the moment its
+    credential was checked rather than the moment its work began, which would quietly change a
+    documented property of the audit trail. Ending the read here means the service opens its own
+    transaction, exactly as it does when the command line calls it. See docs/decisions.md.
+
+    Rolling back is safe because what is returned is two plain UUIDs. A principal built out of
+    the credential row would be expired by this, and expired again by every deliberate rollback
+    the services perform on a refusal.
+    """
+    if presented is None:
+        raise AuthenticationError()
+
+    principal = await MerchantCredentialService(session).authenticate(presented.credentials)
+    if principal is None:
+        raise AuthenticationError()
+
+    await session.rollback()
+    return principal
+
+
+MerchantDep = Annotated[AuthenticatedMerchant, Depends(require_merchant)]
