@@ -145,6 +145,7 @@ class CheckoutView(BaseModel):
     created_at: datetime
     expires_at: datetime
     cancelled_at: datetime | None
+    paid_at: datetime | None
 
     @classmethod
     def from_model(cls, checkout: CheckoutSession) -> Self:
@@ -163,6 +164,7 @@ class CheckoutView(BaseModel):
             created_at=checkout.created_at,
             expires_at=checkout.expires_at,
             cancelled_at=checkout.cancelled_at,
+            paid_at=checkout.paid_at,
         )
 
 
