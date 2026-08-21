@@ -65,8 +65,9 @@ PAYMENT_ADMITTED = "payment.admitted"
 
 # A payment is admitted because a buyer asked to pay. The provider has not been involved yet
 # and has said nothing, so attributing this to it would be attributing a decision to somebody
-# who has not made one. This names a role and not a verified identity: nothing authenticates
-# a caller yet.
+# who has not made one. This names a role and not a person. The credential that authorized the
+# request is recorded beside it, which says which merchant integration asked and deliberately
+# does not claim to say who was holding the key.
 ADMISSION_ACTOR = ActorType.BUYER
 
 
@@ -142,7 +143,13 @@ class PaymentAdmissionService:
         self._audit = AuditRepository(session)
 
     async def admit_payment(
-        self, checkout_id: uuid.UUID, *, idempotency_key: str, at: datetime | None = None
+        self,
+        checkout_id: uuid.UUID,
+        *,
+        merchant_id: uuid.UUID,
+        idempotency_key: str,
+        credential_id: uuid.UUID | None = None,
+        at: datetime | None = None,
     ) -> PaymentAdmission:
         """Decide whether this payment may happen, and record the decision before returning.
 
@@ -171,10 +178,23 @@ class PaymentAdmissionService:
 
         Nothing is dispatched. This returns an ADMITTED attempt, which means a provider may
         now be called and has not been.
+
+        `merchant_id` is the authenticated merchant and it is required. Step 1 fails to find a
+        quote that belongs to anybody else, so a cross merchant payment raises before step 2 is
+        reached, which means before an idempotency key can be matched and long before a provider
+        could be involved. That ordering is what makes the refusal cost a provider nothing: the
+        denial happens in the first statement of the first transaction.
+
+        The idempotency key is scoped by the checkout, and the checkout is scoped by the
+        merchant, so one merchant's key cannot resolve to another merchant's payment. Two
+        merchants may use the same key string against their own checkouts and they are two
+        payments, exactly as they were before authentication existed.
         """
         validate_idempotency_key(idempotency_key)
 
-        authorization = await self._execution.authorize_under_locks(checkout_id, at=at)
+        authorization = await self._execution.authorize_under_locks(
+            checkout_id, merchant_id=merchant_id, at=at
+        )
         existing = await self._attempts.get_by_identity(
             checkout_id=checkout_id, idempotency_key=idempotency_key
         )
@@ -259,6 +279,7 @@ class PaymentAdmissionService:
         await self._audit.append(
             merchant_id=attempt.merchant_id,
             actor_type=ADMISSION_ACTOR,
+            credential_id=credential_id,
             event_type=PAYMENT_ADMITTED,
             resource_type=PAYMENT_RESOURCE,
             resource_id=attempt.id,

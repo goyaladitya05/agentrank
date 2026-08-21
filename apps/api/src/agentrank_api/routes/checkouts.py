@@ -12,6 +12,12 @@ be a promise that a caller has seen everything when they have not.
 There is no completion endpoint and no payment endpoint. Nothing here moves money, and
 nothing here can. `prepare-execution` says a checkout is safe to attempt, which is not the
 same as attempted and is very much not the same as paid.
+
+Every operation here requires an authenticated merchant and acts only on that merchant's
+quotes. Preparation holds a merchant's stock, which was the first thing an anonymous caller
+could do that cost somebody something, and cancellation releases it. Both now need a
+credential, and both are scoped in SQL rather than checked afterwards, so a quote belonging to
+anybody else is not found rather than refused.
 """
 
 import uuid
@@ -28,13 +34,18 @@ from agentrank_api.checkout.schemas import (
     ExecutionPreparationView,
 )
 from agentrank_api.checkout.service import CheckoutService
-from agentrank_api.dependencies import SessionDep
+from agentrank_api.dependencies import MerchantDep, SessionDep
 from agentrank_api.errors import ErrorResponse
 
 router = APIRouter(prefix="/api/v1/commerce/checkouts", tags=["checkouts"])
 
 # Annotated because FastAPI types this parameter as an invariant mapping of Any.
-NOT_FOUND: dict[int | str, dict[str, Any]] = {status.HTTP_404_NOT_FOUND: {"model": ErrorResponse}}
+UNAUTHENTICATED: dict[int | str, dict[str, Any]] = {
+    status.HTTP_401_UNAUTHORIZED: {"model": ErrorResponse}
+}
+NOT_FOUND: dict[int | str, dict[str, Any]] = UNAUTHENTICATED | {
+    status.HTTP_404_NOT_FOUND: {"model": ErrorResponse}
+}
 NOT_FOUND_OR_CONFLICT: dict[int | str, dict[str, Any]] = NOT_FOUND | {
     status.HTTP_409_CONFLICT: {"model": ErrorResponse}
 }
@@ -46,7 +57,9 @@ NOT_FOUND_OR_CONFLICT: dict[int | str, dict[str, Any]] = NOT_FOUND | {
     status_code=status.HTTP_201_CREATED,
     responses=NOT_FOUND_OR_CONFLICT,
 )
-async def create_checkout(request: CreateCheckoutRequest, session: SessionDep) -> CheckoutView:
+async def create_checkout(
+    request: CreateCheckoutRequest, session: SessionDep, merchant: MerchantDep
+) -> CheckoutView:
     """Quote a selection of variants against a mandate.
 
     Prices come from the catalog, never from the request. The checkout, its lines and the
@@ -54,15 +67,30 @@ async def create_checkout(request: CreateCheckoutRequest, session: SessionDep) -
 
     This creates a quote. It does not authorize one: a total above what the mandate permits
     is quoted successfully and denied by the authorization read below.
+
+    The merchant comes from the credential and the body cannot name one. A mandate granted to
+    anybody else answers 404, so a caller cannot quote against an authorization that is not
+    theirs even knowing its identifier.
     """
-    checkout = await CheckoutService(session).create_checkout(request.to_command())
+    checkout = await CheckoutService(session).create_checkout(
+        request.to_command(merchant.merchant_id), credential_id=merchant.credential_id
+    )
     return CheckoutView.from_model(checkout)
 
 
 @router.get("/{checkout_id}", response_model=CheckoutView, responses=NOT_FOUND)
-async def get_checkout(checkout_id: uuid.UUID, session: SessionDep) -> CheckoutView:
-    """Fetch one quote with its lines, priced as they were quoted."""
-    checkout = await CheckoutService(session).get_checkout(checkout_id)
+async def get_checkout(
+    checkout_id: uuid.UUID, session: SessionDep, merchant: MerchantDep
+) -> CheckoutView:
+    """Fetch one of this merchant's quotes, with its lines priced as they were quoted.
+
+    Another merchant's quote answers 404, and so does an identifier nobody has ever used. The
+    two are the same response because the lookup has the merchant in it and found nothing, so
+    holding a checkout identifier is worth nothing to anybody but its merchant.
+    """
+    checkout = await CheckoutService(session).get_checkout(
+        checkout_id, merchant_id=merchant.merchant_id
+    )
     return CheckoutView.from_model(checkout)
 
 
@@ -72,7 +100,7 @@ async def get_checkout(checkout_id: uuid.UUID, session: SessionDep) -> CheckoutV
     responses=NOT_FOUND,
 )
 async def authorize_checkout(
-    checkout_id: uuid.UUID, session: SessionDep
+    checkout_id: uuid.UUID, session: SessionDep, merchant: MerchantDep
 ) -> CheckoutAuthorizationView:
     """Report whether this checkout is financially authorized right now, and if not, why.
 
@@ -81,7 +109,9 @@ async def authorize_checkout(
     against, and about the quote as recorded, so a catalog change since then cannot move the
     answer.
     """
-    decision = await CheckoutService(session).authorize_checkout(checkout_id)
+    decision = await CheckoutService(session).authorize_checkout(
+        checkout_id, merchant_id=merchant.merchant_id
+    )
     return CheckoutAuthorizationView.from_decision(decision)
 
 
@@ -91,7 +121,7 @@ async def authorize_checkout(
     responses=NOT_FOUND,
 )
 async def read_execution_authorization(
-    checkout_id: uuid.UUID, session: SessionDep
+    checkout_id: uuid.UUID, session: SessionDep, merchant: MerchantDep
 ) -> ExecutionAuthorizationView:
     """Report what both authorization gates say about this checkout right now.
 
@@ -103,7 +133,9 @@ async def read_execution_authorization(
     It is not called `execution-readiness`, because readiness also needs stock and this
     endpoint deliberately holds none.
     """
-    decision = await CheckoutExecutionService(session).execution_authorization(checkout_id)
+    decision = await CheckoutExecutionService(session).execution_authorization(
+        checkout_id, merchant_id=merchant.merchant_id
+    )
     return ExecutionAuthorizationView.from_decision(decision)
 
 
@@ -113,7 +145,7 @@ async def read_execution_authorization(
     responses=NOT_FOUND,
 )
 async def prepare_execution(
-    checkout_id: uuid.UUID, session: SessionDep
+    checkout_id: uuid.UUID, session: SessionDep, merchant: MerchantDep
 ) -> ExecutionPreparationView:
     """Make this checkout safe to attempt, or say exactly why it is not.
 
@@ -131,17 +163,23 @@ async def prepare_execution(
     Nothing here pays. Ready means a payment could be attempted, and no payment provider
     exists to attempt one.
     """
-    readiness = await CheckoutExecutionService(session).prepare_execution(checkout_id)
+    readiness = await CheckoutExecutionService(session).prepare_execution(
+        checkout_id, merchant_id=merchant.merchant_id
+    )
     return ExecutionPreparationView.from_readiness(readiness)
 
 
 @router.post("/{checkout_id}/cancel", response_model=CheckoutView, responses=NOT_FOUND)
-async def cancel_checkout(checkout_id: uuid.UUID, session: SessionDep) -> CheckoutView:
+async def cancel_checkout(
+    checkout_id: uuid.UUID, session: SessionDep, merchant: MerchantDep
+) -> CheckoutView:
     """Withdraw a quote.
 
     Idempotent: cancelling an already cancelled checkout returns it unchanged, moves nothing
     and records no second event. Cancellation is terminal, so there is no counterpart that
     reopens one.
     """
-    checkout = await CheckoutService(session).cancel_checkout(checkout_id)
+    checkout = await CheckoutService(session).cancel_checkout(
+        checkout_id, merchant_id=merchant.merchant_id, credential_id=merchant.credential_id
+    )
     return CheckoutView.from_model(checkout)

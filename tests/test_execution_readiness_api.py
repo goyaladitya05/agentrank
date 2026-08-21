@@ -13,6 +13,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from conftest import CredentialIssuer, bearer
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -75,11 +76,16 @@ async def shop(session: AsyncSession) -> dict[str, str]:
     }
 
 
+@pytest.fixture
+async def token(issue_credential: CredentialIssuer, shop: dict[str, str]) -> str:
+    """A key for the shop above. Every route exercised here requires one."""
+    return await issue_credential(uuid.UUID(shop["merchant_id"]))
+
+
 def quote(client: TestClient, shop: dict[str, str], variant: str = "black") -> str:
     created = client.post(
         CHECKOUTS_URL,
         json={
-            "merchant_id": shop["merchant_id"],
             "mandate_id": shop["mandate_id"],
             "items": [{"variant_id": shop[variant], "quantity": 1}],
         },
@@ -89,9 +95,9 @@ def quote(client: TestClient, shop: dict[str, str], variant: str = "black") -> s
 
 
 async def test_a_checkout_is_prepared_and_holds_stock(
-    catalog_settings: Settings, shop: dict[str, str]
+    catalog_settings: Settings, shop: dict[str, str], token: str
 ) -> None:
-    with TestClient(create_app(catalog_settings)) as client:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         checkout_id = quote(client, shop)
 
         response = client.post(f"{CHECKOUTS_URL}/{checkout_id}/prepare-execution")
@@ -121,10 +127,10 @@ async def test_a_checkout_is_prepared_and_holds_stock(
 
 
 async def test_a_semantic_denial_is_an_answer_and_not_an_error(
-    catalog_settings: Settings, shop: dict[str, str]
+    catalog_settings: Settings, shop: dict[str, str], token: str
 ) -> None:
     """A blue charger at the same price: the money is fine and the purchase is not."""
-    with TestClient(create_app(catalog_settings)) as client:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         checkout_id = quote(client, shop, variant="blue")
 
         response = client.post(f"{CHECKOUTS_URL}/{checkout_id}/prepare-execution")
@@ -142,9 +148,9 @@ async def test_a_semantic_denial_is_an_answer_and_not_an_error(
 
 
 async def test_an_empty_shelf_is_reported_with_the_numbers_that_decided_it(
-    catalog_settings: Settings, shop: dict[str, str]
+    catalog_settings: Settings, shop: dict[str, str], token: str
 ) -> None:
-    with TestClient(create_app(catalog_settings)) as client:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         first, second = quote(client, shop), quote(client, shop)
         assert client.post(f"{CHECKOUTS_URL}/{first}/prepare-execution").json()["ready"] is True
 
@@ -167,10 +173,10 @@ async def test_an_empty_shelf_is_reported_with_the_numbers_that_decided_it(
 
 
 async def test_the_authorization_read_reserves_nothing(
-    catalog_settings: Settings, shop: dict[str, str]
+    catalog_settings: Settings, shop: dict[str, str], token: str
 ) -> None:
     """Informational only. If it held stock it would be granting something."""
-    with TestClient(create_app(catalog_settings)) as client:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         first, second = quote(client, shop), quote(client, shop)
 
         read = client.get(f"{CHECKOUTS_URL}/{first}/execution-authorization")
@@ -183,9 +189,9 @@ async def test_the_authorization_read_reserves_nothing(
 
 
 async def test_a_cancelled_checkout_cannot_be_prepared(
-    catalog_settings: Settings, shop: dict[str, str]
+    catalog_settings: Settings, shop: dict[str, str], token: str
 ) -> None:
-    with TestClient(create_app(catalog_settings)) as client:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         checkout_id = quote(client, shop)
         assert client.post(f"{CHECKOUTS_URL}/{checkout_id}/cancel").status_code == 200
 
@@ -197,7 +203,7 @@ async def test_a_cancelled_checkout_cannot_be_prepared(
 
 
 async def test_a_mandate_with_no_constraints_fails_closed_on_the_wire(
-    catalog_settings: Settings, session: AsyncSession, shop: dict[str, str]
+    catalog_settings: Settings, session: AsyncSession, shop: dict[str, str], token: str
 ) -> None:
     """The dangerous case, read off the response: no semantic authorization means no."""
     unqualified = await MandateRepository(session).create(
@@ -209,11 +215,10 @@ async def test_a_mandate_with_no_constraints_fails_closed_on_the_wire(
     )
     await session.commit()
 
-    with TestClient(create_app(catalog_settings)) as client:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         created = client.post(
             CHECKOUTS_URL,
             json={
-                "merchant_id": shop["merchant_id"],
                 "mandate_id": str(unqualified.id),
                 "items": [{"variant_id": shop["black"], "quantity": 1}],
             },
@@ -231,8 +236,10 @@ async def test_a_mandate_with_no_constraints_fails_closed_on_the_wire(
         assert body["authorization"]["financial_authorization"]["allowed"] is True
 
 
-async def test_an_unknown_checkout_answers_a_structured_404(catalog_settings: Settings) -> None:
-    with TestClient(create_app(catalog_settings)) as client:
+async def test_an_unknown_checkout_answers_a_structured_404(
+    catalog_settings: Settings, shop: dict[str, str], token: str
+) -> None:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         missing = uuid.uuid7()
 
         for response in (

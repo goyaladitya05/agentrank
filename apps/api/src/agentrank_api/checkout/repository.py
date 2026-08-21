@@ -21,8 +21,14 @@ from agentrank_api.checkout.models import CheckoutLine, CheckoutSession, Checkou
 from agentrank_api.checkout.quote import QuotedLine, checkout_totals
 
 
-def checkout_lock_statement(checkout_id: uuid.UUID) -> Select[tuple[CheckoutSession]]:
+def checkout_lock_statement(
+    checkout_id: uuid.UUID, merchant_id: uuid.UUID
+) -> Select[tuple[CheckoutSession]]:
     """The statement that locks one checkout, written where a test can read it.
+
+    Merchant scoped, like every other read of this table. A quote belonging to somebody else is
+    not locked and not returned, and the caller sees exactly what it would see for a checkout
+    that does not exist.
 
     `FOR UPDATE` rather than a weaker mode, and specifically rather than relying on the
     reservation's foreign key. Inserting a reservation takes `FOR KEY SHARE` on the
@@ -42,7 +48,7 @@ def checkout_lock_statement(checkout_id: uuid.UUID) -> Select[tuple[CheckoutSess
     return (
         select(CheckoutSession)
         .options(selectinload(CheckoutSession.lines))
-        .where(CheckoutSession.id == checkout_id)
+        .where(CheckoutSession.id == checkout_id, CheckoutSession.merchant_id == merchant_id)
         .with_for_update(of=CheckoutSession)
         .execution_options(populate_existing=True)
     )
@@ -112,8 +118,19 @@ class CheckoutRepository:
         await self._session.flush()
         return checkout
 
-    async def get(self, checkout_id: uuid.UUID) -> CheckoutSession | None:
-        """Fetch one checkout with every line loaded, in the order they were quoted.
+    async def get(
+        self, checkout_id: uuid.UUID, *, merchant_id: uuid.UUID
+    ) -> CheckoutSession | None:
+        """Fetch one merchant's checkout, with every line loaded in the order they were quoted.
+
+        There is no unscoped counterpart, and that is the point rather than an inconvenience.
+        Every way of reading a quote out of this repository names the merchant it must belong
+        to, so authorizing at a route and then reading by identifier is not a mistake anybody
+        can make here: the method that would allow it does not exist.
+
+        The merchant is a condition in the SQL rather than a comparison afterwards. A quote
+        belonging to somebody else is simply absent from the result, so the caller cannot
+        distinguish it from one that was never written, and does not have to remember to.
 
         The lines are loaded eagerly and completely. Authorization sums their quantities,
         and a collection that is loaded lazily or partially would make that sum depend on
@@ -122,12 +139,15 @@ class CheckoutRepository:
         statement = (
             select(CheckoutSession)
             .options(selectinload(CheckoutSession.lines))
-            .where(CheckoutSession.id == checkout_id)
+            .where(CheckoutSession.id == checkout_id, CheckoutSession.merchant_id == merchant_id)
         )
         return (await self._session.execute(statement)).scalar_one_or_none()
 
-    async def get_for_update(self, checkout_id: uuid.UUID) -> CheckoutSession | None:
-        """Fetch one checkout and hold it against every other transaction until commit.
+    async def get_for_update(
+        self, checkout_id: uuid.UUID, *, merchant_id: uuid.UUID
+    ) -> CheckoutSession | None:
+        """Fetch one merchant's checkout and hold it against every other transaction until
+        commit.
 
         For an operation that is about to treat this checkout's status and expiry as
         authoritative, or about to change them. An unlocked read answers what was true
@@ -140,8 +160,12 @@ class CheckoutRepository:
 
         Second in the lock order, after the mandate and before the variant rows. See
         agentrank_api.locking.
+
+        Merchant scoped, exactly as the unlocked read is. Locking a row and then discovering it
+        belongs to somebody else would mean a foreign caller could make a merchant's own
+        request wait.
         """
-        statement = checkout_lock_statement(checkout_id)
+        statement = checkout_lock_statement(checkout_id, merchant_id)
         return (await self._session.execute(statement)).scalar_one_or_none()
 
     async def mark_paid(self, checkout: CheckoutSession) -> bool:

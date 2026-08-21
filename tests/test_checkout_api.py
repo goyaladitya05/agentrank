@@ -2,12 +2,17 @@
 
 Deliberately thin. Pricing, refusals and the authorization rules are asserted once at the
 service and domain levels; what is checked here is the wire contract.
+
+Every request here carries a merchant API key, because every one of these routes requires one.
+The merchant is the credential's and is not in any body, which is why `creation_body` no longer
+sends one. Cross merchant behavior is `tests/test_checkout_authorization_scope.py`.
 """
 
 import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from conftest import CredentialIssuer, bearer
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -51,20 +56,25 @@ async def quotable(session: AsyncSession) -> dict[str, uuid.UUID]:
     return {"merchant_id": merchant.id, "mandate_id": mandate.id, "variant_id": variant.id}
 
 
+@pytest.fixture
+async def token(issue_credential: CredentialIssuer, quotable: dict[str, uuid.UUID]) -> str:
+    """A key for the merchant above. Every route in this file requires one."""
+    return await issue_credential(quotable["merchant_id"])
+
+
 def creation_body(
     ids: dict[str, uuid.UUID], quantity: int = 1, **overrides: object
 ) -> dict[str, object]:
     return {
-        "merchant_id": str(ids["merchant_id"]),
         "mandate_id": str(ids["mandate_id"]),
         "items": [{"variant_id": str(ids["variant_id"]), "quantity": quantity}],
     } | overrides
 
 
 async def test_a_checkout_is_created_read_back_and_authorized(
-    catalog_settings: Settings, quotable: dict[str, uuid.UUID]
+    catalog_settings: Settings, quotable: dict[str, uuid.UUID], token: str
 ) -> None:
-    with TestClient(create_app(catalog_settings)) as client:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         created = client.post(CHECKOUTS_URL, json=creation_body(quotable))
         assert created.status_code == 201
         body = created.json()
@@ -100,10 +110,10 @@ async def test_a_checkout_is_created_read_back_and_authorized(
 
 
 async def test_a_quote_above_the_ceiling_is_created_and_then_denied(
-    catalog_settings: Settings, quotable: dict[str, uuid.UUID]
+    catalog_settings: Settings, quotable: dict[str, uuid.UUID], token: str
 ) -> None:
     """The graceful failure shape, over HTTP: 201 for the quote, denied for the money."""
-    with TestClient(create_app(catalog_settings)) as client:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         created = client.post(CHECKOUTS_URL, json=creation_body(quotable, quantity=2))
         assert created.status_code == 201
         assert created.json()["total_amount_minor"] == 2 * PRICE
@@ -114,9 +124,9 @@ async def test_a_quote_above_the_ceiling_is_created_and_then_denied(
 
 
 async def test_cancelling_is_idempotent_and_denies_the_checkout(
-    catalog_settings: Settings, quotable: dict[str, uuid.UUID]
+    catalog_settings: Settings, quotable: dict[str, uuid.UUID], token: str
 ) -> None:
-    with TestClient(create_app(catalog_settings)) as client:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         checkout_id = client.post(CHECKOUTS_URL, json=creation_body(quotable)).json()["id"]
 
         first = client.post(f"{CHECKOUTS_URL}/{checkout_id}/cancel")
@@ -130,8 +140,10 @@ async def test_cancelling_is_idempotent_and_denies_the_checkout(
         assert decision.json() == {"allowed": False, "violations": ["CHECKOUT_NOT_OPEN"]}
 
 
-async def test_an_unknown_checkout_gives_a_structured_404(catalog_settings: Settings) -> None:
-    with TestClient(create_app(catalog_settings)) as client:
+async def test_an_unknown_checkout_gives_a_structured_404(
+    catalog_settings: Settings, token: str
+) -> None:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         missing = uuid.uuid7()
         response = client.get(f"{CHECKOUTS_URL}/{missing}")
 
@@ -145,10 +157,10 @@ async def test_an_unknown_checkout_gives_a_structured_404(catalog_settings: Sett
 
 
 async def test_state_refusals_answer_409_and_name_the_reason(
-    catalog_settings: Settings, quotable: dict[str, uuid.UUID]
+    catalog_settings: Settings, quotable: dict[str, uuid.UUID], token: str
 ) -> None:
     """409 rather than 422: the request is well formed and the shelf is simply short."""
-    with TestClient(create_app(catalog_settings)) as client:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         response = client.post(CHECKOUTS_URL, json=creation_body(quotable, quantity=3))
 
         assert response.status_code == 409
@@ -159,9 +171,9 @@ async def test_state_refusals_answer_409_and_name_the_reason(
 
 
 async def test_malformed_creation_requests_answer_422(
-    catalog_settings: Settings, quotable: dict[str, uuid.UUID]
+    catalog_settings: Settings, quotable: dict[str, uuid.UUID], token: str
 ) -> None:
-    with TestClient(create_app(catalog_settings)) as client:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         assert client.post(CHECKOUTS_URL, json=creation_body(quotable, items=[])).status_code == 422
         assert (
             client.post(CHECKOUTS_URL, json=creation_body(quotable, quantity=0)).status_code == 422

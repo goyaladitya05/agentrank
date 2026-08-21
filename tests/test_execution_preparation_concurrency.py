@@ -139,18 +139,24 @@ async def shop(session: AsyncSession) -> Shop:
 
 
 async def prepare_in_new_session(
-    factory: async_sessionmaker[AsyncSession], checkout_id: uuid.UUID, *, at: datetime
+    factory: async_sessionmaker[AsyncSession],
+    checkout_id: uuid.UUID,
+    merchant_id: uuid.UUID,
+    *,
+    at: datetime,
 ) -> CheckoutExecutionReadiness:
     """One preparation on its own connection. It commits or rolls back before returning."""
     async with factory() as session:
-        return await CheckoutExecutionService(session).prepare_execution(checkout_id, at=at)
+        return await CheckoutExecutionService(session).prepare_execution(
+            checkout_id, merchant_id=merchant_id, at=at
+        )
 
 
 async def cancel_in_new_session(
-    factory: async_sessionmaker[AsyncSession], checkout_id: uuid.UUID
+    factory: async_sessionmaker[AsyncSession], checkout_id: uuid.UUID, merchant_id: uuid.UUID
 ) -> CheckoutSession:
     async with factory() as session:
-        return await CheckoutService(session).cancel_checkout(checkout_id)
+        return await CheckoutService(session).cancel_checkout(checkout_id, merchant_id=merchant_id)
 
 
 async def revoke_in_new_session(
@@ -200,11 +206,15 @@ async def test_a_cancellation_in_flight_blocks_and_then_refuses_preparation(
 
     async with asyncio.timeout(CONCURRENCY_TIMEOUT):
         async with factory() as canceller:
-            withdrawn = await CheckoutRepository(canceller).get_for_update(checkout.id)
+            withdrawn = await CheckoutRepository(canceller).get_for_update(
+                checkout.id, merchant_id=checkout.merchant_id
+            )
             assert withdrawn is not None
             assert await CheckoutRepository(canceller).cancel(withdrawn) is True
 
-            attempt = asyncio.create_task(prepare_in_new_session(factory, checkout.id, at=NOW))
+            attempt = asyncio.create_task(
+                prepare_in_new_session(factory, checkout.id, shop.merchant_id, at=NOW)
+            )
             # Blocked on the checkout row rather than reading around it.
             assert await still_waiting(attempt)
             await canceller.commit()
@@ -242,7 +252,9 @@ async def test_a_revocation_in_flight_blocks_and_then_refuses_preparation(
             assert withdrawn is not None
             assert await MandateRepository(revoker).revoke(withdrawn) is True
 
-            attempt = asyncio.create_task(prepare_in_new_session(factory, checkout.id, at=NOW))
+            attempt = asyncio.create_task(
+                prepare_in_new_session(factory, checkout.id, shop.merchant_id, at=NOW)
+            )
             assert await still_waiting(attempt)
             await revoker.commit()
 
@@ -279,11 +291,13 @@ async def test_preparation_holds_the_mandate_and_the_checkout_against_withdrawal
             await InventoryReservationRepository(gate).lock_variants(
                 merchant_id=shop.merchant_id, variant_ids=[shop.black]
             )
-            attempt = asyncio.create_task(prepare_in_new_session(factory, checkout.id, at=NOW))
+            attempt = asyncio.create_task(
+                prepare_in_new_session(factory, checkout.id, shop.merchant_id, at=NOW)
+            )
             assert await still_waiting(attempt)
 
             withdrawals: list[asyncio.Task[object]] = [
-                asyncio.create_task(cancel_in_new_session(factory, checkout.id)),
+                asyncio.create_task(cancel_in_new_session(factory, checkout.id, shop.merchant_id)),
                 asyncio.create_task(
                     revoke_in_new_session(factory, shop.mandate.id, shop.merchant_id)
                 ),
@@ -332,7 +346,9 @@ async def test_expiry_crossed_while_waiting_for_stock_refuses(
             await InventoryReservationRepository(gate).lock_variants(
                 merchant_id=shop.merchant_id, variant_ids=[shop.black]
             )
-            attempt = asyncio.create_task(prepare_in_new_session(factory, checkout.id, at=moment))
+            attempt = asyncio.create_task(
+                prepare_in_new_session(factory, checkout.id, shop.merchant_id, at=moment)
+            )
             # Held past the expiry, so the quote lapses while the attempt is blocked.
             assert await still_waiting(attempt)
             await gate.rollback()
@@ -364,10 +380,12 @@ async def test_two_concurrent_cancellations_transition_once(
 
     async with asyncio.timeout(CONCURRENCY_TIMEOUT):
         async with factory() as gate:
-            await CheckoutRepository(gate).get_for_update(checkout.id)
+            await CheckoutRepository(gate).get_for_update(
+                checkout.id, merchant_id=checkout.merchant_id
+            )
             attempts: list[asyncio.Task[object]] = [
-                asyncio.create_task(cancel_in_new_session(factory, checkout.id)),
-                asyncio.create_task(cancel_in_new_session(factory, checkout.id)),
+                asyncio.create_task(cancel_in_new_session(factory, checkout.id, shop.merchant_id)),
+                asyncio.create_task(cancel_in_new_session(factory, checkout.id, shop.merchant_id)),
             ]
             assert await still_waiting(*attempts)
             await gate.rollback()
@@ -451,7 +469,9 @@ async def test_preparation_takes_its_locks_in_the_documented_order(
     # Nothing above takes a row lock, but clearing says so rather than assuming it.
     row_locks.clear()
 
-    readiness = await CheckoutExecutionService(session).prepare_execution(checkout.id, at=NOW)
+    readiness = await CheckoutExecutionService(session).prepare_execution(
+        checkout.id, merchant_id=checkout.merchant_id, at=NOW
+    )
 
     assert readiness.ready
     assert [table for table, _ in groupby(row_locks)] == [

@@ -107,7 +107,9 @@ async def prepared(session: AsyncSession, shop: Shop) -> CheckoutSession:
         expires_at=NOW + HOUR,
     )
     await session.commit()
-    readiness = await CheckoutExecutionService(session).prepare_execution(checkout.id, at=NOW)
+    readiness = await CheckoutExecutionService(session).prepare_execution(
+        checkout.id, merchant_id=checkout.merchant_id, at=NOW
+    )
     assert readiness.ready
     return checkout
 
@@ -115,7 +117,7 @@ async def prepared(session: AsyncSession, shop: Shop) -> CheckoutSession:
 async def admitted(session: AsyncSession, shop: Shop, *, key: str = KEY) -> PaymentAttempt:
     checkout = await prepared(session, shop)
     admission = await PaymentAdmissionService(session).admit_payment(
-        checkout.id, idempotency_key=key, at=NOW
+        checkout.id, merchant_id=checkout.merchant_id, idempotency_key=key, at=NOW
     )
     assert admission.attempt is not None
     return admission.attempt
@@ -160,7 +162,9 @@ async def test_a_lost_response_is_resolved_by_reconciliation(
     provider.default = FakeOutcome.LOST_RESPONSE
     checkout = await prepared(session, shop)
     admission_service = PaymentAdmissionService(session)
-    admission = await admission_service.admit_payment(checkout.id, idempotency_key=KEY, at=NOW)
+    admission = await admission_service.admit_payment(
+        checkout.id, merchant_id=checkout.merchant_id, idempotency_key=KEY, at=NOW
+    )
     assert admission.attempt is not None
     attempt_id = admission.attempt.id
     reservation_id = admission.attempt.reservation_id
@@ -179,7 +183,9 @@ async def test_a_lost_response_is_resolved_by_reconciliation(
     assert provider.charges == 1
 
     # The client retries. It reaches the same attempt and no provider.
-    retry = await admission_service.admit_payment(checkout.id, idempotency_key=KEY, at=NOW)
+    retry = await admission_service.admit_payment(
+        checkout.id, merchant_id=checkout.merchant_id, idempotency_key=KEY, at=NOW
+    )
     assert retry.attempt is not None
     assert retry.attempt.id == attempt_id
     assert retry.created is False
@@ -194,7 +200,7 @@ async def test_a_lost_response_is_resolved_by_reconciliation(
     assert resolved.attempt.provider_reference is not None
     assert resolved.attempt.resolved_at is not None
 
-    paid = await CheckoutRepository(session).get(checkout.id)
+    paid = await CheckoutRepository(session).get(checkout.id, merchant_id=checkout.merchant_id)
     assert paid is not None
     assert paid.status is CheckoutStatus.PAID
     consumed = await InventoryReservationRepository(session).get(reservation_id)
@@ -236,7 +242,9 @@ async def test_reconciliation_resolves_a_definitive_decline(
     assert reservation is not None
     assert reservation.status is ReservationStatus.RELEASED
     assert await stock(session, shop.black) == before
-    checkout = await CheckoutRepository(session).get(attempt.checkout_id)
+    checkout = await CheckoutRepository(session).get(
+        attempt.checkout_id, merchant_id=attempt.merchant_id
+    )
     assert checkout is not None
     assert checkout.status is CheckoutStatus.OPEN
 
@@ -420,11 +428,11 @@ async def test_a_reconciled_success_after_expiry_is_honoured(
     resolved = await service.reconcile(attempt_id)
 
     assert resolved.attempt.status is PaymentAttemptStatus.SUCCEEDED
-    checkout = await CheckoutRepository(session).get(checkout_id)
+    checkout = await CheckoutRepository(session).get(checkout_id, merchant_id=shop.merchant_id)
     assert checkout is not None
     assert checkout.status is CheckoutStatus.PAID
     lapsed = await CheckoutExecutionService(session).execution_authorization(
-        checkout_id, at=NOW + HOUR + HOUR
+        checkout_id, merchant_id=shop.merchant_id, at=NOW + HOUR + HOUR
     )
     assert not lapsed.authorized
 
@@ -440,7 +448,9 @@ async def test_an_unknown_payment_blocks_a_new_one_until_it_is_resolved(
     provider.default = FakeOutcome.AMBIGUOUS
     checkout = await prepared(session, shop)
     admission_service = PaymentAdmissionService(session)
-    first = await admission_service.admit_payment(checkout.id, idempotency_key=KEY, at=NOW)
+    first = await admission_service.admit_payment(
+        checkout.id, merchant_id=checkout.merchant_id, idempotency_key=KEY, at=NOW
+    )
     assert first.attempt is not None
     # Read before the refusal below rolls back and expires the attempt it names.
     first_id = first.attempt.id
@@ -448,7 +458,9 @@ async def test_an_unknown_payment_blocks_a_new_one_until_it_is_resolved(
     service = PaymentExecutionService(session, provider)
     await service.dispatch(first_id)
 
-    blocked = await admission_service.admit_payment(checkout.id, idempotency_key=OTHER_KEY, at=NOW)
+    blocked = await admission_service.admit_payment(
+        checkout.id, merchant_id=checkout.merchant_id, idempotency_key=OTHER_KEY, at=NOW
+    )
     assert not blocked.admitted
     assert provider.executions_for(OTHER_KEY) == 0
 
@@ -460,10 +472,14 @@ async def test_an_unknown_payment_blocks_a_new_one_until_it_is_resolved(
     provider.executions.pop()
     await service.reconcile(first_id)
 
-    readiness = await CheckoutExecutionService(session).prepare_execution(checkout.id, at=NOW)
+    readiness = await CheckoutExecutionService(session).prepare_execution(
+        checkout.id, merchant_id=checkout.merchant_id, at=NOW
+    )
     assert readiness.ready
     provider.set_outcome(OTHER_KEY, FakeOutcome.SUCCESS)
-    retry = await admission_service.admit_payment(checkout.id, idempotency_key=OTHER_KEY, at=NOW)
+    retry = await admission_service.admit_payment(
+        checkout.id, merchant_id=checkout.merchant_id, idempotency_key=OTHER_KEY, at=NOW
+    )
     assert retry.admitted
     assert retry.attempt is not None
     outcome = await service.dispatch(retry.attempt.id)

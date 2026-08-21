@@ -108,7 +108,9 @@ async def prepared(session: AsyncSession, shop: Shop) -> CheckoutSession:
         expires_at=NOW + HOUR,
     )
     await session.commit()
-    readiness = await CheckoutExecutionService(session).prepare_execution(checkout.id, at=NOW)
+    readiness = await CheckoutExecutionService(session).prepare_execution(
+        checkout.id, merchant_id=checkout.merchant_id, at=NOW
+    )
     assert readiness.ready
     return checkout
 
@@ -116,7 +118,7 @@ async def prepared(session: AsyncSession, shop: Shop) -> CheckoutSession:
 async def admitted(session: AsyncSession, shop: Shop, *, key: str = KEY) -> PaymentAttempt:
     checkout = await prepared(session, shop)
     admission = await PaymentAdmissionService(session).admit_payment(
-        checkout.id, idempotency_key=key, at=NOW
+        checkout.id, merchant_id=checkout.merchant_id, idempotency_key=key, at=NOW
     )
     assert admission.attempt is not None
     return admission.attempt
@@ -205,7 +207,7 @@ async def test_abandoning_an_unresolvable_payment_frees_the_stock_and_the_mandat
     assert reservation.status is ReservationStatus.RELEASED
     # Released, not consumed. Nothing was sold, because nobody knows whether anything was paid.
     assert await stock(session, shop.black) == before
-    checkout = await CheckoutRepository(session).get(checkout_id)
+    checkout = await CheckoutRepository(session).get(checkout_id, merchant_id=shop.merchant_id)
     assert checkout is not None
     assert checkout.status is CheckoutStatus.OPEN
     assert await PaymentAttemptRepository(session).get_open_for_mandate(shop.mandate.id) is None
@@ -393,11 +395,13 @@ async def test_an_abandoned_checkout_can_be_paid_for_again(
         attempt.id, reason=AbandonmentReason.PROVIDER_CANNOT_CONFIRM
     )
 
-    readiness = await CheckoutExecutionService(session).prepare_execution(checkout_id, at=NOW)
+    readiness = await CheckoutExecutionService(session).prepare_execution(
+        checkout_id, merchant_id=shop.merchant_id, at=NOW
+    )
     assert readiness.ready
     provider.set_outcome(OTHER_KEY, FakeOutcome.SUCCESS)
     retry = await PaymentAdmissionService(session).admit_payment(
-        checkout_id, idempotency_key=OTHER_KEY, at=NOW
+        checkout_id, merchant_id=shop.merchant_id, idempotency_key=OTHER_KEY, at=NOW
     )
     assert retry.admitted
     assert retry.attempt is not None

@@ -125,7 +125,7 @@ def factory(catalog_engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
 
 
 async def reserve_in_new_session(
-    factory: async_sessionmaker[AsyncSession], checkout_id: uuid.UUID
+    factory: async_sessionmaker[AsyncSession], checkout_id: uuid.UUID, merchant_id: uuid.UUID
 ) -> ReservationOutcome:
     """One reservation attempt on its own connection, committed before it returns.
 
@@ -133,7 +133,7 @@ async def reserve_in_new_session(
     the real handover rather than one transaction sitting on a lock forever.
     """
     async with factory() as session:
-        checkout = await CheckoutRepository(session).get(checkout_id)
+        checkout = await CheckoutRepository(session).get(checkout_id, merchant_id=merchant_id)
         assert checkout is not None
         outcome = await InventoryReservationService(session).reserve(
             checkout, expires_at=NOW + HOUR, at=NOW
@@ -316,8 +316,8 @@ async def test_two_concurrent_attempts_on_the_last_unit_resolve_to_one(
                 merchant_id=shop.merchant_id, variant_ids=[shop.charger]
             )
             attempts = [
-                asyncio.create_task(reserve_in_new_session(factory, first.id)),
-                asyncio.create_task(reserve_in_new_session(factory, second.id)),
+                asyncio.create_task(reserve_in_new_session(factory, first.id, first.merchant_id)),
+                asyncio.create_task(reserve_in_new_session(factory, second.id, second.merchant_id)),
             ]
             # Both are inside their transactions and waiting on the row this one holds.
             assert await still_waiting(*attempts)
@@ -362,8 +362,12 @@ async def test_two_concurrent_multi_variant_attempts_do_not_deadlock(
                 merchant_id=shop.merchant_id, variant_ids=[shop.charger, shop.cable]
             )
             attempts = [
-                asyncio.create_task(reserve_in_new_session(factory, forward.id)),
-                asyncio.create_task(reserve_in_new_session(factory, backward.id)),
+                asyncio.create_task(
+                    reserve_in_new_session(factory, forward.id, forward.merchant_id)
+                ),
+                asyncio.create_task(
+                    reserve_in_new_session(factory, backward.id, backward.merchant_id)
+                ),
             ]
             assert await still_waiting(*attempts)
             await gate.rollback()

@@ -15,6 +15,16 @@ application is built and configured by whoever built it, which for now is a dete
 
 Nothing here exposes a provider's vocabulary. What a caller reads is this application's own
 record of what happened, which is the only thing they should be acting on.
+
+Every operation here requires an authenticated merchant and acts only on that merchant's
+payments. This is the highest risk surface in the application, so the rule is stated twice: a
+cross merchant request answers 404, and it answers 404 having called no provider at all. The
+denial happens on the first statement of the first transaction, which is well before anything
+external could be involved.
+
+Operator recovery is still absent, and authentication does not change that. There is no
+abandon, resume or sweep endpoint. Those move money or release stock on a decision, and the
+surface for them is the command line. See docs/security.md.
 """
 
 import uuid
@@ -22,7 +32,7 @@ from typing import Any
 
 from fastapi import APIRouter, status
 
-from agentrank_api.dependencies import ProviderDep, SessionDep
+from agentrank_api.dependencies import MerchantDep, ProviderDep, SessionDep
 from agentrank_api.errors import ErrorResponse
 from agentrank_api.payments.schemas import (
     CreatePaymentRequest,
@@ -35,7 +45,12 @@ from agentrank_api.payments.service import PaymentService
 router = APIRouter(prefix="/api/v1/commerce", tags=["payments"])
 
 # Annotated because FastAPI types this parameter as an invariant mapping of Any.
-NOT_FOUND: dict[int | str, dict[str, Any]] = {status.HTTP_404_NOT_FOUND: {"model": ErrorResponse}}
+UNAUTHENTICATED: dict[int | str, dict[str, Any]] = {
+    status.HTTP_401_UNAUTHORIZED: {"model": ErrorResponse}
+}
+NOT_FOUND: dict[int | str, dict[str, Any]] = UNAUTHENTICATED | {
+    status.HTTP_404_NOT_FOUND: {"model": ErrorResponse}
+}
 NOT_FOUND_OR_CONFLICT: dict[int | str, dict[str, Any]] = NOT_FOUND | {
     status.HTTP_409_CONFLICT: {"model": ErrorResponse}
 }
@@ -51,6 +66,7 @@ async def pay_checkout(
     request: CreatePaymentRequest,
     session: SessionDep,
     provider: ProviderDep,
+    merchant: MerchantDep,
 ) -> PaymentView:
     """Pay for this checkout, or say exactly why it may not be paid for.
 
@@ -78,24 +94,42 @@ async def pay_checkout(
     Admitted does not mean paid. Read `attempt.status`: SUCCEEDED means the money moved, FAILED
     means it definitively did not, and UNKNOWN means nobody knows yet and the payment has to be
     reconciled rather than retried.
+
+    A checkout belonging to another merchant answers 404 and reaches no provider. The refusal is
+    decided by the first statement of admission, before an idempotency key is looked up and
+    before anything is written, so a caller cannot use this route to make this application talk
+    to a processor about somebody else's quote.
+
+    Idempotency is unchanged by authentication and is scoped exactly as it was: one key against
+    one checkout is one payment. Because a checkout belongs to one merchant, two merchants using
+    the same key string are two payments and neither can retrieve the other's.
     """
     result = await PaymentService(session, provider).pay(
-        checkout_id, idempotency_key=request.resolve_key()
+        checkout_id,
+        merchant_id=merchant.merchant_id,
+        idempotency_key=request.resolve_key(),
+        credential_id=merchant.credential_id,
     )
     return PaymentView.from_admission(result.admission, result.attempt)
 
 
 @router.get("/payments/{attempt_id}", response_model=PaymentAttemptView, responses=NOT_FOUND)
 async def get_payment(
-    attempt_id: uuid.UUID, session: SessionDep, provider: ProviderDep
+    attempt_id: uuid.UUID, session: SessionDep, provider: ProviderDep, merchant: MerchantDep
 ) -> PaymentAttemptView:
     """Fetch one payment, with the amount and the currency that were frozen for it.
 
     A read. Nothing is written, no provider is asked and no clock decides anything: this is
     what the application currently believes, which for a resolved payment is final and for an
     unresolved one is exactly the uncertainty reconciliation exists to end.
+
+    Another merchant's payment answers 404, indistinguishably from an identifier nobody has ever
+    used. A payment attempt identifier travels: it is in this application's own responses and it
+    will be in a provider dashboard, so holding one must be worth nothing to anybody else.
     """
-    attempt = await PaymentService(session, provider).get_attempt(attempt_id)
+    attempt = await PaymentService(session, provider).get_attempt_for_merchant(
+        attempt_id, merchant_id=merchant.merchant_id
+    )
     return PaymentAttemptView.from_model(attempt)
 
 
@@ -105,7 +139,7 @@ async def get_payment(
     responses=NOT_FOUND_OR_CONFLICT,
 )
 async def reconcile_payment(
-    attempt_id: uuid.UUID, session: SessionDep, provider: ProviderDep
+    attempt_id: uuid.UUID, session: SessionDep, provider: ProviderDep, merchant: MerchantDep
 ) -> ReconciliationView:
     """Ask the provider what happened to a payment whose result is unresolved.
 
@@ -117,6 +151,13 @@ async def reconcile_payment(
     anything, and an attempt that is still unresolved is queried again and resolved at most
     once. A payment that has never been dispatched answers 409 `payment_not_dispatched`,
     because what it needs is a payment request rather than a query.
+
+    The one read shaped operation here that talks to an external system, which is why ownership
+    is established before anything is asked. Another merchant's payment answers 404 and the
+    provider is never questioned, so this route cannot be used to make this application probe a
+    processor about a payment the caller has nothing to do with.
     """
-    outcome = await PaymentService(session, provider).reconcile(attempt_id)
+    outcome = await PaymentService(session, provider).reconcile_for_merchant(
+        attempt_id, merchant_id=merchant.merchant_id
+    )
     return ReconciliationView.from_outcome(outcome)

@@ -92,7 +92,7 @@ async def test_a_checkout_persists_with_its_lines(session: AsyncSession, seller:
     await session.commit()
     session.expunge_all()
 
-    found = await CheckoutRepository(session).get(created.id)
+    found = await CheckoutRepository(session).get(created.id, merchant_id=created.merchant_id)
     assert found is not None
     assert found.merchant_id == seller.merchant_id
     assert found.mandate_id == seller.mandate.id

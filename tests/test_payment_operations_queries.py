@@ -116,7 +116,9 @@ async def prepared(session: AsyncSession, shop: Shop) -> CheckoutSession:
         expires_at=NOW + HOUR,
     )
     await session.commit()
-    readiness = await CheckoutExecutionService(session).prepare_execution(checkout.id, at=NOW)
+    readiness = await CheckoutExecutionService(session).prepare_execution(
+        checkout.id, merchant_id=checkout.merchant_id, at=NOW
+    )
     assert readiness.ready
     return checkout
 
@@ -125,7 +127,7 @@ async def admitted(session: AsyncSession, shop: Shop, *, key: str) -> PaymentAtt
     """A payment that has provably never reached a provider."""
     checkout = await prepared(session, shop)
     admission = await PaymentAdmissionService(session).admit_payment(
-        checkout.id, idempotency_key=key, at=NOW
+        checkout.id, merchant_id=checkout.merchant_id, idempotency_key=key, at=NOW
     )
     assert admission.attempt is not None
     return admission.attempt

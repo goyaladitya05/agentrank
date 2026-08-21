@@ -189,7 +189,7 @@ async def test_a_later_catalog_price_change_does_not_move_an_existing_quote(
     await session.commit()
 
     session.expunge_all()
-    reread = await service.get_checkout(checkout.id)
+    reread = await service.get_checkout(checkout.id, merchant_id=checkout.merchant_id)
     assert reread.lines[0].unit_price_amount_minor == CHARGER
     assert reread.subtotal_amount_minor == 2 * CHARGER
     assert reread.total_amount_minor == 2 * CHARGER
@@ -213,7 +213,7 @@ async def test_a_later_catalog_edit_does_not_move_an_existing_quotes_description
     await session.commit()
 
     session.expunge_all()
-    reread = await service.get_checkout(checkout.id)
+    reread = await service.get_checkout(checkout.id, merchant_id=checkout.merchant_id)
     assert reread.lines[0].variant_attributes == {"color": "black", "wattage": 100}
     assert reread.lines[0].product_category == "chargers"
 
@@ -347,7 +347,7 @@ async def test_an_unknown_merchant_mandate_or_variant_is_not_found(
     assert unknown_variant.value.resource == "variant"
 
     with pytest.raises(NotFoundError) as unknown_checkout:
-        await service.get_checkout(missing)
+        await service.get_checkout(missing, merchant_id=uuid.uuid7())
     assert unknown_checkout.value.resource == "checkout"
 
 
@@ -413,13 +413,13 @@ async def test_cancelling_records_one_event_and_repeating_records_none(
     checkout = await service.create_checkout(request_for(shop))
     quoted = checkout.total_amount_minor
 
-    cancelled = await service.cancel_checkout(checkout.id)
+    cancelled = await service.cancel_checkout(checkout.id, merchant_id=checkout.merchant_id)
     assert cancelled.status is CheckoutStatus.CANCELLED
     assert cancelled.cancelled_at is not None
     # Withdrawing a quote does not rewrite what was quoted.
     assert cancelled.total_amount_minor == quoted
 
-    again = await service.cancel_checkout(checkout.id)
+    again = await service.cancel_checkout(checkout.id, merchant_id=checkout.merchant_id)
     assert again.cancelled_at == cancelled.cancelled_at
 
     events = await AuditRepository(committed).list_for_resource(
@@ -432,7 +432,7 @@ async def test_cancelling_records_one_event_and_repeating_records_none(
 
 async def test_cancelling_an_unknown_checkout_is_not_found(session: AsyncSession) -> None:
     with pytest.raises(NotFoundError) as unknown:
-        await CheckoutService(session).cancel_checkout(uuid.uuid7())
+        await CheckoutService(session).cancel_checkout(uuid.uuid7(), merchant_id=uuid.uuid7())
     assert unknown.value.resource == "checkout"
 
 
@@ -462,7 +462,7 @@ async def test_a_quote_above_the_ceiling_is_a_valid_quote_that_is_denied(
     assert await committed.get(CheckoutSession, checkout.id) is not None
     assert checkout.total_amount_minor == 2 * CHARGER
 
-    decision = await service.authorize_checkout(checkout.id)
+    decision = await service.authorize_checkout(checkout.id, merchant_id=checkout.merchant_id)
     assert not decision.allowed
     assert decision.violations == (CheckoutAuthorizationViolation.MAX_TOTAL_EXCEEDED,)
 
@@ -470,7 +470,9 @@ async def test_a_quote_above_the_ceiling_is_a_valid_quote_that_is_denied(
     affordable = await service.create_checkout(
         request_for(shop, CheckoutItem(variant_id=shop.charger.id, quantity=1), mandate_id=tight.id)
     )
-    assert (await service.authorize_checkout(affordable.id)).allowed
+    assert (
+        await service.authorize_checkout(affordable.id, merchant_id=affordable.merchant_id)
+    ).allowed
 
 
 async def test_a_quote_in_another_currency_than_the_mandate_is_denied(
@@ -482,7 +484,7 @@ async def test_a_quote_in_another_currency_than_the_mandate_is_denied(
     )
     assert checkout.currency == "EUR"
 
-    decision = await service.authorize_checkout(checkout.id)
+    decision = await service.authorize_checkout(checkout.id, merchant_id=checkout.merchant_id)
     assert decision.violations == (CheckoutAuthorizationViolation.CURRENCY_MISMATCH,)
 
 
@@ -492,8 +494,10 @@ async def test_authorization_answers_about_the_instant_it_is_asked_about(
     service = CheckoutService(session)
     checkout = await service.create_checkout(request_for(shop))
 
-    assert (await service.authorize_checkout(checkout.id)).allowed
-    later = await service.authorize_checkout(checkout.id, at=NOW + 2 * HOUR)
+    assert (await service.authorize_checkout(checkout.id, merchant_id=checkout.merchant_id)).allowed
+    later = await service.authorize_checkout(
+        checkout.id, merchant_id=checkout.merchant_id, at=NOW + 2 * HOUR
+    )
     assert later.violations == (
         CheckoutAuthorizationViolation.MANDATE_EXPIRED,
         CheckoutAuthorizationViolation.CHECKOUT_EXPIRED,

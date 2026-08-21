@@ -118,7 +118,9 @@ async def prepared(session: AsyncSession, shop: Shop) -> CheckoutSession:
         expires_at=NOW + HOUR,
     )
     await session.commit()
-    readiness = await CheckoutExecutionService(session).prepare_execution(checkout.id, at=NOW)
+    readiness = await CheckoutExecutionService(session).prepare_execution(
+        checkout.id, merchant_id=checkout.merchant_id, at=NOW
+    )
     assert readiness.ready
     return checkout
 
@@ -126,7 +128,7 @@ async def prepared(session: AsyncSession, shop: Shop) -> CheckoutSession:
 async def admitted(session: AsyncSession, shop: Shop, *, key: str = KEY) -> PaymentAttempt:
     checkout = await prepared(session, shop)
     admission = await PaymentAdmissionService(session).admit_payment(
-        checkout.id, idempotency_key=key, at=NOW
+        checkout.id, merchant_id=checkout.merchant_id, idempotency_key=key, at=NOW
     )
     assert admission.attempt is not None
     return admission.attempt
@@ -187,7 +189,7 @@ async def test_a_payment_that_never_reached_the_provider_terminates_without_a_se
     """
     checkout = await prepared(session, shop)
     admission = await PaymentAdmissionService(session).admit_payment(
-        checkout.id, idempotency_key=KEY, at=NOW
+        checkout.id, merchant_id=checkout.merchant_id, idempotency_key=KEY, at=NOW
     )
     assert admission.attempt is not None
     attempt_id = admission.attempt.id
@@ -238,7 +240,9 @@ async def test_a_payment_that_never_reached_the_provider_terminates_without_a_se
     assert released.status is ReservationStatus.RELEASED
     # The stock came back rather than being sold. A payment that never happened sells nothing.
     assert await stock(session, shop.black) == before
-    still_open = await CheckoutRepository(session).get(checkout.id)
+    still_open = await CheckoutRepository(session).get(
+        checkout.id, merchant_id=checkout.merchant_id
+    )
     assert still_open is not None
     assert still_open.status is CheckoutStatus.OPEN
 
@@ -249,10 +253,12 @@ async def test_a_payment_that_never_reached_the_provider_terminates_without_a_se
     # And the checkout can be paid for again, through the ordinary path: a fresh hold and a
     # new identity. Nothing about the recovery re-sent the old one.
     provider.set_outcome(OTHER_KEY, FakeOutcome.SUCCESS)
-    readiness = await CheckoutExecutionService(session).prepare_execution(checkout.id, at=NOW)
+    readiness = await CheckoutExecutionService(session).prepare_execution(
+        checkout.id, merchant_id=checkout.merchant_id, at=NOW
+    )
     assert readiness.ready
     retry = await PaymentAdmissionService(session).admit_payment(
-        checkout.id, idempotency_key=OTHER_KEY, at=NOW
+        checkout.id, merchant_id=checkout.merchant_id, idempotency_key=OTHER_KEY, at=NOW
     )
     assert retry.admitted
     assert retry.attempt is not None

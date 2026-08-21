@@ -580,7 +580,9 @@ class PaymentExecutionService:
         # attempt and the mandate to one merchant, so this selects the same row an unscoped
         # read would have.
         await self._mandates.get_for_update(found.mandate_id, merchant_id=found.merchant_id)
-        checkout = await self._checkouts.get_for_update(found.checkout_id)
+        checkout = await self._checkouts.get_for_update(
+            found.checkout_id, merchant_id=found.merchant_id
+        )
         if checkout is None:
             # Not reachable through the schema: the foreign key onto the checkout is RESTRICT.
             raise NotFoundError("checkout", str(found.checkout_id))

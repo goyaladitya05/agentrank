@@ -17,6 +17,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from conftest import CredentialIssuer, bearer
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -83,11 +84,16 @@ async def shop(session: AsyncSession) -> dict[str, str]:
     }
 
 
+@pytest.fixture
+async def token(issue_credential: CredentialIssuer, shop: dict[str, str]) -> str:
+    """A key for the shop above. Every route exercised here requires one."""
+    return await issue_credential(uuid.UUID(shop["merchant_id"]))
+
+
 def quote(client: TestClient, shop: dict[str, str], variant: str = "black") -> str:
     created = client.post(
         CHECKOUTS_URL,
         json={
-            "merchant_id": shop["merchant_id"],
             "mandate_id": shop["mandate_id"],
             "items": [{"variant_id": shop[variant], "quantity": 1}],
         },
@@ -105,10 +111,10 @@ def prepared(client: TestClient, shop: dict[str, str], variant: str = "black") -
 
 
 async def test_a_prepared_checkout_is_paid(
-    catalog_settings: Settings, shop: dict[str, str]
+    catalog_settings: Settings, shop: dict[str, str], token: str
 ) -> None:
     provider = FakePaymentProvider(default=FakeOutcome.SUCCESS)
-    with TestClient(create_app(catalog_settings, provider)) as client:
+    with TestClient(create_app(catalog_settings, provider), headers=bearer(token)) as client:
         checkout_id = prepared(client, shop)
 
         response = client.post(
@@ -143,11 +149,11 @@ async def test_a_prepared_checkout_is_paid(
 
 
 async def test_the_same_key_answers_with_the_same_payment(
-    catalog_settings: Settings, shop: dict[str, str]
+    catalog_settings: Settings, shop: dict[str, str], token: str
 ) -> None:
     """Idempotency, visible from the outside. `created` is what makes it visible."""
     provider = FakePaymentProvider(default=FakeOutcome.SUCCESS)
-    with TestClient(create_app(catalog_settings, provider)) as client:
+    with TestClient(create_app(catalog_settings, provider), headers=bearer(token)) as client:
         checkout_id = prepared(client, shop)
         first = client.post(
             f"{CHECKOUTS_URL}/{checkout_id}/payments", json={"idempotency_key": KEY}
@@ -167,11 +173,11 @@ async def test_the_same_key_answers_with_the_same_payment(
 
 
 async def test_a_decline_is_an_answer_and_not_an_error(
-    catalog_settings: Settings, shop: dict[str, str]
+    catalog_settings: Settings, shop: dict[str, str], token: str
 ) -> None:
     """The payment was admitted and the provider said no. Both facts are on the wire."""
     provider = FakePaymentProvider(default=FakeOutcome.DECLINE)
-    with TestClient(create_app(catalog_settings, provider)) as client:
+    with TestClient(create_app(catalog_settings, provider), headers=bearer(token)) as client:
         checkout_id = prepared(client, shop)
 
         response = client.post(
@@ -189,10 +195,10 @@ async def test_a_decline_is_an_answer_and_not_an_error(
 
 
 async def test_an_ambiguous_result_is_reported_as_unknown(
-    catalog_settings: Settings, shop: dict[str, str]
+    catalog_settings: Settings, shop: dict[str, str], token: str
 ) -> None:
     provider = FakePaymentProvider(default=FakeOutcome.AMBIGUOUS)
-    with TestClient(create_app(catalog_settings, provider)) as client:
+    with TestClient(create_app(catalog_settings, provider), headers=bearer(token)) as client:
         checkout_id = prepared(client, shop)
 
         response = client.post(
@@ -208,11 +214,11 @@ async def test_an_ambiguous_result_is_reported_as_unknown(
 
 
 async def test_a_lost_response_is_resolved_by_the_reconcile_endpoint(
-    catalog_settings: Settings, shop: dict[str, str]
+    catalog_settings: Settings, shop: dict[str, str], token: str
 ) -> None:
     """The whole timeline over HTTP: charged, lost, retried, queried, paid."""
     provider = FakePaymentProvider(default=FakeOutcome.LOST_RESPONSE)
-    with TestClient(create_app(catalog_settings, provider)) as client:
+    with TestClient(create_app(catalog_settings, provider), headers=bearer(token)) as client:
         checkout_id = prepared(client, shop)
         lost = client.post(f"{CHECKOUTS_URL}/{checkout_id}/payments", json={"idempotency_key": KEY})
         attempt_id = lost.json()["attempt"]["id"]
@@ -241,10 +247,10 @@ async def test_a_lost_response_is_resolved_by_the_reconcile_endpoint(
 
 
 async def test_reconciling_a_settled_payment_asks_nothing(
-    catalog_settings: Settings, shop: dict[str, str]
+    catalog_settings: Settings, shop: dict[str, str], token: str
 ) -> None:
     provider = FakePaymentProvider(default=FakeOutcome.SUCCESS)
-    with TestClient(create_app(catalog_settings, provider)) as client:
+    with TestClient(create_app(catalog_settings, provider), headers=bearer(token)) as client:
         checkout_id = prepared(client, shop)
         paid = client.post(f"{CHECKOUTS_URL}/{checkout_id}/payments", json={"idempotency_key": KEY})
 
@@ -259,7 +265,7 @@ async def test_reconciling_a_settled_payment_asks_nothing(
 
 
 async def test_a_semantic_denial_refuses_the_payment_without_a_provider(
-    catalog_settings: Settings, shop: dict[str, str]
+    catalog_settings: Settings, shop: dict[str, str], token: str
 ) -> None:
     """A blue charger at the same price: the money is fine and the purchase is not.
 
@@ -269,7 +275,7 @@ async def test_a_semantic_denial_refuses_the_payment_without_a_provider(
     told to go and hold stock it may never buy.
     """
     provider = FakePaymentProvider(default=FakeOutcome.SUCCESS)
-    with TestClient(create_app(catalog_settings, provider)) as client:
+    with TestClient(create_app(catalog_settings, provider), headers=bearer(token)) as client:
         checkout_id = quote(client, shop, variant="blue")
 
         response = client.post(
@@ -289,11 +295,11 @@ async def test_a_semantic_denial_refuses_the_payment_without_a_provider(
 
 
 async def test_a_checkout_with_no_hold_refuses_the_payment(
-    catalog_settings: Settings, shop: dict[str, str]
+    catalog_settings: Settings, shop: dict[str, str], token: str
 ) -> None:
     """Paying is not preparing. A quote that holds no stock is refused by name."""
     provider = FakePaymentProvider(default=FakeOutcome.SUCCESS)
-    with TestClient(create_app(catalog_settings, provider)) as client:
+    with TestClient(create_app(catalog_settings, provider), headers=bearer(token)) as client:
         checkout_id = quote(client, shop)
 
         response = client.post(
@@ -308,10 +314,10 @@ async def test_a_checkout_with_no_hold_refuses_the_payment(
 
 
 async def test_a_second_key_while_a_payment_is_open_is_refused(
-    catalog_settings: Settings, shop: dict[str, str]
+    catalog_settings: Settings, shop: dict[str, str], token: str
 ) -> None:
     provider = FakePaymentProvider(default=FakeOutcome.AMBIGUOUS)
-    with TestClient(create_app(catalog_settings, provider)) as client:
+    with TestClient(create_app(catalog_settings, provider), headers=bearer(token)) as client:
         checkout_id = prepared(client, shop)
         client.post(f"{CHECKOUTS_URL}/{checkout_id}/payments", json={"idempotency_key": KEY})
 
@@ -327,10 +333,10 @@ async def test_a_second_key_while_a_payment_is_open_is_refused(
 
 
 async def test_a_payment_reads_back_with_its_frozen_money(
-    catalog_settings: Settings, shop: dict[str, str]
+    catalog_settings: Settings, shop: dict[str, str], token: str
 ) -> None:
     provider = FakePaymentProvider(default=FakeOutcome.SUCCESS)
-    with TestClient(create_app(catalog_settings, provider)) as client:
+    with TestClient(create_app(catalog_settings, provider), headers=bearer(token)) as client:
         checkout_id = prepared(client, shop)
         created = client.post(
             f"{CHECKOUTS_URL}/{checkout_id}/payments", json={"idempotency_key": KEY}
@@ -346,8 +352,10 @@ async def test_a_payment_reads_back_with_its_frozen_money(
         assert "idempotency_key" not in response.json()
 
 
-async def test_a_missing_payment_is_a_structured_404(catalog_settings: Settings) -> None:
-    with TestClient(create_app(catalog_settings)) as client:
+async def test_a_missing_payment_is_a_structured_404(
+    catalog_settings: Settings, shop: dict[str, str], token: str
+) -> None:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         response = client.get(f"{PAYMENTS_URL}/{uuid.uuid7()}")
 
         assert response.status_code == 404
@@ -356,9 +364,9 @@ async def test_a_missing_payment_is_a_structured_404(catalog_settings: Settings)
 
 
 async def test_paying_for_a_missing_checkout_is_a_structured_404(
-    catalog_settings: Settings,
+    catalog_settings: Settings, shop: dict[str, str], token: str
 ) -> None:
-    with TestClient(create_app(catalog_settings)) as client:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         response = client.post(
             f"{CHECKOUTS_URL}/{uuid.uuid7()}/payments", json={"idempotency_key": KEY}
         )
@@ -368,7 +376,7 @@ async def test_paying_for_a_missing_checkout_is_a_structured_404(
 
 
 async def test_reconciling_a_payment_that_was_never_dispatched_is_a_409(
-    catalog_settings: Settings, shop: dict[str, str]
+    catalog_settings: Settings, shop: dict[str, str], token: str
 ) -> None:
     """Nothing over HTTP can leave a payment ADMITTED, so this is built through the service.
 
@@ -382,11 +390,13 @@ async def test_reconciling_a_payment_that_was_never_dispatched_is_a_409(
     engine = create_engine(catalog_settings)
     try:
         factory = create_session_factory(engine)
-        with TestClient(create_app(catalog_settings)) as client:
+        with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
             checkout_id = prepared(client, shop)
             async with factory() as session:
                 admission = await PaymentAdmissionService(session).admit_payment(
-                    uuid.UUID(checkout_id), idempotency_key=KEY
+                    uuid.UUID(checkout_id),
+                    merchant_id=uuid.UUID(shop["merchant_id"]),
+                    idempotency_key=KEY,
                 )
                 assert admission.attempt is not None
                 attempt_id = admission.attempt.id
@@ -401,7 +411,7 @@ async def test_reconciling_a_payment_that_was_never_dispatched_is_a_409(
 
 
 async def test_a_request_cannot_choose_what_the_provider_does(
-    catalog_settings: Settings, shop: dict[str, str]
+    catalog_settings: Settings, shop: dict[str, str], token: str
 ) -> None:
     """The fake is chosen when the application is built and by nothing a caller sends.
 
@@ -409,7 +419,7 @@ async def test_a_request_cannot_choose_what_the_provider_does(
     rather than a silently discarded field that somebody later wires up by accident.
     """
     provider = FakePaymentProvider(default=FakeOutcome.SUCCESS)
-    with TestClient(create_app(catalog_settings, provider)) as client:
+    with TestClient(create_app(catalog_settings, provider), headers=bearer(token)) as client:
         checkout_id = prepared(client, shop)
 
         response = client.post(
@@ -426,9 +436,9 @@ async def test_a_request_cannot_choose_what_the_provider_does(
 
 
 async def test_a_malformed_idempotency_key_is_a_422(
-    catalog_settings: Settings, shop: dict[str, str]
+    catalog_settings: Settings, shop: dict[str, str], token: str
 ) -> None:
-    with TestClient(create_app(catalog_settings)) as client:
+    with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         checkout_id = prepared(client, shop)
 
         response = client.post(
@@ -439,7 +449,7 @@ async def test_a_malformed_idempotency_key_is_a_422(
 
 
 async def test_a_payment_without_a_key_is_admitted_under_a_generated_one(
-    catalog_settings: Settings, shop: dict[str, str]
+    catalog_settings: Settings, shop: dict[str, str], token: str
 ) -> None:
     """Allowed, and not the same as idempotent.
 
@@ -448,7 +458,7 @@ async def test_a_payment_without_a_key_is_admitted_under_a_generated_one(
     first one's result.
     """
     provider = FakePaymentProvider(default=FakeOutcome.AMBIGUOUS)
-    with TestClient(create_app(catalog_settings, provider)) as client:
+    with TestClient(create_app(catalog_settings, provider), headers=bearer(token)) as client:
         checkout_id = prepared(client, shop)
 
         first = client.post(f"{CHECKOUTS_URL}/{checkout_id}/payments", json={})
@@ -469,6 +479,9 @@ async def test_the_payment_routes_expose_no_provider_operations(
 
     Refund, capture, void and a webhook receiver are all absent because nothing exists behind
     the provider interface to serve them, and an endpoint with nothing behind it is a promise.
+
+    The schema is public and needs no credential to read, which is what lets a client be
+    generated before one is issued.
     """
     with TestClient(create_app(catalog_settings)) as client:
         paths = client.get("/openapi.json").json()["paths"]

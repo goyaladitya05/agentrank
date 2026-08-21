@@ -82,7 +82,14 @@ class PaymentService:
         self._attempts = PaymentAttemptRepository(session)
         self._operations = PaymentOperationsService(session)
 
-    async def pay(self, checkout_id: uuid.UUID, *, idempotency_key: str) -> PaymentResult:
+    async def pay(
+        self,
+        checkout_id: uuid.UUID,
+        *,
+        merchant_id: uuid.UUID,
+        idempotency_key: str,
+        credential_id: uuid.UUID | None = None,
+    ) -> PaymentResult:
         """Admit a payment for this checkout and, if it may be dispatched, send it.
 
         An ADMITTED attempt is dispatched whether this call created it or found it. ADMITTED
@@ -106,9 +113,19 @@ class PaymentService:
         A refusal reaches no provider at all. That is worth saying explicitly: the ordinary
         reasons a payment is not allowed, from a lapsed mandate to a payment somebody else is
         already making, are all decided before anything external is involved.
+
+        A cross merchant request reaches no provider either, and it costs less than a refusal
+        does: admission raises on the first statement, having found no quote by that identifier
+        belonging to this merchant. Nothing is written, nothing is locked, no idempotency key is
+        looked up and no provider is asked a question. `merchant_id` is required here for that
+        reason, rather than being read off the checkout, which would authorize whoever happened
+        to own it.
         """
         admission = await self._admission.admit_payment(
-            checkout_id, idempotency_key=idempotency_key
+            checkout_id,
+            merchant_id=merchant_id,
+            idempotency_key=idempotency_key,
+            credential_id=credential_id,
         )
         attempt = admission.attempt
         if attempt is None:
@@ -139,11 +156,54 @@ class PaymentService:
 
         A caller naming an attempt has already decided it should exist, and every caller
         turning None into the same error is worse than raising it once.
+
+        Unscoped, and not reachable from HTTP. The operator command line reads payments this
+        way, and `pay` re-reads its own attempt this way after losing a dispatch race, having
+        already established the merchant to admit it in the first place. Everything a request
+        reads goes through `get_attempt_for_merchant` below.
         """
         attempt = await self._attempts.get(attempt_id)
         if attempt is None:
             raise NotFoundError("payment_attempt", str(attempt_id))
         return attempt
+
+    async def get_attempt_for_merchant(
+        self, attempt_id: uuid.UUID, *, merchant_id: uuid.UUID
+    ) -> PaymentAttempt:
+        """Fetch one merchant's payment, raising rather than returning None.
+
+        Another merchant's payment raises the same error as an identifier nobody has ever used,
+        because the merchant is a condition in the query and the query found nothing. A payment
+        attempt identifier appears in this application's own responses and will appear in a
+        provider dashboard, so it is exactly the kind of value that ends up somewhere it should
+        not, and holding one must be worth nothing to anybody who is not its merchant.
+        """
+        attempt = await self._attempts.get_for_merchant(attempt_id, merchant_id=merchant_id)
+        if attempt is None:
+            raise NotFoundError("payment_attempt", str(attempt_id))
+        return attempt
+
+    async def reconcile_for_merchant(
+        self, attempt_id: uuid.UUID, *, merchant_id: uuid.UUID
+    ) -> PaymentOutcome:
+        """Reconcile one of this merchant's payments, and refuse to reach a provider for
+        anybody else's.
+
+        Ownership is established first, by a scoped read, and the reconciliation below is only
+        reached if that read found something. So a cross merchant reconciliation raises before
+        the provider is asked anything, which matters more here than on any other route: this is
+        the one read shaped operation that talks to an external system, and an unauthorized
+        caller must not be able to make this application ask a processor about a payment that is
+        not theirs.
+
+        Two statements rather than one because reconciliation is also an operator operation and
+        it has to stay callable without a merchant. What keeps the two statements safe is that
+        `payment_attempt.merchant_id` is immutable: no repository method writes it, the guard
+        trigger refuses every update, and the composite foreign key ties it to the checkout.
+        There is no schedule in which the answer changes between the two reads.
+        """
+        await self.get_attempt_for_merchant(attempt_id, merchant_id=merchant_id)
+        return await self.reconcile(attempt_id)
 
     async def reconcile(self, attempt_id: uuid.UUID) -> PaymentOutcome:
         """Ask the provider what happened to an unresolved payment.

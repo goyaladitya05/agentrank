@@ -122,10 +122,12 @@ async def unresolved(session: AsyncSession, shop: Shop) -> PaymentAttempt:
         expires_at=NOW + HOUR,
     )
     await session.commit()
-    readiness = await CheckoutExecutionService(session).prepare_execution(checkout.id, at=NOW)
+    readiness = await CheckoutExecutionService(session).prepare_execution(
+        checkout.id, merchant_id=checkout.merchant_id, at=NOW
+    )
     assert readiness.ready
     admission = await PaymentAdmissionService(session).admit_payment(
-        checkout.id, idempotency_key=KEY, at=NOW
+        checkout.id, merchant_id=checkout.merchant_id, idempotency_key=KEY, at=NOW
     )
     assert admission.attempt is not None
     ambiguous = FakePaymentProvider(default=FakeOutcome.AMBIGUOUS)
@@ -248,7 +250,9 @@ async def test_two_writers_disagreeing_settle_one_outcome_and_neither_raises(
         assert settled.status is winner_status
         reservation = await InventoryReservationRepository(reader).get(attempt.reservation_id)
         assert reservation is not None
-        checkout = await CheckoutRepository(reader).get(attempt.checkout_id)
+        checkout = await CheckoutRepository(reader).get(
+            attempt.checkout_id, merchant_id=attempt.merchant_id
+        )
         assert checkout is not None
         after = await stock(reader, shop.black)
 

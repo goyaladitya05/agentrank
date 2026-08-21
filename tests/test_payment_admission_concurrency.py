@@ -122,7 +122,9 @@ async def prepared(session: AsyncSession, shop: Shop) -> CheckoutSession:
         expires_at=NOW + HOUR,
     )
     await session.commit()
-    readiness = await CheckoutExecutionService(session).prepare_execution(checkout.id, at=NOW)
+    readiness = await CheckoutExecutionService(session).prepare_execution(
+        checkout.id, merchant_id=checkout.merchant_id, at=NOW
+    )
     assert readiness.ready
     return checkout
 
@@ -133,21 +135,27 @@ async def shop(session: AsyncSession) -> Shop:
 
 
 async def admit_in_new_session(
-    factory: async_sessionmaker[AsyncSession], checkout_id: uuid.UUID, *, key: str
+    factory: async_sessionmaker[AsyncSession],
+    checkout_id: uuid.UUID,
+    merchant_id: uuid.UUID,
+    *,
+    key: str,
 ) -> PaymentAdmission:
     """One admission on its own connection. It commits or rolls back before returning."""
     async with factory() as session:
         return await PaymentAdmissionService(session).admit_payment(
-            checkout_id, idempotency_key=key, at=NOW
+            checkout_id, merchant_id=merchant_id, idempotency_key=key, at=NOW
         )
 
 
 async def cancel_in_new_session(
-    factory: async_sessionmaker[AsyncSession], checkout_id: uuid.UUID
+    factory: async_sessionmaker[AsyncSession], checkout_id: uuid.UUID, merchant_id: uuid.UUID
 ) -> CheckoutSession | ConflictError:
     async with factory() as session:
         try:
-            return await CheckoutService(session).cancel_checkout(checkout_id)
+            return await CheckoutService(session).cancel_checkout(
+                checkout_id, merchant_id=merchant_id
+            )
         except ConflictError as refused:
             return refused
 
@@ -183,10 +191,16 @@ async def test_two_identical_requests_admit_one_payment(
 
     async with asyncio.timeout(CONCURRENCY_TIMEOUT):
         async with factory() as gate:
-            await CheckoutRepository(gate).get_for_update(checkout.id)
+            await CheckoutRepository(gate).get_for_update(
+                checkout.id, merchant_id=checkout.merchant_id
+            )
             attempts: list[asyncio.Task[PaymentAdmission]] = [
-                asyncio.create_task(admit_in_new_session(factory, checkout.id, key=KEY)),
-                asyncio.create_task(admit_in_new_session(factory, checkout.id, key=KEY)),
+                asyncio.create_task(
+                    admit_in_new_session(factory, checkout.id, shop.merchant_id, key=KEY)
+                ),
+                asyncio.create_task(
+                    admit_in_new_session(factory, checkout.id, shop.merchant_id, key=KEY)
+                ),
             ]
             assert await still_waiting(*attempts)
             await gate.rollback()
@@ -222,10 +236,16 @@ async def test_two_different_keys_admit_at_most_one_payment(
 
     async with asyncio.timeout(CONCURRENCY_TIMEOUT):
         async with factory() as gate:
-            await CheckoutRepository(gate).get_for_update(checkout.id)
+            await CheckoutRepository(gate).get_for_update(
+                checkout.id, merchant_id=checkout.merchant_id
+            )
             attempts: list[asyncio.Task[PaymentAdmission]] = [
-                asyncio.create_task(admit_in_new_session(factory, checkout.id, key=KEY)),
-                asyncio.create_task(admit_in_new_session(factory, checkout.id, key=OTHER_KEY)),
+                asyncio.create_task(
+                    admit_in_new_session(factory, checkout.id, shop.merchant_id, key=KEY)
+                ),
+                asyncio.create_task(
+                    admit_in_new_session(factory, checkout.id, shop.merchant_id, key=OTHER_KEY)
+                ),
             ]
             assert await still_waiting(*attempts)
             await gate.rollback()
@@ -261,8 +281,12 @@ async def test_two_checkouts_under_one_mandate_admit_one_payment(
                 shop.mandate.id, merchant_id=shop.merchant_id
             )
             attempts: list[asyncio.Task[PaymentAdmission]] = [
-                asyncio.create_task(admit_in_new_session(factory, first.id, key=KEY)),
-                asyncio.create_task(admit_in_new_session(factory, second.id, key=OTHER_KEY)),
+                asyncio.create_task(
+                    admit_in_new_session(factory, first.id, shop.merchant_id, key=KEY)
+                ),
+                asyncio.create_task(
+                    admit_in_new_session(factory, second.id, shop.merchant_id, key=OTHER_KEY)
+                ),
             ]
             assert await still_waiting(*attempts)
             await gate.rollback()
@@ -296,11 +320,15 @@ async def test_a_cancellation_in_flight_blocks_and_then_refuses_admission(
 
     async with asyncio.timeout(CONCURRENCY_TIMEOUT):
         async with factory() as canceller:
-            withdrawn = await CheckoutRepository(canceller).get_for_update(checkout.id)
+            withdrawn = await CheckoutRepository(canceller).get_for_update(
+                checkout.id, merchant_id=checkout.merchant_id
+            )
             assert withdrawn is not None
             assert await CheckoutRepository(canceller).cancel(withdrawn) is True
 
-            attempt = asyncio.create_task(admit_in_new_session(factory, checkout.id, key=KEY))
+            attempt = asyncio.create_task(
+                admit_in_new_session(factory, checkout.id, shop.merchant_id, key=KEY)
+            )
             assert await still_waiting(attempt)
             await canceller.commit()
 
@@ -327,7 +355,9 @@ async def test_a_revocation_in_flight_blocks_and_then_refuses_admission(
             assert withdrawn is not None
             assert await MandateRepository(revoker).revoke(withdrawn) is True
 
-            attempt = asyncio.create_task(admit_in_new_session(factory, checkout.id, key=KEY))
+            attempt = asyncio.create_task(
+                admit_in_new_session(factory, checkout.id, shop.merchant_id, key=KEY)
+            )
             assert await still_waiting(attempt)
             await revoker.commit()
 
@@ -360,10 +390,14 @@ async def test_admission_holds_the_checkout_against_a_cancellation(
             await InventoryReservationRepository(gate).lock_variants(
                 merchant_id=shop.merchant_id, variant_ids=[shop.black]
             )
-            attempt = asyncio.create_task(admit_in_new_session(factory, checkout.id, key=KEY))
+            attempt = asyncio.create_task(
+                admit_in_new_session(factory, checkout.id, shop.merchant_id, key=KEY)
+            )
             assert await still_waiting(attempt)
 
-            withdrawal = asyncio.create_task(cancel_in_new_session(factory, checkout.id))
+            withdrawal = asyncio.create_task(
+                cancel_in_new_session(factory, checkout.id, shop.merchant_id)
+            )
             assert await still_waiting(withdrawal)
             await gate.rollback()
 
@@ -375,7 +409,7 @@ async def test_admission_holds_the_checkout_against_a_cancellation(
     assert outcome.reason == "payment_in_progress"
 
     async with factory() as reader:
-        found = await CheckoutRepository(reader).get(checkout.id)
+        found = await CheckoutRepository(reader).get(checkout.id, merchant_id=checkout.merchant_id)
         assert found is not None
         assert found.status is CheckoutStatus.OPEN
         # The hold is bound to the payment and was not given back underneath it.
@@ -403,7 +437,9 @@ async def test_a_revocation_after_admission_does_not_invalidate_the_attempt(
             await InventoryReservationRepository(gate).lock_variants(
                 merchant_id=shop.merchant_id, variant_ids=[shop.black]
             )
-            attempt = asyncio.create_task(admit_in_new_session(factory, checkout.id, key=KEY))
+            attempt = asyncio.create_task(
+                admit_in_new_session(factory, checkout.id, shop.merchant_id, key=KEY)
+            )
             assert await still_waiting(attempt)
 
             revocation = asyncio.create_task(
@@ -426,6 +462,6 @@ async def test_a_revocation_after_admission_does_not_invalidate_the_attempt(
         assert found.status is PaymentAttemptStatus.ADMITTED
 
     # And the next one is refused, which is what revocation is actually for.
-    later = await admit_in_new_session(factory, second.id, key=OTHER_KEY)
+    later = await admit_in_new_session(factory, second.id, shop.merchant_id, key=OTHER_KEY)
     assert not later.admitted
     assert later.refusal is AdmissionRefusal.NOT_AUTHORIZED

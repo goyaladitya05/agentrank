@@ -194,7 +194,38 @@ class PaymentAttemptRepository:
         return attempt
 
     async def get(self, attempt_id: uuid.UUID) -> PaymentAttempt | None:
+        """One attempt, whatever merchant it belongs to.
+
+        Unscoped, and it stays unscoped, which is the opposite of the decision the checkout and
+        mandate repositories made. The difference is who the callers are. Every read of a quote
+        or an authorization comes from a request acting for one merchant. Payments are also read
+        by the recovery kernel and by the operator command line, which walk from an attempt to
+        the checkout and the mandate it names and have no merchant in hand to scope by.
+
+        No HTTP path reaches this. The two that read a payment for a caller use
+        `get_for_merchant` below, and the ones that resolve an outcome are reached only after
+        `get_for_merchant` or the command line has already established who is asking.
+        """
         return await self._session.get(PaymentAttempt, attempt_id)
+
+    async def get_for_merchant(
+        self, attempt_id: uuid.UUID, *, merchant_id: uuid.UUID
+    ) -> PaymentAttempt | None:
+        """One merchant's payment attempt, or nothing.
+
+        The read every authenticated payment request goes through. The merchant is a condition
+        in the SQL rather than a comparison afterwards, so another merchant's attempt is absent
+        rather than refused and knowing its identifier reveals nothing.
+
+        `merchant_id` on an attempt is immutable: no method here writes it, the guard trigger
+        refuses every update that would, and the composite foreign key ties it to the checkout's
+        merchant anyway. So an ownership answer from this read cannot go stale between here and
+        whatever the caller does next.
+        """
+        statement = select(PaymentAttempt).where(
+            PaymentAttempt.id == attempt_id, PaymentAttempt.merchant_id == merchant_id
+        )
+        return (await self._session.execute(statement)).scalar_one_or_none()
 
     async def get_for_update(self, attempt_id: uuid.UUID) -> PaymentAttempt | None:
         """Fetch one attempt and hold it against every other transaction until commit."""

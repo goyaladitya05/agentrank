@@ -61,8 +61,10 @@ CHECKOUT_RESOURCE = "checkout_session"
 CHECKOUT_CREATED = "checkout.created"
 CHECKOUT_CANCELLED = "checkout.cancelled"
 
-# A quote is prepared on the buyer's behalf, so it is the buyer's act. This names a role
-# and not a verified identity: nothing authenticates a caller yet.
+# A quote is prepared on the buyer's behalf, so it is the buyer's act. This names a role and
+# not a person, and that is still true now that requests are authenticated: what a credential
+# proves is which merchant integration asked, not who was holding the key. The credential is
+# recorded beside the role rather than instead of it.
 CHECKOUT_ACTOR = ActorType.BUYER
 
 
@@ -125,7 +127,9 @@ class CheckoutService:
         self._payments = PaymentAttemptRepository(session)
         self._audit = AuditRepository(session)
 
-    async def create_checkout(self, request: NewCheckout) -> CheckoutSession:
+    async def create_checkout(
+        self, request: NewCheckout, *, credential_id: uuid.UUID | None = None
+    ) -> CheckoutSession:
         """Price a quote from the catalog and record that it was prepared, in one
         transaction.
 
@@ -136,6 +140,10 @@ class CheckoutService:
         Both writes happen in one transaction and one commit. If the audit append fails,
         neither the checkout nor its lines are persisted: a quote with no record of being
         prepared is exactly what the audit trail exists to prevent.
+
+        `request.merchant_id` is the authenticated merchant. It arrives on the command rather
+        than in the request body, because over HTTP the route builds the command from the
+        principal and there is no field a caller could put a different one in.
         """
         merchant = await self._merchants.get_by_id(request.merchant_id)
         if merchant is None:
@@ -168,23 +176,35 @@ class CheckoutService:
             shipping_amount_minor=request.shipping_amount_minor,
             discount_amount_minor=request.discount_amount_minor,
         )
-        await self._append(checkout, CHECKOUT_CREATED, _created_payload(checkout, lines))
+        await self._append(
+            checkout,
+            CHECKOUT_CREATED,
+            _created_payload(checkout, lines),
+            credential_id=credential_id,
+        )
         await self._session.commit()
         return checkout
 
-    async def get_checkout(self, checkout_id: uuid.UUID) -> CheckoutSession:
-        """Fetch a quote with its lines, raising rather than returning None.
+    async def get_checkout(
+        self, checkout_id: uuid.UUID, *, merchant_id: uuid.UUID
+    ) -> CheckoutSession:
+        """Fetch one merchant's quote with its lines, raising rather than returning None.
 
         A caller naming a checkout has already decided it should exist, and every caller
         turning None into the same error is worse than raising it once.
+
+        Another merchant's quote raises the same error as one that was never written, because
+        the merchant is in the query and the query found nothing. There is no branch here that
+        could answer differently for the two, which is what makes a checkout identifier useless
+        to anybody who is not its merchant.
         """
-        checkout = await self._checkouts.get(checkout_id)
+        checkout = await self._checkouts.get(checkout_id, merchant_id=merchant_id)
         if checkout is None:
             raise NotFoundError("checkout", str(checkout_id))
         return checkout
 
     async def authorize_checkout(
-        self, checkout_id: uuid.UUID, *, at: datetime | None = None
+        self, checkout_id: uuid.UUID, *, merchant_id: uuid.UUID, at: datetime | None = None
     ) -> CheckoutAuthorizationDecision:
         """Report whether this checkout is financially authorized, at `at` or right now.
 
@@ -195,7 +215,7 @@ class CheckoutService:
         quote as it was recorded, so a price change since then cannot alter what it was
         made against.
         """
-        checkout = await self.get_checkout(checkout_id)
+        checkout = await self.get_checkout(checkout_id, merchant_id=merchant_id)
         mandate = await self._mandates.get(checkout.mandate_id, merchant_id=checkout.merchant_id)
         if mandate is None:
             # Not reachable through the schema: the foreign key onto the mandate is
@@ -203,7 +223,9 @@ class CheckoutService:
             raise NotFoundError("mandate", str(checkout.mandate_id))
         return authorize_checkout(checkout, mandate, at=at or datetime.now(UTC))
 
-    async def evaluate_intent_constraints(self, checkout_id: uuid.UUID) -> IntentConstraintDecision:
+    async def evaluate_intent_constraints(
+        self, checkout_id: uuid.UUID, *, merchant_id: uuid.UUID
+    ) -> IntentConstraintDecision:
         """Report whether this checkout is what the buyer asked for.
 
         The second gate, and it is resolved entirely from persisted rows: the checkout, the
@@ -221,7 +243,7 @@ class CheckoutService:
         semantic snapshot the quote recorded, so a catalog change since then cannot alter
         what it was made against.
         """
-        checkout = await self.get_checkout(checkout_id)
+        checkout = await self.get_checkout(checkout_id, merchant_id=merchant_id)
         constraint_set = await self._constraints.get_for_mandate(
             checkout.mandate_id, merchant_id=checkout.merchant_id
         )
@@ -229,7 +251,13 @@ class CheckoutService:
             raise NotFoundError("intent_constraints", str(checkout.mandate_id))
         return evaluate_intent_constraints(checkout, constraint_set)
 
-    async def cancel_checkout(self, checkout_id: uuid.UUID) -> CheckoutSession:
+    async def cancel_checkout(
+        self,
+        checkout_id: uuid.UUID,
+        *,
+        merchant_id: uuid.UUID,
+        credential_id: uuid.UUID | None = None,
+    ) -> CheckoutSession:
         """Withdraw a quote and record it, once.
 
         Idempotent. Cancelling an already cancelled checkout returns it unchanged and
@@ -282,11 +310,14 @@ class CheckoutService:
         rewrite what was quoted, and the trigger on the table refuses any attempt to do
         both at once.
         """
-        checkout = await self._locked(checkout_id)
+        checkout = await self._locked(checkout_id, merchant_id=merchant_id)
         await self._require_cancellable(checkout)
         if await self._checkouts.cancel(checkout):
             await self._append(
-                checkout, CHECKOUT_CANCELLED, {"status": CheckoutStatus.CANCELLED.value}
+                checkout,
+                CHECKOUT_CANCELLED,
+                {"status": CheckoutStatus.CANCELLED.value},
+                credential_id=credential_id,
             )
             reason = ReleaseReason.CHECKOUT_CANCELLED
         else:
@@ -325,20 +356,26 @@ class CheckoutService:
                 identifier=str(checkout.id),
             )
 
-    async def _locked(self, checkout_id: uuid.UUID) -> CheckoutSession:
-        """Fetch a checkout held against other transactions, raising rather than returning
-        None."""
-        checkout = await self._checkouts.get_for_update(checkout_id)
+    async def _locked(self, checkout_id: uuid.UUID, *, merchant_id: uuid.UUID) -> CheckoutSession:
+        """Fetch one merchant's checkout held against other transactions, raising rather than
+        returning None."""
+        checkout = await self._checkouts.get_for_update(checkout_id, merchant_id=merchant_id)
         if checkout is None:
             raise NotFoundError("checkout", str(checkout_id))
         return checkout
 
     async def _append(
-        self, checkout: CheckoutSession, event_type: str, payload: dict[str, Any]
+        self,
+        checkout: CheckoutSession,
+        event_type: str,
+        payload: dict[str, Any],
+        *,
+        credential_id: uuid.UUID | None = None,
     ) -> None:
         await self._audit.append(
             merchant_id=checkout.merchant_id,
             actor_type=CHECKOUT_ACTOR,
+            credential_id=credential_id,
             event_type=event_type,
             resource_type=CHECKOUT_RESOURCE,
             resource_id=checkout.id,

@@ -140,7 +140,7 @@ async def test_releasing_gives_the_stock_back_and_says_why(
     reservation = await hold(session, checkout)
 
     released = await CheckoutExecutionService(session).release_reservation(
-        checkout.id, reason=RECOVERED
+        checkout.id, merchant_id=checkout.merchant_id, reason=RECOVERED
     )
 
     assert released is True
@@ -161,9 +161,19 @@ async def test_releasing_twice_records_one_event(
     reservation = await hold(session, checkout)
     service = CheckoutExecutionService(session)
 
-    assert await service.release_reservation(checkout.id, reason=RECOVERED) is True
+    assert (
+        await service.release_reservation(
+            checkout.id, merchant_id=checkout.merchant_id, reason=RECOVERED
+        )
+        is True
+    )
     released_at = reservation.released_at
-    assert await service.release_reservation(checkout.id, reason=RECOVERED) is False
+    assert (
+        await service.release_reservation(
+            checkout.id, merchant_id=checkout.merchant_id, reason=RECOVERED
+        )
+        is False
+    )
 
     assert reservation.released_at == released_at
     events = await events_for(committed, reservation.id)
@@ -176,7 +186,9 @@ async def test_releasing_a_checkout_holding_nothing_changes_nothing(
     checkout = await quote(session, shop)
 
     assert (
-        await CheckoutExecutionService(session).release_reservation(checkout.id, reason=RECOVERED)
+        await CheckoutExecutionService(session).release_reservation(
+            checkout.id, merchant_id=checkout.merchant_id, reason=RECOVERED
+        )
         is False
     )
 
@@ -192,7 +204,9 @@ async def test_released_stock_is_available_to_another_checkout(
     await hold(session, first)
     assert not (await inventory.reserve(second, expires_at=NOW + HOUR, at=NOW)).reserved
 
-    await CheckoutExecutionService(session).release_reservation(first.id, reason=RECOVERED)
+    await CheckoutExecutionService(session).release_reservation(
+        first.id, merchant_id=first.merchant_id, reason=RECOVERED
+    )
 
     assert (await inventory.reserve(second, expires_at=NOW + HOUR, at=NOW)).reserved
     await session.commit()
@@ -200,7 +214,9 @@ async def test_released_stock_is_available_to_another_checkout(
 
 async def test_releasing_an_unknown_checkout_is_not_found(session: AsyncSession) -> None:
     with pytest.raises(NotFoundError) as unknown:
-        await CheckoutExecutionService(session).release_reservation(uuid.uuid7(), reason=RECOVERED)
+        await CheckoutExecutionService(session).release_reservation(
+            uuid.uuid7(), merchant_id=uuid.uuid7(), reason=RECOVERED
+        )
     assert unknown.value.resource == "checkout"
 
 
@@ -217,7 +233,9 @@ async def test_cancelling_again_heals_a_stranded_reservation(
     cancelled_at = checkout.cancelled_at
     assert cancelled_at is not None
 
-    again = await CheckoutService(session).cancel_checkout(checkout.id)
+    again = await CheckoutService(session).cancel_checkout(
+        checkout.id, merchant_id=checkout.merchant_id
+    )
 
     assert again.status is CheckoutStatus.CANCELLED
     # Terminal stays terminal. Healing is not a second cancellation.
@@ -245,8 +263,8 @@ async def test_healing_twice_heals_once(
     checkout, reservation = await strand(session, shop)
     service = CheckoutService(session)
 
-    await service.cancel_checkout(checkout.id)
-    await service.cancel_checkout(checkout.id)
+    await service.cancel_checkout(checkout.id, merchant_id=checkout.merchant_id)
+    await service.cancel_checkout(checkout.id, merchant_id=checkout.merchant_id)
 
     events = await events_for(committed, reservation.id)
     assert [event.event_type for event in events] == ["inventory.reserved", "inventory.released"]

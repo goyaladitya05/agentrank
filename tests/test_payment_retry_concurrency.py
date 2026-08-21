@@ -112,7 +112,9 @@ async def prepared(session: AsyncSession, shop: Shop) -> CheckoutSession:
         expires_at=NOW + HOUR,
     )
     await session.commit()
-    readiness = await CheckoutExecutionService(session).prepare_execution(checkout.id, at=NOW)
+    readiness = await CheckoutExecutionService(session).prepare_execution(
+        checkout.id, merchant_id=checkout.merchant_id, at=NOW
+    )
     assert readiness.ready
     return checkout
 
@@ -130,13 +132,16 @@ def provider() -> FakePaymentProvider:
 async def pay_in_new_session(
     factory: async_sessionmaker[AsyncSession],
     checkout_id: uuid.UUID,
+    merchant_id: uuid.UUID,
     provider: FakePaymentProvider,
     *,
     key: str = KEY,
 ) -> PaymentResult:
     """One payment request on its own connection, exactly as a route would run it."""
     async with factory() as session:
-        return await PaymentService(session, provider).pay(checkout_id, idempotency_key=key)
+        return await PaymentService(session, provider).pay(
+            checkout_id, merchant_id=merchant_id, idempotency_key=key
+        )
 
 
 async def still_waiting(*attempts: asyncio.Task[PaymentResult]) -> bool:
@@ -175,7 +180,7 @@ async def test_a_same_key_retry_that_loses_the_dispatch_race_gets_the_payment(
     """
     checkout = await prepared(session, shop)
     admission = await PaymentAdmissionService(session).admit_payment(
-        checkout.id, idempotency_key=KEY, at=NOW
+        checkout.id, merchant_id=checkout.merchant_id, idempotency_key=KEY, at=NOW
     )
     assert admission.attempt is not None
     attempt_id = admission.attempt.id
@@ -187,8 +192,12 @@ async def test_a_same_key_retry_that_loses_the_dispatch_race_gets_the_payment(
             # The lock `dispatch` takes before it reads whether this attempt may be sent.
             await PaymentAttemptRepository(gate).get_for_update(attempt_id)
             retries: list[asyncio.Task[PaymentResult]] = [
-                asyncio.create_task(pay_in_new_session(factory, checkout_id, provider)),
-                asyncio.create_task(pay_in_new_session(factory, checkout_id, provider)),
+                asyncio.create_task(
+                    pay_in_new_session(factory, checkout_id, shop.merchant_id, provider)
+                ),
+                asyncio.create_task(
+                    pay_in_new_session(factory, checkout_id, shop.merchant_id, provider)
+                ),
             ]
             assert await still_waiting(*retries)
             await gate.rollback()
@@ -215,7 +224,7 @@ async def test_a_same_key_retry_that_loses_the_dispatch_race_gets_the_payment(
         settled = await PaymentAttemptRepository(reader).get(attempt_id)
         assert settled is not None
         assert settled.status is PaymentAttemptStatus.SUCCEEDED
-        paid = await CheckoutRepository(reader).get(checkout_id)
+        paid = await CheckoutRepository(reader).get(checkout_id, merchant_id=shop.merchant_id)
         assert paid is not None
         assert paid.status is CheckoutStatus.PAID
         consumed = await InventoryReservationRepository(reader).get(settled.reservation_id)
@@ -256,8 +265,12 @@ async def test_two_simultaneous_first_requests_produce_one_payment(
                 shop.mandate.id, merchant_id=shop.merchant_id
             )
             retries: list[asyncio.Task[PaymentResult]] = [
-                asyncio.create_task(pay_in_new_session(factory, checkout_id, provider)),
-                asyncio.create_task(pay_in_new_session(factory, checkout_id, provider)),
+                asyncio.create_task(
+                    pay_in_new_session(factory, checkout_id, shop.merchant_id, provider)
+                ),
+                asyncio.create_task(
+                    pay_in_new_session(factory, checkout_id, shop.merchant_id, provider)
+                ),
             ]
             assert await still_waiting(*retries)
             await gate.rollback()
@@ -292,7 +305,7 @@ async def test_a_retry_completes_a_payment_admitted_by_a_process_that_died(
     """
     checkout = await prepared(session, shop)
     admission = await PaymentAdmissionService(session).admit_payment(
-        checkout.id, idempotency_key=KEY, at=NOW
+        checkout.id, merchant_id=checkout.merchant_id, idempotency_key=KEY, at=NOW
     )
     assert admission.attempt is not None
     attempt_id = admission.attempt.id
@@ -300,7 +313,7 @@ async def test_a_retry_completes_a_payment_admitted_by_a_process_that_died(
     before = await stock(session, shop.black)
     assert provider.executions == []
 
-    result = await pay_in_new_session(factory, checkout_id, provider)
+    result = await pay_in_new_session(factory, checkout_id, shop.merchant_id, provider)
 
     assert result.admission.created is False
     assert result.attempt is not None
@@ -328,11 +341,11 @@ async def test_a_retry_of_an_unresolved_payment_is_answered_without_a_provider_c
     provider.default = FakeOutcome.AMBIGUOUS
     checkout = await prepared(session, shop)
     checkout_id = checkout.id
-    first = await pay_in_new_session(factory, checkout_id, provider)
+    first = await pay_in_new_session(factory, checkout_id, shop.merchant_id, provider)
     assert first.attempt is not None
     assert first.attempt.status is PaymentAttemptStatus.UNKNOWN
 
-    second = await pay_in_new_session(factory, checkout_id, provider)
+    second = await pay_in_new_session(factory, checkout_id, shop.merchant_id, provider)
 
     assert second.attempt is not None
     assert second.attempt.id == first.attempt.id

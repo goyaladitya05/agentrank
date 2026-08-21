@@ -44,6 +44,13 @@ from agentrank_api.inventory.models import (
 )
 from agentrank_api.inventory.service import InventoryViolation, InventoryViolationCode
 
+# Stands in for the authenticated merchant while a request is being validated, and never
+# leaves the validator that uses it. Every rule `NewCheckout` enforces is about the items, the
+# quantities and the expiry, and none of them reads the merchant, so validating against the nil
+# identifier answers exactly the same question. The command the route builds carries the real
+# one, which comes from the credential and from nowhere else.
+_UNVALIDATED_MERCHANT = uuid.UUID(int=0)
+
 
 class CheckoutItemInput(BaseModel):
     variant_id: uuid.UUID
@@ -56,13 +63,16 @@ class CheckoutItemInput(BaseModel):
 class CreateCheckoutRequest(BaseModel):
     """What a caller must state to be quoted.
 
+    There is no `merchant_id`. It was a field until Phase 1H and removing it is the point
+    rather than a simplification: the merchant is the authenticated one, and a body that could
+    name a different one would be a body that could name somebody else's.
+
     `expires_at` is optional and defaults to a short window from the moment the request was
     parsed. It is bounded on both sides: a quote cannot be created already expired, and it
     cannot be pushed arbitrarily far out, because a quote that lasts a year is a promise to
     honour a price nobody rechecked.
     """
 
-    merchant_id: uuid.UUID
     mandate_id: uuid.UUID
     items: list[CheckoutItemInput] = Field(min_length=1, max_length=MAX_CHECKOUT_LINES)
     expires_at: datetime | None = None
@@ -71,16 +81,18 @@ class CreateCheckoutRequest(BaseModel):
     def is_a_quotable_request(self) -> Self:
         # Building the command applies every domain rule, including the ones the field
         # constraints above cannot express. Doing it during validation is what makes a
-        # refusal a 422 rather than an error raised from inside a route.
-        self.to_command()
+        # refusal a 422 rather than an error raised from inside a route. The merchant is not
+        # known here, so a placeholder stands in for it: nothing in these rules reads it, and
+        # the command the route builds is the one that carries the authenticated merchant.
+        self.to_command(_UNVALIDATED_MERCHANT)
         return self
 
-    def to_command(self) -> NewCheckout:
+    def to_command(self, merchant_id: uuid.UUID) -> NewCheckout:
         now = datetime.now(UTC)
         expires_at = self.expires_at if self.expires_at is not None else now + DEFAULT_CHECKOUT_TTL
         validate_checkout_expiry(expires_at, now=now)
         return NewCheckout(
-            merchant_id=self.merchant_id,
+            merchant_id=merchant_id,
             mandate_id=self.mandate_id,
             items=tuple(item.to_domain() for item in self.items),
             expires_at=expires_at,

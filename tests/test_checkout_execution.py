@@ -153,7 +153,9 @@ async def test_a_checkout_both_gates_allow_becomes_execution_ready(
     """The only case that may hold stock, and the only one that reaches the database."""
     checkout = await quote(session, shop)
 
-    readiness = await CheckoutExecutionService(session).prepare_execution(checkout.id, at=NOW)
+    readiness = await CheckoutExecutionService(session).prepare_execution(
+        checkout.id, merchant_id=checkout.merchant_id, at=NOW
+    )
 
     assert readiness.ready
     assert readiness.authorization.authorized
@@ -174,7 +176,9 @@ async def test_financially_denied_holds_no_stock(
     """Two units is twice the ceiling, and semantically it is exactly what was asked for."""
     checkout = await quote(session, shop, quantity=2)
 
-    readiness = await CheckoutExecutionService(session).prepare_execution(checkout.id, at=NOW)
+    readiness = await CheckoutExecutionService(session).prepare_execution(
+        checkout.id, merchant_id=checkout.merchant_id, at=NOW
+    )
 
     assert not readiness.ready
     assert readiness.authorization.financial.violations == (
@@ -192,7 +196,9 @@ async def test_semantically_denied_holds_no_stock(
     """A blue charger at the same price: the money is fine and the purchase is not."""
     checkout = await quote(session, shop, variant_id=shop.blue)
 
-    readiness = await CheckoutExecutionService(session).prepare_execution(checkout.id, at=NOW)
+    readiness = await CheckoutExecutionService(session).prepare_execution(
+        checkout.id, merchant_id=checkout.merchant_id, at=NOW
+    )
 
     assert not readiness.ready
     assert readiness.authorization.financial.allowed
@@ -208,7 +214,9 @@ async def test_both_gates_denying_holds_no_stock(
 ) -> None:
     checkout = await quote(session, shop, variant_id=shop.blue, quantity=2)
 
-    readiness = await CheckoutExecutionService(session).prepare_execution(checkout.id, at=NOW)
+    readiness = await CheckoutExecutionService(session).prepare_execution(
+        checkout.id, merchant_id=checkout.merchant_id, at=NOW
+    )
 
     assert not readiness.ready
     assert not readiness.authorization.financial.allowed
@@ -224,7 +232,9 @@ async def test_a_mandate_with_no_constraint_set_holds_no_stock(
     unqualified = await build_shop(session, constrained=False)
     checkout = await quote(session, unqualified)
 
-    readiness = await CheckoutExecutionService(session).prepare_execution(checkout.id, at=NOW)
+    readiness = await CheckoutExecutionService(session).prepare_execution(
+        checkout.id, merchant_id=checkout.merchant_id, at=NOW
+    )
 
     assert not readiness.ready
     assert readiness.authorization.intent is None
@@ -240,9 +250,11 @@ async def test_a_cancelled_checkout_holds_no_stock(
     session: AsyncSession, committed: AsyncSession, shop: Shop
 ) -> None:
     checkout = await quote(session, shop)
-    await CheckoutService(session).cancel_checkout(checkout.id)
+    await CheckoutService(session).cancel_checkout(checkout.id, merchant_id=checkout.merchant_id)
 
-    readiness = await CheckoutExecutionService(session).prepare_execution(checkout.id, at=NOW)
+    readiness = await CheckoutExecutionService(session).prepare_execution(
+        checkout.id, merchant_id=checkout.merchant_id, at=NOW
+    )
 
     assert not readiness.ready
     assert (
@@ -259,7 +271,7 @@ async def test_an_expired_checkout_holds_no_stock(
     checkout = await quote(session, shop, expires_at=NOW + HOUR)
 
     readiness = await CheckoutExecutionService(session).prepare_execution(
-        checkout.id, at=NOW + 2 * HOUR
+        checkout.id, merchant_id=checkout.merchant_id, at=NOW + 2 * HOUR
     )
 
     assert not readiness.ready
@@ -277,7 +289,9 @@ async def test_a_revoked_mandate_holds_no_stock(
     await MandateRepository(session).revoke(shop.mandate)
     await session.commit()
 
-    readiness = await CheckoutExecutionService(session).prepare_execution(checkout.id, at=NOW)
+    readiness = await CheckoutExecutionService(session).prepare_execution(
+        checkout.id, merchant_id=checkout.merchant_id, at=NOW
+    )
 
     assert not readiness.ready
     assert (
@@ -295,7 +309,7 @@ async def test_an_expired_mandate_holds_no_stock(
     checkout = await quote(session, lapsing, expires_at=NOW + 3 * HOUR)
 
     readiness = await CheckoutExecutionService(session).prepare_execution(
-        checkout.id, at=NOW + 2 * HOUR
+        checkout.id, merchant_id=checkout.merchant_id, at=NOW + 2 * HOUR
     )
 
     assert not readiness.ready
@@ -312,9 +326,9 @@ async def test_an_authorized_checkout_with_no_stock_left_is_not_ready(
     """Both gates allow and the shelf is empty, which is a different refusal entirely."""
     service = CheckoutExecutionService(session)
     first, second = await quote(session, shop), await quote(session, shop)
-    assert (await service.prepare_execution(first.id, at=NOW)).ready
+    assert (await service.prepare_execution(first.id, merchant_id=first.merchant_id, at=NOW)).ready
 
-    readiness = await service.prepare_execution(second.id, at=NOW)
+    readiness = await service.prepare_execution(second.id, merchant_id=second.merchant_id, at=NOW)
 
     assert not readiness.ready
     assert readiness.authorization.authorized
@@ -335,8 +349,8 @@ async def test_preparing_twice_holds_one_reservation(
     service = CheckoutExecutionService(session)
     checkout = await quote(session, shop)
 
-    first = await service.prepare_execution(checkout.id, at=NOW)
-    second = await service.prepare_execution(checkout.id, at=NOW)
+    first = await service.prepare_execution(checkout.id, merchant_id=checkout.merchant_id, at=NOW)
+    second = await service.prepare_execution(checkout.id, merchant_id=checkout.merchant_id, at=NOW)
 
     assert first.ready
     assert second.ready
@@ -359,7 +373,9 @@ async def test_the_reservation_never_outlives_the_checkout_or_the_mandate(
 
     short_mandate = await build_shop(session, valid_until=NOW + HOUR)
     quoted_longer = await quote(session, short_mandate, expires_at=NOW + 3 * HOUR)
-    readiness = await service.prepare_execution(quoted_longer.id, at=NOW)
+    readiness = await service.prepare_execution(
+        quoted_longer.id, merchant_id=quoted_longer.merchant_id, at=NOW
+    )
     assert readiness.reservation is not None
     assert readiness.reservation.expires_at == short_mandate.mandate.valid_until
 
@@ -370,7 +386,9 @@ async def test_the_reservation_expires_with_the_quote_when_that_ends_first(
     long_mandate = await build_shop(session, valid_until=NOW + 6 * HOUR)
     quoted_shorter = await quote(session, long_mandate, expires_at=NOW + 2 * HOUR)
 
-    readiness = await CheckoutExecutionService(session).prepare_execution(quoted_shorter.id, at=NOW)
+    readiness = await CheckoutExecutionService(session).prepare_execution(
+        quoted_shorter.id, merchant_id=quoted_shorter.merchant_id, at=NOW
+    )
 
     assert readiness.reservation is not None
     assert readiness.reservation.expires_at == quoted_shorter.expires_at
@@ -387,12 +405,16 @@ async def test_preparation_re_evaluates_rather_than_trusting_an_earlier_read(
     service = CheckoutExecutionService(session)
     checkout = await quote(session, shop)
 
-    assert (await service.execution_authorization(checkout.id, at=NOW)).authorized
+    assert (
+        await service.execution_authorization(checkout.id, merchant_id=checkout.merchant_id, at=NOW)
+    ).authorized
 
     await MandateRepository(session).revoke(shop.mandate)
     await session.commit()
 
-    readiness = await service.prepare_execution(checkout.id, at=NOW)
+    readiness = await service.prepare_execution(
+        checkout.id, merchant_id=checkout.merchant_id, at=NOW
+    )
     assert not readiness.ready
     assert await reservation_count(committed) == 0
 
@@ -403,7 +425,9 @@ async def test_the_informational_read_holds_nothing(
     """A read that reserved stock would be a read that grants something."""
     checkout = await quote(session, shop)
 
-    decision = await CheckoutExecutionService(session).execution_authorization(checkout.id, at=NOW)
+    decision = await CheckoutExecutionService(session).execution_authorization(
+        checkout.id, merchant_id=checkout.merchant_id, at=NOW
+    )
 
     assert decision.authorized
     assert await reservation_count(committed) == 0
@@ -411,5 +435,7 @@ async def test_the_informational_read_holds_nothing(
 
 async def test_an_unknown_checkout_is_not_found(session: AsyncSession) -> None:
     with pytest.raises(NotFoundError) as unknown:
-        await CheckoutExecutionService(session).prepare_execution(uuid.uuid7())
+        await CheckoutExecutionService(session).prepare_execution(
+            uuid.uuid7(), merchant_id=uuid.uuid7()
+        )
     assert unknown.value.resource == "checkout"

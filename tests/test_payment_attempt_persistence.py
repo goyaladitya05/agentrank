@@ -623,7 +623,9 @@ async def test_a_checkout_can_be_paid_and_paid_is_terminal(
     await session.commit()
     session.expunge_all()
 
-    found = await CheckoutRepository(session).get(payable.checkout.id)
+    found = await CheckoutRepository(session).get(
+        payable.checkout.id, merchant_id=payable.checkout.merchant_id
+    )
     assert found is not None
     assert found.status is CheckoutStatus.PAID
     assert found.paid_at is not None
@@ -640,7 +642,9 @@ async def test_a_checkout_can_be_paid_and_paid_is_terminal(
 async def test_a_cancelled_checkout_cannot_become_paid(
     session: AsyncSession, payable: Payable
 ) -> None:
-    checkout = await CheckoutRepository(session).get_for_update(payable.checkout.id)
+    checkout = await CheckoutRepository(session).get_for_update(
+        payable.checkout.id, merchant_id=payable.checkout.merchant_id
+    )
     assert checkout is not None
     await CheckoutRepository(session).cancel(checkout)
     await session.commit()

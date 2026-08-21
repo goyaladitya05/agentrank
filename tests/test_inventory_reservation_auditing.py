@@ -210,7 +210,9 @@ async def test_cancelling_a_checkout_releases_the_stock_it_was_holding(
     await session.commit()
     assert held.reservation is not None
 
-    cancelled = await CheckoutService(session).cancel_checkout(checkout.id)
+    cancelled = await CheckoutService(session).cancel_checkout(
+        checkout.id, merchant_id=checkout.merchant_id
+    )
     assert cancelled.status is CheckoutStatus.CANCELLED
 
     repository = InventoryReservationRepository(committed)
@@ -243,8 +245,8 @@ async def test_cancelling_twice_releases_and_records_once(
     assert held.reservation is not None
 
     service = CheckoutService(session)
-    first = await service.cancel_checkout(checkout.id)
-    await service.cancel_checkout(checkout.id)
+    first = await service.cancel_checkout(checkout.id, merchant_id=checkout.merchant_id)
+    await service.cancel_checkout(checkout.id, merchant_id=checkout.merchant_id)
 
     assert first.cancelled_at is not None
     events = await events_for(committed, held.reservation.id)
@@ -256,7 +258,7 @@ async def test_cancelling_a_checkout_holding_nothing_records_nothing_extra(
 ) -> None:
     checkout = await quote(session, shop)
 
-    await CheckoutService(session).cancel_checkout(checkout.id)
+    await CheckoutService(session).cancel_checkout(checkout.id, merchant_id=checkout.merchant_id)
 
     assert await committed.scalar(select(func.count()).select_from(InventoryReservation)) == 0
     events = await AuditRepository(committed).list_for_merchant(shop.merchant_id)
@@ -274,7 +276,7 @@ async def test_cancelling_frees_the_unit_for_another_checkout(
     assert not (await service.reserve(second, expires_at=NOW + HOUR, at=NOW)).reserved
     await session.commit()
 
-    await CheckoutService(session).cancel_checkout(first.id)
+    await CheckoutService(session).cancel_checkout(first.id, merchant_id=first.merchant_id)
 
     assert (await service.reserve(second, expires_at=NOW + HOUR, at=NOW)).reserved
     await session.commit()

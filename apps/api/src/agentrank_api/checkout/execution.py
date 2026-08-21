@@ -201,7 +201,7 @@ class CheckoutExecutionService:
         self._inventory = InventoryReservationService(session)
 
     async def authorize_under_locks(
-        self, checkout_id: uuid.UUID, *, at: datetime | None = None
+        self, checkout_id: uuid.UUID, *, merchant_id: uuid.UUID, at: datetime | None = None
     ) -> LockedAuthorization:
         """Decide both gates with every relevant row held, and hand the locks to the caller.
 
@@ -229,8 +229,14 @@ class CheckoutExecutionService:
         this operation serialize against every other one that decides something about the
         same shelf, and taking them before the clock is read again is what makes the reading
         one this operation cannot be delayed past.
+
+        `merchant_id` is the authenticated merchant, and it is required rather than derived from
+        the checkout. Deriving it would make this method authorize whoever the quote belongs to,
+        which is the whole of the vulnerability rather than a check on it. A quote belonging to
+        anybody else is not found, and the caller is told the same thing it would be told about
+        an identifier nobody has ever used.
         """
-        checkout, mandate = await self._load_locked(checkout_id)
+        checkout, mandate = await self._load_locked(checkout_id, merchant_id=merchant_id)
         constraint_set = await self._constraints.get_for_mandate(
             checkout.mandate_id, merchant_id=checkout.merchant_id
         )
@@ -266,7 +272,7 @@ class CheckoutExecutionService:
         )
 
     async def prepare_execution(
-        self, checkout_id: uuid.UUID, *, at: datetime | None = None
+        self, checkout_id: uuid.UUID, *, merchant_id: uuid.UUID, at: datetime | None = None
     ) -> CheckoutExecutionReadiness:
         """Make this checkout execution ready, or report exactly why it is not.
 
@@ -291,7 +297,7 @@ class CheckoutExecutionService:
         together. Preparing again while that reservation is still effective returns the same
         one and writes nothing further.
         """
-        admission = await self.authorize_under_locks(checkout_id, at=at)
+        admission = await self.authorize_under_locks(checkout_id, merchant_id=merchant_id, at=at)
         if not admission.admitted:
             # Nothing has been written. An authorization denial returns before any catalog
             # row is locked at all, so a request that may not proceed cannot take stock off a
@@ -362,7 +368,9 @@ class CheckoutExecutionService:
             reservation=outcome.reservation,
         )
 
-    async def release_reservation(self, checkout_id: uuid.UUID, *, reason: ReleaseReason) -> bool:
+    async def release_reservation(
+        self, checkout_id: uuid.UUID, *, merchant_id: uuid.UUID, reason: ReleaseReason
+    ) -> bool:
         """Give back the stock this checkout is holding, and say why in the trail.
 
         The inverse of preparation, and the reason it exists is that preparation is the only
@@ -393,7 +401,7 @@ class CheckoutExecutionService:
         Nothing here decides whether a purchase happened. This is a claim on stock being
         withdrawn, and no payment exists in this application to have withdrawn it.
         """
-        checkout = await self._checkouts.get_for_update(checkout_id)
+        checkout = await self._checkouts.get_for_update(checkout_id, merchant_id=merchant_id)
         if checkout is None:
             raise NotFoundError("checkout", str(checkout_id))
 
@@ -402,7 +410,7 @@ class CheckoutExecutionService:
         return released
 
     async def execution_authorization(
-        self, checkout_id: uuid.UUID, *, at: datetime | None = None
+        self, checkout_id: uuid.UUID, *, merchant_id: uuid.UUID, at: datetime | None = None
     ) -> CheckoutExecutionAuthorization:
         """Report what both gates say about this checkout, without holding anything.
 
@@ -412,7 +420,7 @@ class CheckoutExecutionService:
         again under locks, because a mandate can be revoked and a checkout can expire in
         between.
         """
-        checkout = await self._checkouts.get(checkout_id)
+        checkout = await self._checkouts.get(checkout_id, merchant_id=merchant_id)
         if checkout is None:
             raise NotFoundError("checkout", str(checkout_id))
 
@@ -429,12 +437,19 @@ class CheckoutExecutionService:
             checkout, mandate, constraint_set, at=at or datetime.now(UTC)
         )
 
-    async def _load_locked(self, checkout_id: uuid.UUID) -> tuple[CheckoutSession, SpendingMandate]:
-        """The quote and the authorization it was written against, both held until commit.
+    async def _load_locked(
+        self, checkout_id: uuid.UUID, *, merchant_id: uuid.UUID
+    ) -> tuple[CheckoutSession, SpendingMandate]:
+        """One merchant's quote and the authorization it was written against, held until
+        commit.
 
         The mandate is found through the checkout rather than supplied, which is what stops
         a checkout from being paired with an authorization someone chose afterwards. The
         constraint set is found through that mandate for the same reason.
+
+        Merchant scoped from the first statement onwards. A quote belonging to somebody else
+        is not found, so a foreign caller never reaches a lock at all and cannot make a
+        merchant's own preparation or payment wait behind one.
 
         The first read is unlocked and is used for one thing, which is learning which
         mandate this quote names. That column is immutable at the database, so reading it
@@ -443,7 +458,7 @@ class CheckoutExecutionService:
         checkout. Doing it the other way round would put this operation and any operation
         that walks from a mandate downwards into a cycle.
         """
-        found = await self._checkouts.get(checkout_id)
+        found = await self._checkouts.get(checkout_id, merchant_id=merchant_id)
         if found is None:
             raise NotFoundError("checkout", str(checkout_id))
 
@@ -459,7 +474,7 @@ class CheckoutExecutionService:
             # RESTRICT, so the mandate cannot have been removed while this quote exists.
             raise NotFoundError("mandate", str(found.mandate_id))
 
-        checkout = await self._checkouts.get_for_update(checkout_id)
+        checkout = await self._checkouts.get_for_update(checkout_id, merchant_id=merchant_id)
         if checkout is None:
             raise NotFoundError("checkout", str(checkout_id))
         return checkout, mandate

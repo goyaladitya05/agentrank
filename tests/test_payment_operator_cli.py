@@ -131,7 +131,9 @@ async def prepared(session: AsyncSession, shop: Shop) -> CheckoutSession:
         expires_at=NOW + HOUR,
     )
     await session.commit()
-    readiness = await CheckoutExecutionService(session).prepare_execution(checkout.id, at=NOW)
+    readiness = await CheckoutExecutionService(session).prepare_execution(
+        checkout.id, merchant_id=checkout.merchant_id, at=NOW
+    )
     assert readiness.ready
     return checkout
 
@@ -144,7 +146,7 @@ async def admitted(session: AsyncSession, shop: Shop, *, key: str = KEY) -> Paym
     """
     checkout = await prepared(session, shop)
     admission = await PaymentAdmissionService(session).admit_payment(
-        checkout.id, idempotency_key=key, at=NOW
+        checkout.id, merchant_id=checkout.merchant_id, idempotency_key=key, at=NOW
     )
     assert admission.attempt is not None
     await session.commit()
@@ -575,7 +577,9 @@ async def test_resume_dispatches_an_admitted_payment_exactly_once(
     assert succeeding.executions_for(KEY) == 1
     assert succeeding.charges == 1
 
-    checkout = await CheckoutRepository(session).get(attempt.checkout_id)
+    checkout = await CheckoutRepository(session).get(
+        attempt.checkout_id, merchant_id=attempt.merchant_id
+    )
     assert checkout is not None
     assert checkout.status is CheckoutStatus.PAID
 

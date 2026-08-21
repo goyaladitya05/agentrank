@@ -12,6 +12,10 @@ creating a new mandate with a new constraint set.
 The evaluation endpoint is a read that writes nothing at all, exactly like the financial one
 beside it. Neither combines with the other: two questions, two answers, and no endpoint that
 folds them into a permission, because nothing here may act on one.
+
+All three require an authenticated merchant. The two keyed by a mandate resolve it scoped to
+the credential's merchant, and the one keyed by a checkout resolves that. Another merchant's
+resource answers 404 in every case.
 """
 
 import uuid
@@ -105,7 +109,7 @@ async def get_intent_constraints(
     responses=NOT_FOUND,
 )
 async def evaluate_intent_authorization(
-    checkout_id: uuid.UUID, session: SessionDep
+    checkout_id: uuid.UUID, session: SessionDep, merchant: MerchantDep
 ) -> IntentAuthorizationView:
     """Report whether this checkout is what the buyer asked for, and if not, why.
 
@@ -117,6 +121,12 @@ async def evaluate_intent_authorization(
     This is not `GET /checkouts/{id}/authorization`, which answers the financial question.
     A checkout can pass either and fail the other, and both have to allow before any payment
     could be considered safe.
+
+    Scoped through the checkout rather than through the constraint set, because the checkout is
+    what the path names. Another merchant's quote answers 404 and the constraints behind it are
+    never read.
     """
-    decision = await CheckoutService(session).evaluate_intent_constraints(checkout_id)
+    decision = await CheckoutService(session).evaluate_intent_constraints(
+        checkout_id, merchant_id=merchant.merchant_id
+    )
     return IntentAuthorizationView.from_decision(decision)
