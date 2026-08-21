@@ -31,9 +31,9 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from agentrank_api.models import Base, TimestampMixin
+from agentrank_api.money import CURRENCY_PATTERN
 
 SLUG_PATTERN = r"^[a-z0-9]+(-[a-z0-9]+)*$"
-CURRENCY_PATTERN = r"^[A-Z]{3}$"
 
 
 class Merchant(TimestampMixin, Base):
