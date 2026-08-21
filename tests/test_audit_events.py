@@ -10,12 +10,13 @@ from typing import Any, cast
 
 import pytest
 from sqlalchemy.exc import DBAPIError, IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from agentrank_api.audit.models import ActorType, AuditEvent
 from agentrank_api.audit.repository import AuditRepository
 from agentrank_api.commerce.models import Merchant
 from agentrank_api.commerce.repository import MerchantRepository
+from agentrank_api.database import create_session_factory
 
 pytestmark = pytest.mark.anyio
 
@@ -150,3 +151,42 @@ async def test_display_text_is_not_an_event_type(session: AsyncSession, merchant
     """Event types are stable machine readable identifiers, not labels for a screen."""
     with pytest.raises(IntegrityError):
         await append(session, merchant, uuid.uuid7(), "Mandate Created")
+
+
+@pytest.fixture
+def factory(catalog_engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
+    """Independent sessions, so two transactions can overlap for real."""
+    return create_session_factory(catalog_engine)
+
+
+async def test_occurred_at_is_append_time_and_not_commit_order(
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession], merchant: Merchant
+) -> None:
+    """The honest limit of this column, asserted so nothing later assumes otherwise.
+
+    `now()` in PostgreSQL is `transaction_timestamp()`, so `occurred_at` is when the writing
+    transaction began. A transaction that starts first and commits last therefore stamps its
+    event earlier than one that started later and committed first, and the log's order is
+    append order rather than commit order.
+
+    That is stated rather than fixed. Switching to `clock_timestamp()` would not make it commit
+    order either, and it would cost the property that events written in one transaction share
+    one instant, which is how other tests say "these were one unit of work". The consequence
+    that matters is the rule this pins: nothing may infer that one thing happened before
+    another from the relative order of these rows. See docs/decisions.md.
+    """
+    slow_resource, quick_resource = uuid.uuid7(), uuid.uuid7()
+
+    async with factory() as slow, factory() as quick:
+        # The slow transaction starts first, which is what stamps its event first.
+        slow_event = await append(slow, merchant, slow_resource, "mandate.created")
+        quick_event = await append(quick, merchant, quick_resource, "mandate.created")
+        # And commits last.
+        await quick.commit()
+        await slow.commit()
+
+        assert slow_event.occurred_at < quick_event.occurred_at
+
+    events = await AuditRepository(session).list_for_merchant(merchant.id)
+    # Read back in the order the column gives, which is the reverse of the commit order.
+    assert [event.resource_id for event in events] == [slow_resource, quick_resource]

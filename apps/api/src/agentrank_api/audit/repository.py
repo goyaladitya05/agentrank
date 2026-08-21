@@ -41,8 +41,23 @@ class AuditRepository:
         and this event in one transaction, so a mandate cannot exist without the event
         that says it was created.
 
-        `occurred_at` comes from the database clock, so events from several application
-        instances order against each other rather than against their own clocks.
+        `occurred_at` comes from the database clock rather than the process clock, so events
+        written by several application instances are stamped by one clock rather than by
+        several that disagree.
+
+        It is append time, and specifically it is transaction time: `now()` in PostgreSQL is
+        `transaction_timestamp()`, so every event written in one transaction carries the
+        instant that transaction began. That is deliberate and it is what lets the trail show
+        that a state change and the event recording it were one unit of work.
+
+        It is not commit time, and this column is not commit order. A transaction that starts
+        first and commits last stamps its event earlier than one that started later and
+        committed first. Nothing here is commit order: version 7 identifiers and any counter
+        added later are allocated when a row is written, not when its transaction commits.
+
+        The rule that follows, and it matters most for the phase that adds payments: never
+        infer that one thing happened before another from the relative order of these rows.
+        Authoritative state and its locked transitions decide that. See docs/decisions.md.
         """
         event = AuditEvent(
             merchant_id=merchant_id,
