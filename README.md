@@ -70,6 +70,25 @@ docker compose down
 Data lives in the named volume `agentrank_postgres_data` and survives container restarts.
 Remove it with `docker compose down -v` when a clean database is wanted.
 
+## Backend
+
+Start PostgreSQL first, then run the API:
+
+```bash
+uv run uvicorn agentrank_api.main:create_app --factory --reload --port 8000
+```
+
+| Endpoint | Meaning |
+|----------|---------|
+| `GET /health` | The API process is running. Never touches the database. |
+| `GET /ready` | Every required dependency is reachable. Returns 503 when one is not. |
+
+Run the backend tests, which need a running database:
+
+```bash
+uv run pytest
+```
+
 ## Layout
 
 ```text

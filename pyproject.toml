@@ -3,16 +3,20 @@ name = "agentrank"
 version = "0.0.0"
 description = "AI commerce readiness benchmark and Merchant Compiler"
 requires-python = "==3.14.*"
-dependencies = []
+dependencies = ["agentrank-api"]
 
 [tool.uv]
 package = false
+
+[tool.uv.sources]
+agentrank-api = { workspace = true }
 
 [tool.uv.workspace]
 members = ["apps/*", "packages/*"]
 
 [dependency-groups]
 dev = [
+    "httpx2>=2.0",
     "mypy>=1.18",
     "pytest>=8.4",
     "ruff>=0.14",
@@ -58,3 +62,6 @@ exclude = ["\\.venv", "node_modules"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --strict-markers --strict-config"
+# Warnings are failures so that deprecations are dealt with when they appear rather
+# than accumulating until an upgrade forces the issue.
+filterwarnings = ["error"]
