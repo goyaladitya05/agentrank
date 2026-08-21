@@ -8,10 +8,11 @@ UV ?= uv
 PNPM ?= pnpm
 WEB := --filter @agentrank/web
 API_APP := agentrank_api.main:create_app
+OPERATOR_CLI := agentrank_api.cli
 
 .PHONY: help install format lint format-check typecheck test test-backend test-frontend \
 	build-frontend check-text check-whitespace check \
-	db-up db-down db-reset db-verify migrate seed-dev api web
+	db-up db-down db-reset db-verify migrate seed-dev api web payments
 
 help: ## List available targets
 	@grep -hE '^[a-zA-Z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) \
@@ -82,3 +83,6 @@ api: ## Run the API with reload
 
 web: ## Run the console with reload
 	$(PNPM) $(WEB) dev
+
+payments: ## Run the payment operator CLI. Example: make payments ARGS="list-unresolved"
+	$(UV) run python -m $(OPERATOR_CLI) payments $(ARGS)

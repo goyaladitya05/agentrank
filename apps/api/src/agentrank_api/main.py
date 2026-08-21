@@ -10,8 +10,8 @@ from fastapi.responses import JSONResponse
 from agentrank_api.config import Settings, get_settings
 from agentrank_api.database import create_engine, create_session_factory
 from agentrank_api.errors import ConflictError, ErrorResponse, NotFoundError
-from agentrank_api.payments.fake import FakePaymentProvider
 from agentrank_api.payments.provider import PaymentProvider
+from agentrank_api.payments.wiring import build_payment_provider
 from agentrank_api.routes import checkouts, commerce, constraints, mandates, payments, system
 
 
@@ -25,12 +25,14 @@ def create_app(
 
     The payment provider is injectable for the same reason and for one more: it is the only
     part of this system that is not this system, and a test that cannot configure a decline
-    cannot test one. The default is a deterministic fake that succeeds, because it is the only
-    implementation that exists. Phase 1F is provider independent on purpose, and no request
-    field can select a different outcome.
+    cannot test one. The default comes from `build_payment_provider`, which is the one place
+    the choice is made, so the operator command line and this application cannot end up wired
+    to different providers. It is a deterministic fake, because it is the only implementation
+    that exists. Phase 1F is provider independent on purpose, and no request field can select a
+    different outcome.
     """
     resolved = settings or get_settings()
-    provider = payment_provider or FakePaymentProvider()
+    provider = payment_provider or build_payment_provider()
     logging.basicConfig(level=resolved.log_level.upper())
 
     @asynccontextmanager

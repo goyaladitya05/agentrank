@@ -416,17 +416,24 @@ def test_abandonment_is_not_reachable_over_http() -> None:
     Nothing authenticates a caller anywhere in this application yet. An HTTP route that
     terminalized a payment would let anybody who can reach the process release stock that a
     real charge may be standing behind, which is strictly worse than the state it recovers
-    from. The check is on the built application rather than on a route module, because a route
-    added anywhere would show up here.
-    """
-    from fastapi.routing import APIRoute
+    from. The check is on the whole generated schema rather than on a route module, because a
+    route added anywhere would show up here.
 
+    It reads the OpenAPI document rather than `app.routes`. This version of FastAPI keeps an
+    included router as a single `_IncludedRouter` entry rather than flattening it into
+    `APIRoute` objects, so scanning `app.routes` for them finds nothing and every negative
+    assertion made that way passed for the wrong reason. Corrected in Phase 1G, with a
+    positive assertion beside the negative ones so that an empty set can never satisfy this
+    test again.
+    """
     from agentrank_api.main import create_app
 
-    paths = {route.path for route in create_app().routes if isinstance(route, APIRoute)}
+    paths = set(create_app().openapi()["paths"])
 
     assert not any("abandon" in path for path in paths)
     assert not any("recovery" in path for path in paths)
+    # The check that stops a vacuous pass: the payment surface really is published here.
+    assert "/api/v1/commerce/payments/{attempt_id}/reconcile" in paths
 
 
 async def _force_in_flight(session: AsyncSession, attempt_id: uuid.UUID) -> None:

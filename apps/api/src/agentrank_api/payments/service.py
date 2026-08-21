@@ -139,5 +139,37 @@ class PaymentService:
         Delegated unchanged, including whether a provider was asked and whether anything moved.
         It exists here so that a route has one service to talk to rather than two, not because
         there is anything to add.
+
+        It queries and never charges, which is what makes it safe to offer to an operator and
+        what makes it the wrong operation for an ADMITTED attempt. That one is refused by name
+        and is `resume`'s business.
         """
         return await self._execution.reconcile(attempt_id)
+
+    async def resume(self, attempt_id: uuid.UUID) -> PaymentOutcome:
+        """Send a payment that was admitted and never dispatched, and record the answer.
+
+        The operator half of the crash after admission recovery. `pay` already does this for a
+        buyer retrying the same identity, and there is no buyer here: the request that admitted
+        this attempt died, nobody is going to retry it, and the payment sits holding a
+        merchant's stock and a buyer's mandate until somebody completes or ends it.
+
+        This is the only operator command that can move money, and the name says so. It is
+        deliberately not part of `reconcile`, which everywhere else in this system means asking
+        rather than doing. An operator running something called reconcile against a list of
+        stuck payments must not discover afterwards that some of them were charged.
+
+        Delegated to the same dispatch every payment goes through, so every property of that
+        path holds unchanged: only ADMITTED may be dispatched and every other state is refused
+        by name, IN_FLIGHT is committed before the network call so the doubt stays one sided,
+        the provider is called with no transaction open, and the outcome is recorded through
+        the same locked transaction a buyer's payment uses. It cannot reach a provider except
+        through that path and it holds no provider of its own.
+
+        Admission is deliberately not re-run. The authorization instant was when the attempt
+        was written, and re-deciding it now would refuse a payment because a quote expired
+        while the process was down, which would strand exactly the attempt this exists to
+        finish. It is the same reasoning `dispatch` already documents, and it is why this
+        delegates there rather than to `pay`.
+        """
+        return await self._execution.dispatch(attempt_id)

@@ -71,6 +71,11 @@ ABANDONMENT_ACTOR = ActorType.SYSTEM
 # asked at least once before anybody decides to stop asking.
 ABANDONABLE_STATUSES: tuple[PaymentAttemptStatus, ...] = (PaymentAttemptStatus.UNKNOWN,)
 
+# How long an operator's free text reference may be. Long enough for a ticket identifier and a
+# few words of context, short enough that nobody mistakes the field for a place to write a
+# report and short enough that it cannot bury the structured reason beside it.
+MAX_OPERATOR_NOTE_LENGTH = 200
+
 
 class AbandonmentReason(StrEnum):
     """Why an operator decided an unresolved payment would never be resolved.
@@ -98,6 +103,35 @@ class AbandonmentReason(StrEnum):
     OPERATOR_DECISION = "operator_decision"
 
 
+def validate_operator_note(note: str) -> str:
+    """Check a short human reference and return it trimmed, or refuse it.
+
+    Beside the reason rather than instead of it. The reason stays a required enumeration and
+    nothing here weakens that: this cannot be the only thing recorded, it cannot be aggregated
+    over, and no code branches on it. What it is for is the thing an enumeration structurally
+    cannot carry, which is which incident this particular decision belonged to. `incident-123`
+    or `support-ticket-456` is enough to reconstruct a judgement call a month later.
+
+    Bounded and single line. Long enough for a reference and a few words, short enough that it
+    cannot become a report, and free of control characters so that a value written here cannot
+    reformat a terminal or a log line that prints it back.
+
+    Nothing scans it, and it must never carry a secret. A key, a card number or a password put
+    here lands in an append only table that refuses UPDATE and DELETE, which is the worst
+    possible place for one. See docs/security.md.
+    """
+    trimmed = note.strip()
+    if not trimmed:
+        raise ValueError("an operator note cannot be blank")
+    if len(trimmed) > MAX_OPERATOR_NOTE_LENGTH:
+        raise ValueError(
+            f"an operator note is at most {MAX_OPERATOR_NOTE_LENGTH} characters, got {len(trimmed)}"
+        )
+    if not trimmed.isprintable():
+        raise ValueError("an operator note must be a single line of printable characters")
+    return trimmed
+
+
 class PaymentRecoveryService:
     """Terminalize an unresolved payment by decision rather than by evidence.
 
@@ -114,7 +148,7 @@ class PaymentRecoveryService:
         self._audit = AuditRepository(session)
 
     async def abandon_payment_attempt(
-        self, attempt_id: uuid.UUID, *, reason: AbandonmentReason
+        self, attempt_id: uuid.UUID, *, reason: AbandonmentReason, note: str | None = None
     ) -> PaymentOutcome:
         """Give up on one unresolved payment, atomically, and say so in the trail.
 
@@ -141,7 +175,13 @@ class PaymentRecoveryService:
 
         `provider_called` is always false on the result, and that is the honest headline: no
         provider was involved in this and none confirmed anything.
+
+        `note` is an optional short human reference, recorded beside the reason and never
+        instead of it. It exists because a three value enumeration cannot say which incident a
+        judgement belonged to, and it is deliberately something nothing aggregates over and
+        nothing branches on. It must never carry a secret: this lands in an append only table.
         """
+        recorded_note = None if note is None else validate_operator_note(note)
         attempt = await self._attempts.get(attempt_id)
         if attempt is None:
             raise NotFoundError(PAYMENT_RESOURCE, str(attempt_id))
@@ -183,7 +223,7 @@ class PaymentRecoveryService:
             event_type=PAYMENT_ABANDONED,
             resource_type=PAYMENT_RESOURCE,
             resource_id=locked.id,
-            payload=_abandoned_payload(locked, reason),
+            payload=_abandoned_payload(locked, reason, recorded_note),
         )
         await self._session.commit()
         return PaymentOutcome(attempt=locked, changed=True)
@@ -196,7 +236,9 @@ def _already_abandoned(attempt: PaymentAttempt) -> bool:
     )
 
 
-def _abandoned_payload(attempt: PaymentAttempt, reason: AbandonmentReason) -> dict[str, object]:
+def _abandoned_payload(
+    attempt: PaymentAttempt, reason: AbandonmentReason, note: str | None
+) -> dict[str, object]:
     """What was given up on, and the fact that nobody confirmed anything.
 
     `provider_confirmed` is stated rather than implied. Every other terminal payment event in
@@ -204,6 +246,11 @@ def _abandoned_payload(attempt: PaymentAttempt, reason: AbandonmentReason) -> di
     at a glance that this one is not. `residual_risk` says what may still be true, in the
     record itself rather than only in a document: the money may have moved, and the stock has
     gone back anyway.
+
+    `operator_note` is always present and is null when none was given, so every abandonment
+    event has one shape and a reader never has to tell a missing key from a missing note. It
+    sits after the structured reason rather than beside it, which is the order it should be
+    read in: the reason is the fact, and the note is the context somebody added to it.
     """
     return {
         "checkout_id": str(attempt.checkout_id),
@@ -214,6 +261,7 @@ def _abandoned_payload(attempt: PaymentAttempt, reason: AbandonmentReason) -> di
         "status": attempt.status.value,
         "failure_code": attempt.failure_code,
         "reason": reason.value,
+        "operator_note": note,
         "provider_confirmed": False,
         "residual_risk": "the provider may later reveal that this payment succeeded",
     }

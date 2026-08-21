@@ -1,0 +1,171 @@
+"""The operator command line, and the reason it is a command line rather than an endpoint.
+
+Payment recovery needs a surface. Reconciliation exists, abandonment exists, an unresolved
+payment can be listed, and until now none of it could be reached by anybody who was not
+willing to open a Python REPL and write a session by hand. That is not a recovery path; it is
+a recovery path's ingredients.
+
+The surface is this, and specifically not HTTP. Nothing in this application authenticates
+anybody yet. An endpoint that terminalized a payment or released a merchant's stock would be
+an unauthenticated way to do exactly that, which is strictly worse than the stuck payment it
+recovers from. A command line moves the trust boundary onto something that already exists: to
+run these commands you must already be able to run this repository's code against this
+repository's database, and anybody who can do that could write the session by hand anyway.
+
+```text
+what the CLI can do            what it deliberately cannot
+------------------------------ ------------------------------
+list unresolved payments       select a provider
+inspect one payment            set a status
+query a provider               release a reservation on its own
+dispatch an admitted payment   rewrite a terminal outcome
+abandon an unresolved payment  do any of it over the network
+```
+
+Every command delegates. There is no SQL here, no lock, no transaction and no rule about what
+a payment may do next: those live in `agentrank_api.payments` and a second copy of any of them
+in a command would be a second answer to a question that must have one. What is here is
+argument parsing, one call into a service, and printing.
+
+The commands are grouped under `payments` because operator tooling will eventually cover more
+than payments, and a flat command list is a thing that is easy to add to and impossible to
+read later.
+
+Run it through the repository environment:
+
+```bash
+uv run python -m agentrank_api.cli payments list-unresolved
+uv run python -m agentrank_api.cli payments show <attempt-id>
+uv run python -m agentrank_api.cli payments reconcile <attempt-id>
+uv run python -m agentrank_api.cli payments resume <attempt-id>
+uv run python -m agentrank_api.cli payments abandon <attempt-id> --reason provider_unreachable
+uv run python -m agentrank_api.cli payments status
+```
+
+Exit codes are meant to be acted on by a script as well as read by a person:
+
+```text
+0  the command ran and reported what it found
+1  an unexpected internal failure, with the traceback, because this is a trusted tool
+2  the arguments were wrong
+3  the payment named does not exist
+4  the current state refuses the operation
+```
+
+A payment that is still UNKNOWN after a successful reconciliation is a zero. The command did
+what it was asked, the provider answered, and "nobody knows yet" is a finding rather than a
+failure. Only a refusal, a missing payment, bad arguments or a crash are non zero.
+
+Operator identity is not recorded, because there is nothing to record. Audit events written
+through these commands are attributed to a role, exactly as they are everywhere else in this
+system, and the role is honest: `SYSTEM` for an abandonment, because this application acted,
+and `PAYMENT_PROVIDER` for an outcome, because a provider reported it. Nothing here reads a
+Unix username and calls it authentication. Attributing an abandonment to a person requires an
+authenticated person, which is Phase 1H. See docs/security.md.
+"""
+
+import argparse
+import asyncio
+import sys
+from collections.abc import Sequence
+from typing import TextIO
+
+from agentrank_api.cli import payments
+from agentrank_api.cli.exits import ExitCode
+from agentrank_api.config import Settings, get_settings
+from agentrank_api.database import create_engine, create_session_factory
+from agentrank_api.errors import ConflictError, NotFoundError
+from agentrank_api.payments.provider import PaymentProvider
+from agentrank_api.payments.wiring import build_payment_provider
+
+PROGRAM = "agentrank"
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """The whole command surface, declared in one place.
+
+    argparse rather than a framework. There are seven commands, none of them has a nested
+    option group, and a dependency added for this would be a dependency in the deployment
+    artifact for the sake of coloured help text.
+    """
+    parser = argparse.ArgumentParser(
+        prog=PROGRAM,
+        description="AgentRank operator tooling. Trusted local surface, no authentication.",
+    )
+    groups = parser.add_subparsers(dest="group", required=True)
+    payments.add_commands(groups.add_parser("payments", help="payment operations and recovery"))
+    return parser
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    settings: Settings | None = None,
+    provider: PaymentProvider | None = None,
+    out: TextIO | None = None,
+    err: TextIO | None = None,
+) -> int:
+    """Parse, run one command and report.
+
+    Every collaborator is injectable and none of them is discovered. Settings and the provider
+    are parameters so that a test runs the real commands against a real database and a
+    configured fake, which is the only way a recovery path gets tested at all: the interesting
+    cases are a provider that times out, a provider with no record and a provider that
+    guarantees absence, and none of those can be asked for from the outside.
+
+    Injectable is not selectable. There is no flag, no environment variable and no argument
+    that chooses a provider, so an operator cannot point this at something the application is
+    not running with. The default comes from `build_payment_provider`, the same function
+    `create_app` uses.
+
+    The two deliberate errors are caught here rather than in each command, for the same reason
+    the application installs exception handlers rather than catching in routes: a refusal means
+    the same thing whichever command produced it. Everything else propagates.
+    """
+    parser = build_parser()
+    arguments = parser.parse_args(argv)
+    stream = sys.stdout if out is None else out
+    errors = sys.stderr if err is None else err
+
+    try:
+        return asyncio.run(
+            _run(
+                arguments,
+                settings=get_settings() if settings is None else settings,
+                provider=build_payment_provider() if provider is None else provider,
+                out=stream,
+            )
+        )
+    except NotFoundError as missing:
+        print(f"not found: {missing}", file=errors)
+        return ExitCode.NOT_FOUND
+    except ConflictError as refused:
+        print(f"refused: {refused.reason}: {refused.detail}", file=errors)
+        return ExitCode.REFUSED
+
+
+async def _run(
+    arguments: argparse.Namespace,
+    *,
+    settings: Settings,
+    provider: PaymentProvider,
+    out: TextIO,
+) -> int:
+    """Open one engine and one session for one command, and close both.
+
+    A command is a short lived process, so the engine is built and disposed around it rather
+    than kept. The session is the same object a route would hand a service, which is what makes
+    the command path the real path: the transaction boundaries, the locks and the commits are
+    the service's, exactly as they are over HTTP.
+    """
+    engine = create_engine(settings)
+    try:
+        factory = create_session_factory(engine)
+        async with factory() as session:
+            command: payments.Command = arguments.command
+            return await command(session, provider, arguments, out)
+    finally:
+        await engine.dispose()
+
+
+__all__ = ["ExitCode", "build_parser", "main"]

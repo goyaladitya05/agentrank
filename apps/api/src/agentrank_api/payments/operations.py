@@ -75,6 +75,14 @@ UNRESOLVED_STATUSES: tuple[PaymentAttemptStatus, ...] = OPEN_STATUSES
 DEFAULT_EVENT_LIMIT = 10
 MAX_EVENT_LIMIT = 50
 
+# The order a summary reports statuses in: the ones an operator has work to do about first,
+# then the ones they do not. Derived from the two definitions above rather than written out,
+# so a status added to the enum appears in a summary without anybody remembering to add it
+# here, and so the unresolved half cannot silently stop being the first half.
+COUNT_ORDER: tuple[PaymentAttemptStatus, ...] = UNRESOLVED_STATUSES + tuple(
+    status for status in PaymentAttemptStatus if status not in UNRESOLVED_STATUSES
+)
+
 
 class PaymentOperationResult(StrEnum):
     """What one reconciliation did, said in the words an operator has to act on.
@@ -126,6 +134,15 @@ class PaymentOperationResult(StrEnum):
         Only a sweep produces this. The kernel refused this attempt for a reason the sweep
         recorded and carried on from, so that one payment cannot cost an operator the report
         on all the others.
+
+    ABANDONED
+        An operator ended an unresolved payment on a judgement. Its own value rather than
+        RESOLVED_FAILURE, for the same reason `payment.abandoned` is its own event: the rows
+        moved exactly as a definitive failure moves them and it is not one, and nobody reading
+        a report afterwards should have to know that to tell the two apart.
+
+    ALREADY_ABANDONED
+        The same decision, asked again. Nothing was released twice.
     """
 
     RESOLVED_SUCCESS = "resolved_success"
@@ -137,10 +154,17 @@ class PaymentOperationResult(StrEnum):
     OUTCOME_CONFLICT = "outcome_conflict"
     SKIPPED_NOT_DISPATCHED = "skipped_not_dispatched"
     REFUSED = "refused"
+    ABANDONED = "abandoned"
+    ALREADY_ABANDONED = "already_abandoned"
 
 
 def classify(outcome: PaymentOutcome) -> PaymentOperationResult:
-    """Turn one reconciliation's result into the sentence an operator needs.
+    """Turn one dispatch or one reconciliation into the sentence an operator needs.
+
+    Both, and the same branches serve both. A dispatch always called a provider and never
+    carries a record, so it lands on the definitive branches or on STILL_UNRESOLVED, which is
+    exactly right: an ambiguous answer to a payment that was just sent is a payment nobody
+    knows the result of.
 
     Order matters and each branch is a decision.
 
@@ -148,7 +172,7 @@ def classify(outcome: PaymentOutcome) -> PaymentOperationResult:
     and it must never be reported as whichever of them happens to stand.
 
     Then "no provider was asked", which for a reconciliation means exactly one thing: the
-    attempt was already terminal and there was nothing to learn.
+    attempt was already terminal and there was nothing to learn. A dispatch cannot reach it.
 
     Then the two definitive resolutions, read off the authoritative row rather than off what
     the provider said. A failure carrying `PROVIDER_NEVER_EXECUTED` is reported as the
@@ -228,7 +252,9 @@ class PaymentStatusCounts:
     The terminal counts are lifetime totals rather than a recent window, and that is stated
     here as well as in the repository because a number labelled "failed" invites being read as
     "failed lately". Every status is present, including the ones with no rows, so a caller
-    renders a stable set of lines rather than a set that changes shape with the data.
+    renders a stable set of lines rather than a set that changes shape with the data, and the
+    unresolved ones come first because they are the ones that mean somebody has to do
+    something.
     """
 
     observed_at: datetime
@@ -265,6 +291,25 @@ class PaymentOperationsService:
         # for as long as a terminal takes to print is a cost with no purpose.
         await self._session.commit()
         return UnresolvedPayments(observed_at=observed_at, limit=applied, payments=tuple(payments))
+
+    async def payment(self, attempt_id: uuid.UUID) -> PaymentOperationRow:
+        """One payment's current operational state, with no trail beside it.
+
+        The read a command makes either side of a mutation, so that it can report what moved
+        rather than only where things ended up. Deliberately cheaper than `show`: nothing here
+        needs the audit tail, and fetching one to throw it away twice per command would be a
+        cost with no reader.
+
+        It is an ordinary read and specifically not a lock. Nothing is decided from it. What
+        decides is the kernel operation between the two calls, which takes its own locks and
+        re-reads everything it acts on.
+        """
+        found = await self._attempts.get_operational(attempt_id)
+        if found is None:
+            await self._session.rollback()
+            raise NotFoundError(PAYMENT_RESOURCE, str(attempt_id))
+        await self._session.commit()
+        return found
 
     async def show(
         self, attempt_id: uuid.UUID, *, events: int = DEFAULT_EVENT_LIMIT
@@ -310,7 +355,7 @@ class PaymentOperationsService:
         await self._session.commit()
         return PaymentStatusCounts(
             observed_at=observed_at,
-            counts={status: counted.get(status, 0) for status in PaymentAttemptStatus},
+            counts={status: counted.get(status, 0) for status in COUNT_ORDER},
         )
 
 
