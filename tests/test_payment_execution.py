@@ -361,6 +361,56 @@ async def test_a_client_retry_of_the_same_payment_calls_the_provider_once(
     assert provider.charges == 1
 
 
+async def test_a_retry_is_safe_after_the_provider_has_forgotten_the_key(
+    session: AsyncSession, shop: Shop, provider: FakePaymentProvider
+) -> None:
+    """Provider idempotency is finite everywhere, and nothing here depends on it.
+
+    The test above proves nothing is sent twice while the provider still remembers the
+    identity, which leaves open the question of what is actually doing the work. This closes
+    it: the provider's retention window passes, so a second execute under that key really would
+    charge again, and the retry still reaches no provider at all.
+
+    What prevents the second charge is a committed `PaymentAttempt` and the partial unique
+    indexes above it, both of which outlive any processor's memory. That is the property that
+    has to survive a real integration, where the retention window is a vendor's decision and
+    is measured in hours.
+    """
+    provider.default = FakeOutcome.SUCCESS
+    provider.clock = NOW
+    provider.idempotency_retention = timedelta(minutes=10)
+    checkout = await prepared(session, shop)
+    admission_service = PaymentAdmissionService(session)
+    first = await admission_service.admit_payment(checkout.id, idempotency_key=KEY, at=NOW)
+    assert first.attempt is not None
+    attempt_id = first.attempt.id
+    before = await stock(session, shop.black)
+    await PaymentExecutionService(session, provider).dispatch(attempt_id)
+
+    # The provider forgets. Its ledger still holds the payment, and it would no longer replay
+    # the identity, so an execute under this key now would be a second operation.
+    provider.clock = NOW + timedelta(minutes=10)
+    recorded = provider.ledger[KEY].recorded_at
+    assert recorded is not None
+    assert provider.clock - recorded >= provider.idempotency_retention
+
+    retried = await admission_service.admit_payment(checkout.id, idempotency_key=KEY, at=NOW)
+
+    assert retried.attempt is not None
+    assert retried.attempt.id == attempt_id
+    assert retried.created is False
+    assert retried.attempt.status is PaymentAttemptStatus.SUCCEEDED
+    # And a different key under the same mandate is refused rather than becoming a second
+    # payment, which is the other half of the same protection.
+    fresh = await admission_service.admit_payment(checkout.id, idempotency_key=OTHER_KEY, at=NOW)
+    assert not fresh.admitted
+
+    assert provider.executions_for(KEY) == 1
+    assert provider.executions_for(OTHER_KEY) == 0
+    assert provider.charges == 1
+    assert await stock(session, shop.black) == before - 1
+
+
 async def test_a_settled_attempt_cannot_be_dispatched_again(
     session: AsyncSession, shop: Shop, provider: FakePaymentProvider
 ) -> None:
