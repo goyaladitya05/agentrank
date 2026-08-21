@@ -15,6 +15,10 @@ from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, Field, model_validator
 
+from agentrank_api.constraints.rules import (
+    MAX_ATTRIBUTE_KEY_LENGTH,
+    ConstraintOperator,
+)
 from agentrank_api.mandates.intent import (
     MAX_DESCRIPTION_LENGTH,
     MAX_HARD_CONSTRAINTS,
@@ -56,13 +60,30 @@ class MaxQuantityInput(BaseModel):
         return MaxQuantity(quantity=self.quantity)
 
 
+# A constraint value keeps its type on the wire. `100` is a number, `"100"` is text, and
+# the evaluator will never compare one against the other, so collapsing them here would
+# make an authorization mean something different from what was sent.
+ConstraintValueInput = bool | int | float | str
+ConstraintValuesInput = ConstraintValueInput | list[ConstraintValueInput]
+
+
 class RequiredAttributeInput(BaseModel):
+    """A structured attribute the purchase must carry.
+
+    `operator` defaults to `EQ`, which is what an unqualified "colour black" means. A list
+    value is accepted only beside `IN`, and an ordering comparison only beside a number;
+    both rules live in the domain and are applied when this is converted, so a wrong shape
+    is a 422 naming the constraint rather than an error from inside a route.
+    """
+
     kind: Literal[ConstraintKind.REQUIRED_ATTRIBUTE]
-    name: str = Field(min_length=1, max_length=MAX_STATEMENT_LENGTH)
-    value: str = Field(min_length=1, max_length=MAX_STATEMENT_LENGTH)
+    name: str = Field(min_length=1, max_length=MAX_ATTRIBUTE_KEY_LENGTH)
+    operator: ConstraintOperator = ConstraintOperator.EQ
+    value: ConstraintValuesInput
 
     def to_domain(self) -> RequiredAttribute:
-        return RequiredAttribute(name=self.name, value=self.value)
+        value = tuple(self.value) if isinstance(self.value, list) else self.value
+        return RequiredAttribute(name=self.name, operator=self.operator, value=value)
 
 
 class AllowedCategoryInput(BaseModel):

@@ -7,12 +7,21 @@ that decides whether money may move will ever read an intent.
 
 Two kinds of statement live here and the difference is the whole point:
 
-- a hard constraint is typed, and is shaped so that a future checkout can be checked
-  against it deterministically, without a model in the loop
+- a hard constraint is typed, and is shaped so that a checkout can be checked against it
+  deterministically, without a model in the loop
 - a preference is advisory prose. It may guide a planner. It is never enforced, and no
   amount of it can widen what a mandate permits
 
-Nothing here is persisted. See docs/decisions.md for why.
+Nothing here is persisted. An intent is a request, not authorization data. Its enforceable
+half is validated into an `IntentConstraintSet`, which is authoritative and immutable, and
+that is what execution will read. The description and the preferences survive only in the
+`mandate.created` audit payload, and nothing reads them back. See docs/decisions.md.
+
+The financial kinds here are the exception to that. `MaxTotalAmount` and `MaxQuantity` are
+never persisted as constraints, because a `SpendingMandate` is the only authority on money
+and a ceiling stored in two places is a ceiling that can disagree with itself. They are
+validated against the mandate instead, so a buyer's stated limit cannot be quietly widened
+by the authorization that replaces it.
 """
 
 import uuid
@@ -21,6 +30,12 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, ClassVar
 
+from agentrank_api.constraints.rules import (
+    MAX_ATTRIBUTE_KEY_LENGTH,
+    ConstraintOperator,
+    ConstraintValue,
+    validate_constraint_value,
+)
 from agentrank_api.money import validate_amount_minor, validate_currency
 
 MAX_DESCRIPTION_LENGTH = 1000
@@ -94,22 +109,33 @@ class MaxQuantity:
 class RequiredAttribute:
     """A variant attribute the purchased item must carry.
 
-    Compared against `variant.attributes`, which is why both sides are strings: the JSONB
-    document is heterogeneous and a typed comparison would need a schema no merchant
-    supplies.
+    Compared against `variant.attributes` as it was snapshotted onto a checkout line. The
+    comparison is stated rather than assumed: "wattage at least 100" and "colour exactly
+    black" are both hard constraints and they are not the same test, so the operator is a
+    field and the value keeps its type.
+
+    `operator` and the value rules come from `agentrank_api.constraints.rules`, which is
+    also what the authoritative constraint table stores and what the evaluator compares
+    with. One vocabulary rather than a buyer facing one and a storage one that drift.
     """
 
     KIND: ClassVar[ConstraintKind] = ConstraintKind.REQUIRED_ATTRIBUTE
 
     name: str
-    value: str
+    value: ConstraintValue
+    operator: ConstraintOperator = ConstraintOperator.EQ
 
     def __post_init__(self) -> None:
-        _require_text(self.name, "attribute name")
-        _require_text(self.value, "attribute value")
+        _require_text(self.name, "attribute name", limit=MAX_ATTRIBUTE_KEY_LENGTH)
+        validate_constraint_value(self.operator, self.value)
 
     def to_payload(self) -> dict[str, Any]:
-        return {"kind": self.KIND.value, "name": self.name, "value": self.value}
+        return {
+            "kind": self.KIND.value,
+            "name": self.name,
+            "operator": self.operator.value,
+            "value": list(self.value) if isinstance(self.value, tuple) else self.value,
+        }
 
 
 @dataclass(frozen=True, slots=True)

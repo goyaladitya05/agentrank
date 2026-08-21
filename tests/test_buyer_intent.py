@@ -9,6 +9,7 @@ import uuid
 
 import pytest
 
+from agentrank_api.constraints.rules import ConstraintOperator
 from agentrank_api.mandates.intent import (
     AllowedCategory,
     BuyerIntent,
@@ -28,6 +29,7 @@ def test_an_intent_serializes_to_a_json_object() -> None:
             MaxTotalAmount(amount_minor=500000, currency="INR"),
             MaxQuantity(quantity=1),
             RequiredAttribute(name="connector", value="usb-c"),
+            RequiredAttribute(name="wattage", operator=ConstraintOperator.GTE, value=100),
             AllowedCategory(category="chargers"),
         ),
         preferences=(Preference(statement="prefer next day delivery"),),
@@ -43,7 +45,18 @@ def test_an_intent_serializes_to_a_json_object() -> None:
         "hard_constraints": [
             {"kind": "max_total_amount", "amount_minor": 500000, "currency": "INR"},
             {"kind": "max_quantity", "quantity": 1},
-            {"kind": "required_attribute", "name": "connector", "value": "usb-c"},
+            {
+                "kind": "required_attribute",
+                "name": "connector",
+                "operator": "EQ",
+                "value": "usb-c",
+            },
+            {
+                "kind": "required_attribute",
+                "name": "wattage",
+                "operator": "GTE",
+                "value": 100,
+            },
             {"kind": "allowed_category", "category": "chargers"},
         ],
         "preferences": ["prefer next day delivery"],
@@ -92,3 +105,25 @@ def test_repeatable_constraints_may_appear_more_than_once() -> None:
         "chargers",
         "cables",
     ]
+
+
+def test_a_required_attribute_states_how_it_is_compared() -> None:
+    """The operator is a field, because "at least 100W" and "exactly black" differ."""
+    assert RequiredAttribute(name="color", value="black").operator is ConstraintOperator.EQ
+
+    with pytest.raises(ValueError, match="compares numbers"):
+        RequiredAttribute(name="wattage", operator=ConstraintOperator.GTE, value="100")
+
+    with pytest.raises(ValueError, match="single value"):
+        RequiredAttribute(name="color", value=("black", "blue"))
+
+
+def test_a_required_attribute_keeps_the_type_it_was_given() -> None:
+    """`"100"` is not `100`, and the payload must not collapse the two."""
+    numeric = RequiredAttribute(name="wattage", operator=ConstraintOperator.GTE, value=100)
+    listed = RequiredAttribute(
+        name="color", operator=ConstraintOperator.IN, value=("black", "graphite")
+    )
+
+    assert numeric.to_payload()["value"] == 100
+    assert listed.to_payload()["value"] == ["black", "graphite"]
