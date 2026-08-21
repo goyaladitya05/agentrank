@@ -310,10 +310,15 @@ async def test_an_expired_reservation_is_refused_rather_than_committed(
     not be "commit it anyway".
     """
     checkout = await quote(session, shop)
+    # Measured from the real clock rather than from the module constant. The database refuses
+    # a reservation whose expiry is not after its `created_at`, and `created_at` is the
+    # database clock at insert time, so a thirty second window taken from an instant captured
+    # when this module was imported closes while the suite is still running.
+    lapses_at = datetime.now(UTC) + timedelta(seconds=30)
     reservation = await InventoryReservationRepository(session).create(
         merchant_id=shop.merchant_id,
         checkout_id=checkout.id,
-        expires_at=NOW + timedelta(seconds=30),
+        expires_at=lapses_at,
         quantities={shop.black: 1},
     )
     await session.commit()
@@ -321,7 +326,7 @@ async def test_an_expired_reservation_is_refused_rather_than_committed(
     reservation_id = reservation.id
 
     admission = await PaymentAdmissionService(session).admit_payment(
-        checkout.id, idempotency_key=KEY, at=NOW + timedelta(minutes=1)
+        checkout.id, idempotency_key=KEY, at=lapses_at + timedelta(seconds=1)
     )
 
     assert admission.refusal is AdmissionRefusal.RESERVATION_EXPIRED
