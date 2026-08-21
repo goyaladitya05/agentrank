@@ -13,12 +13,15 @@ from sqlalchemy import create_engine, func, inspect, select
 
 from agentrank_api.audit.models import ActorType, AuditEvent
 from agentrank_api.audit.repository import AuditRepository
+from agentrank_api.checkout.models import CheckoutLine, CheckoutSession
 from agentrank_api.checkout.quote import QuotedLine
 from agentrank_api.checkout.repository import CheckoutRepository
 from agentrank_api.commerce import models as commerce_models  # noqa: F401  registers tables
 from agentrank_api.commerce.dev_catalog import MERCHANT_SLUG, seed_dev_catalog
 from agentrank_api.commerce.models import Merchant, Product, Variant
 from agentrank_api.config import Settings
+from agentrank_api.constraints.repository import IntentConstraintRepository
+from agentrank_api.constraints.rules import ConstraintOperator, IntentConstraintSpec
 from agentrank_api.database import create_engine as create_async_engine
 from agentrank_api.database import create_session_factory
 from agentrank_api.mandates.models import SpendingMandate
@@ -32,6 +35,7 @@ AlembicConfigFactory = Callable[[Settings], Config]
 # has to be applied on top of that data rather than to an empty schema.
 PHASE_1A_HEAD = "ace599f8cce9"
 PHASE_1B_HEAD = "9360057d8773"
+PHASE_1C_HEAD = "4dc1a0f57b18"
 
 HOUR = timedelta(hours=1)
 
@@ -73,6 +77,23 @@ def authorization_snapshot(settings: Settings) -> dict[str, Any]:
                 ),
                 "event_types": sorted(
                     connection.execute(select(AuditEvent.event_type)).scalars().all()
+                ),
+            }
+    finally:
+        engine.dispose()
+
+
+def quote_snapshot(settings: Settings) -> dict[str, Any]:
+    """The Phase 1C rows, which a Phase 1D migration adds columns to."""
+    engine = create_engine(settings.database_url)
+    try:
+        with engine.connect() as connection:
+            return {
+                "checkout_totals": sorted(
+                    connection.execute(select(CheckoutSession.total_amount_minor)).scalars().all()
+                ),
+                "line_unit_prices": sorted(
+                    connection.execute(select(CheckoutLine.unit_price_amount_minor)).scalars().all()
                 ),
             }
     finally:
@@ -135,11 +156,16 @@ async def test_migrations_apply_to_a_database_that_already_holds_data(
 ) -> None:
     """The real risk is not an empty database, it is a populated one.
 
-    The chain is exercised the way a deployment would meet it. Phase 1A data is seeded at
-    the Phase 1A head, Phase 1B data is added at the Phase 1B head, and only then does the
-    Phase 1C migration run, get reversed and run again with all of it in place. Phase 1C
-    adds unique constraints to two tables that already hold rows, which is exactly the
-    kind of change an empty database cannot say anything about.
+    The chain is exercised the way a deployment would meet it. Each phase's data is written
+    at that phase's head, and only then does the next migration run. By the time the Phase
+    1D migration runs, the database already holds a Phase 1A catalog, a Phase 1B mandate
+    and audit event, and a Phase 1C quote with its lines, and every one of them has to come
+    through the upgrade, the reversal and the reupgrade unchanged.
+
+    Phase 1D is the first migration to add columns to a table whose rows a trigger refuses
+    to update. An ALTER TABLE is not an UPDATE, so the new columns take their default
+    without the guard firing, and that is exactly the thing an empty database cannot say
+    anything about.
     """
     config = alembic_config_factory(throwaway_database)
     command.upgrade(config, PHASE_1A_HEAD)
@@ -180,16 +206,11 @@ async def test_migrations_apply_to_a_database_that_already_holds_data(
         authorized = authorization_snapshot(throwaway_database)
         assert authorized["mandate_amounts"] == [750000]
 
-        command.upgrade(config, "head")
+        # Phase 1C data: a quote priced from that catalog, against that mandate.
+        command.upgrade(config, PHASE_1C_HEAD)
         assert catalog_snapshot(throwaway_database) == seeded
         assert authorization_snapshot(throwaway_database) == authorized
-        assert {table.name for table in Base.metadata.sorted_tables} <= table_names(
-            throwaway_database
-        )
 
-        # A quote written against that existing data, so the downgrade below has rows to
-        # remove rather than only tables. Both of its foreign keys are RESTRICT, and a
-        # DROP TABLE is neither a delete nor an update, so neither may block the reversal.
         async with factory() as session:
             variant = (
                 (
@@ -217,16 +238,43 @@ async def test_migrations_apply_to_a_database_that_already_holds_data(
                 expires_at=datetime.now(UTC) + HOUR,
             )
             await session.commit()
+
+        quoted = quote_snapshot(throwaway_database)
+        assert quoted["checkout_totals"] == [variant.price_amount_minor]
+
+        command.upgrade(config, "head")
+        assert catalog_snapshot(throwaway_database) == seeded
+        assert authorization_snapshot(throwaway_database) == authorized
+        assert quote_snapshot(throwaway_database) == quoted
+        assert {table.name for table in Base.metadata.sorted_tables} <= table_names(
+            throwaway_database
+        )
+
+        # Semantic authorization written against that existing mandate, so the downgrade
+        # below has rows to remove rather than only tables. The foreign key onto the
+        # mandate is RESTRICT and a trigger refuses DELETE, and a DROP TABLE is neither, so
+        # neither may block the reversal.
+        async with factory() as session:
+            await IntentConstraintRepository(session).create(
+                merchant_id=merchant_id,
+                mandate_id=mandate_id,
+                specs=[
+                    IntentConstraintSpec.required_attribute("color", ConstraintOperator.EQ, "black")
+                ],
+            )
+            await session.commit()
     finally:
         await engine.dispose()
 
     # A downgrade removes what this phase added and leaves everything earlier untouched.
-    command.downgrade(config, PHASE_1B_HEAD)
+    command.downgrade(config, PHASE_1C_HEAD)
     assert catalog_snapshot(throwaway_database) == seeded
     assert authorization_snapshot(throwaway_database) == authorized
-    assert "checkout_session" not in table_names(throwaway_database)
-    assert "checkout_line" not in table_names(throwaway_database)
+    assert quote_snapshot(throwaway_database) == quoted
+    assert "intent_constraint_set" not in table_names(throwaway_database)
+    assert "intent_constraint" not in table_names(throwaway_database)
 
     command.upgrade(config, "head")
     assert catalog_snapshot(throwaway_database) == seeded
     assert authorization_snapshot(throwaway_database) == authorized
+    assert quote_snapshot(throwaway_database) == quoted
