@@ -8,20 +8,39 @@ There is deliberately no generic update method. An attempt is written once and t
 along a whitelist of transitions, one method per transition, each reporting whether it is
 what changed the row. A caller cannot set a status, cannot set an amount, and cannot reopen a
 terminal attempt: the methods do not exist and the database trigger refuses it anyway.
+
+Beside the lifecycle there is one operational read shape, `PaymentOperationRow`. It answers
+the questions somebody recovering payments has to ask, and it answers them in one statement
+across three tables rather than by handing a caller an attempt and letting it fetch the
+checkout and the hold per row. It is a frozen record rather than an ORM object on purpose:
+an operator tool must not be able to write through a read.
 """
 
 import uuid
 from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Self
 
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from agentrank_api.checkout.models import CheckoutSession, CheckoutStatus
+from agentrank_api.inventory.models import InventoryReservation, ReservationStatus
 from agentrank_api.payments.models import (
     OPEN_STATUSES,
     OutcomeSource,
     PaymentAttempt,
     PaymentAttemptStatus,
 )
+
+# How many unresolved attempts one operator read returns unless told otherwise, and the most
+# it will return however large a number is asked for. Both exist because this table only
+# grows and an operator command that could scan all of it is a command that will one day be
+# run against a table nobody wants printed. Fifty is a screen; five hundred is a deliberate
+# sweep and still bounded.
+DEFAULT_UNRESOLVED_LIMIT = 50
+MAX_UNRESOLVED_LIMIT = 500
 
 
 def payment_attempt_lock_statement(attempt_id: uuid.UUID) -> Select[tuple[PaymentAttempt]]:
@@ -46,6 +65,91 @@ def payment_attempt_lock_statement(attempt_id: uuid.UUID) -> Select[tuple[Paymen
         .with_for_update()
         .execution_options(populate_existing=True)
     )
+
+
+@dataclass(frozen=True, slots=True)
+class PaymentOperationRow:
+    """One payment as somebody recovering it needs to see it.
+
+    Everything an operator asks about a stuck payment, in one record: what state it is in,
+    which checkout and mandate it belongs to, how much money is involved, what the hold and
+    the quote currently say, and every instant that has been stamped on it.
+
+    Frozen, and deliberately not a `PaymentAttempt`. A read that handed back the mapped
+    object would hand back something writable and something lazily joined, and an operator
+    tool listing fifty payments would then issue a hundred more statements to say what
+    checkout each one belonged to. This is assembled by one statement across three tables.
+
+    The checkout status and the reservation status are the current ones rather than the ones
+    that were true when the payment was admitted. That is what an operator needs: the
+    question is what stands now.
+    """
+
+    attempt_id: uuid.UUID
+    status: PaymentAttemptStatus
+    merchant_id: uuid.UUID
+    checkout_id: uuid.UUID
+    checkout_status: CheckoutStatus
+    mandate_id: uuid.UUID
+    reservation_id: uuid.UUID
+    reservation_status: ReservationStatus
+    idempotency_key: str
+    amount_minor: int
+    currency: str
+    provider_reference: str | None
+    failure_code: str | None
+    outcome_source: OutcomeSource | None
+    created_at: datetime
+    dispatched_at: datetime | None
+    resolved_at: datetime | None
+
+    @classmethod
+    def of(
+        cls,
+        attempt: PaymentAttempt,
+        checkout_status: CheckoutStatus,
+        reservation_status: ReservationStatus,
+    ) -> Self:
+        """Copy the fields out, so the mapped object stays inside the repository."""
+        return cls(
+            attempt_id=attempt.id,
+            status=attempt.status,
+            merchant_id=attempt.merchant_id,
+            checkout_id=attempt.checkout_id,
+            checkout_status=checkout_status,
+            mandate_id=attempt.mandate_id,
+            reservation_id=attempt.reservation_id,
+            reservation_status=reservation_status,
+            idempotency_key=attempt.idempotency_key,
+            amount_minor=attempt.amount_minor,
+            currency=attempt.currency,
+            provider_reference=attempt.provider_reference,
+            failure_code=attempt.failure_code,
+            outcome_source=attempt.outcome_source,
+            created_at=attempt.created_at,
+            dispatched_at=attempt.dispatched_at,
+            resolved_at=attempt.resolved_at,
+        )
+
+    @property
+    def is_unresolved(self) -> bool:
+        """Whether this payment is one of the ones an operator has to do something about."""
+        return self.status in OPEN_STATUSES
+
+    def age(self, observed_at: datetime) -> timedelta:
+        """How long this payment has existed, measured from the instant it was admitted.
+
+        Admission is the instant the authorization was decided and the instant the hold and
+        the mandate started being held by this attempt, so it is what an operator asking how
+        long something has been stuck is really asking about. Deliberately not the dispatch
+        instant, which would restart the clock for a payment that had already been waiting,
+        and deliberately not anything read out of the audit trail.
+
+        `observed_at` is passed in rather than read here, so every row in one listing is aged
+        against one instant and that instant is the database's clock rather than the clock of
+        whatever machine an operator happens to be on.
+        """
+        return observed_at - self.created_at
 
 
 class PaymentAttemptRepository:
@@ -174,6 +278,88 @@ class PaymentAttemptRepository:
         )
         return (await self._session.execute(statement)).scalars().all()
 
+    async def clock(self) -> datetime:
+        """The database's own clock, read once so a whole listing is aged from one instant.
+
+        `now()` in PostgreSQL is `transaction_timestamp()`, so this and the read that follows
+        it in the same transaction return the same instant. That is the point: two rows in one
+        listing must not be aged against two different readings, and an operator machine whose
+        clock is minutes off the database's must not be able to make a payment look older or
+        younger than it is.
+        """
+        observed: datetime = (await self._session.execute(select(func.now()))).scalar_one()
+        return observed
+
+    async def list_unresolved(
+        self, *, limit: int = DEFAULT_UNRESOLVED_LIMIT
+    ) -> Sequence[PaymentOperationRow]:
+        """Every payment that still needs somebody, oldest first, bounded.
+
+        Unresolved is `OPEN_STATUSES` and is not a second definition of it. ADMITTED,
+        IN_FLIGHT and UNKNOWN are exactly the states in which an identity may still reach a
+        provider or is waiting on one, which is the same set the mandate scoped uniqueness is
+        built on. SUCCEEDED and FAILED are absent because there is nothing to do about them.
+
+        Oldest means admitted longest ago: the order is `created_at` and then the identifier,
+        which is a total order and therefore a stable prefix rather than an arbitrary one.
+        `created_at` is the admission instant, so this is the order the payments started
+        holding stock in. It is deliberately not audit order, which is transaction start order
+        and is not commit order, and nothing here infers anything from the trail.
+
+        One statement across three tables. An operator listing fifty payments must not cost
+        a hundred and fifty more statements to say which checkout and which hold each one
+        names, and returning frozen records rather than mapped objects is what guarantees
+        that rather than hoping a lazy load never fires.
+        """
+        statement = (
+            select(PaymentAttempt, CheckoutSession.status, InventoryReservation.status)
+            .join(CheckoutSession, CheckoutSession.id == PaymentAttempt.checkout_id)
+            .join(InventoryReservation, InventoryReservation.id == PaymentAttempt.reservation_id)
+            .where(PaymentAttempt.status.in_(OPEN_STATUSES))
+            .order_by(PaymentAttempt.created_at, PaymentAttempt.id)
+            .limit(bounded_unresolved_limit(limit))
+        )
+        rows = (await self._session.execute(statement)).all()
+        return [
+            PaymentOperationRow.of(attempt, checkout_status, reservation_status)
+            for attempt, checkout_status, reservation_status in rows
+        ]
+
+    async def get_operational(self, attempt_id: uuid.UUID) -> PaymentOperationRow | None:
+        """One payment in the same shape the listing uses, whatever state it is in.
+
+        Not restricted to unresolved ones. An operator who has just resolved something has to
+        be able to read it back, and a detail view that refused to show a settled payment
+        would send them to psql to find out what happened.
+        """
+        statement = (
+            select(PaymentAttempt, CheckoutSession.status, InventoryReservation.status)
+            .join(CheckoutSession, CheckoutSession.id == PaymentAttempt.checkout_id)
+            .join(InventoryReservation, InventoryReservation.id == PaymentAttempt.reservation_id)
+            .where(PaymentAttempt.id == attempt_id)
+        )
+        found = (await self._session.execute(statement)).one_or_none()
+        if found is None:
+            return None
+        attempt, checkout_status, reservation_status = found
+        return PaymentOperationRow.of(attempt, checkout_status, reservation_status)
+
+    async def count_by_status(self) -> dict[PaymentAttemptStatus, int]:
+        """How many attempts are in each state, aggregated in the database.
+
+        The one operator read with no row limit, because it does not return rows: PostgreSQL
+        groups and this receives at most one line per status. Counting is not sampling and it
+        is not a window either, so the terminal counts are lifetime totals rather than recent
+        ones. A window would need a policy about how long recent is, and nobody has set one.
+
+        A status with no attempts is absent from the result rather than present as zero.
+        Filling it in is the caller's business, and doing it here would mean this method
+        deciding which statuses an operator cares about.
+        """
+        statement = select(PaymentAttempt.status, func.count()).group_by(PaymentAttempt.status)
+        rows = (await self._session.execute(statement)).all()
+        return {row[0]: row[1] for row in rows}
+
     async def mark_in_flight(self, attempt: PaymentAttempt) -> bool:
         """Record that this attempt may now have been dispatched, before it is.
 
@@ -264,6 +450,21 @@ class PaymentAttemptRepository:
         attempt.outcome_source = source
         await self._session.flush()
         return True
+
+
+def bounded_unresolved_limit(limit: int) -> int:
+    """Clamp an operator supplied limit into the range this repository will actually serve.
+
+    Clamped rather than refused, because the caller that gets this wrong is a person typing a
+    number at a terminal and the useful answer to `--limit 100000` is five hundred payments
+    rather than an error. The floor is one for the same reason: zero and negative are not
+    requests for nothing, they are typing mistakes.
+
+    Public rather than private because the command that asks for a listing has to be able to
+    report the bound it was actually given, and a caller working that out for itself would be
+    a second copy of this rule.
+    """
+    return min(max(limit, 1), MAX_UNRESOLVED_LIMIT)
 
 
 def _require_dispatched(attempt: PaymentAttempt, verb: str) -> None:

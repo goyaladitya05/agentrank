@@ -150,12 +150,20 @@ class PaymentOutcome:
     terminal state somebody else had already recorded. It is None in every ordinary case,
     including the common one where a second writer observed the same outcome and simply had
     nothing to add.
+
+    `provider_record` is what a query was told about the identity existing at all, and it is
+    set by `reconcile` alone. A dispatch leaves it None because `execute` has no such concept:
+    it performs an operation rather than asking about one. It is carried because "the provider
+    has no record right now" and "the provider has the operation and has not decided it" leave
+    an attempt in the same state and mean different things, and something eventually has to
+    tell an operator which one they are waiting on. Nothing in this module branches on it.
     """
 
     attempt: PaymentAttempt
     changed: bool = False
     provider_called: bool = False
     conflict: OutcomeConflict | None = None
+    provider_record: ProviderRecord | None = None
 
 
 class PaymentExecutionService:
@@ -291,6 +299,7 @@ class PaymentExecutionService:
             changed=recorded.changed,
             provider_called=True,
             conflict=recorded.conflict,
+            provider_record=found.record,
         )
 
     async def _append_reconciled(self, attempt_id: uuid.UUID, found: ProviderQueryResult) -> None:
