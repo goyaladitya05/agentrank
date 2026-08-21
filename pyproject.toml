@@ -1,0 +1,60 @@
+[project]
+name = "agentrank"
+version = "0.0.0"
+description = "AI commerce readiness benchmark and Merchant Compiler"
+requires-python = "==3.14.*"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["apps/*", "packages/*"]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.18",
+    "pytest>=8.4",
+    "ruff>=0.14",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+extend-exclude = [".venv", "node_modules"]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # import sorting
+    "N",      # pep8 naming
+    "UP",     # pyupgrade
+    "B",      # bugbear
+    "C4",     # comprehensions
+    "SIM",    # simplify
+    "ASYNC",  # async correctness
+    "S",      # bandit security rules
+    "RUF",    # ruff specific
+]
+ignore = [
+    "S101",  # assert is expected in tests and is checked per file below
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106"]  # hardcoded test credentials are intentional
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+warn_unreachable = true
+warn_unused_configs = true
+exclude = ["\\.venv", "node_modules"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers --strict-config"
