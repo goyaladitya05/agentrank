@@ -296,11 +296,18 @@ class ExecutionPreparationView(BaseModel):
     application to attempt. The reservation is a claim on stock held until
     `reservation.expires_at`, which is the earlier of the quote expiry and the mandate
     validity.
+
+    Two instants, and they answer different questions. `evaluated_at` is what both gates and
+    the inventory accounting were decided against. `admitted_at` is when the answer was
+    finally admitted, read after every row this decision rests on was held, and it is null
+    when preparation refused before reaching that point. A ready answer always carries one,
+    and `reservation.expires_at` is always later than it.
     """
 
     ready: bool
     checkout_id: uuid.UUID
     evaluated_at: datetime
+    admitted_at: datetime | None
     authorization: ExecutionAuthorizationView
     reservation: ReservationView | None
     inventory_violations: list[InventoryViolationView]
@@ -311,6 +318,7 @@ class ExecutionPreparationView(BaseModel):
             ready=readiness.ready,
             checkout_id=readiness.checkout_id,
             evaluated_at=readiness.evaluated_at,
+            admitted_at=readiness.admitted_at,
             authorization=ExecutionAuthorizationView.from_decision(readiness.authorization),
             reservation=(
                 None

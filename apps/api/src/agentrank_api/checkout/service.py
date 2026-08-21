@@ -231,20 +231,30 @@ class CheckoutService:
         move the original timestamp. Cancellation is terminal; there is no counterpart that
         reopens one, and the database enforces that too.
 
+        The checkout is read under a row lock rather than plainly, which is what makes that
+        idempotence survive two cancellations arriving at once: without it both would read
+        an open checkout, both would take the transition, and the second would move
+        `cancelled_at` and append a second event.
+
+        The same lock is what execution preparation takes before treating this quote as
+        authoritative, so the two serialize. Either this finishes first and preparation
+        observes a cancelled checkout and refuses, or preparation finishes first and this
+        waits for it and then releases what it held. There is no schedule where a
+        cancellation commits and a preparation then holds stock on an open reading taken
+        before it. The reservation's foreign key does not give that on its own: writing one
+        takes `FOR KEY SHARE` on this row and cancelling takes `FOR NO KEY UPDATE`, and
+        those two modes do not conflict.
+
         Any stock this checkout was holding is released in the same transaction. A withdrawn
         quote that still held inventory would keep it off the shelf until it expired, for a
         purchase that can no longer happen. The cancellation, the release and both audit
         events commit together or not at all.
 
-        The release is inside the transition rather than beside it. A reservation can only
-        be active while its checkout is open, since preparing a cancelled one is refused, so
-        a repeat has nothing to release and appends nothing.
-
         Nothing about the price changes. Cancelling a quote withdraws it, it does not
         rewrite what was quoted, and the trigger on the table refuses any attempt to do
         both at once.
         """
-        checkout = await self.get_checkout(checkout_id)
+        checkout = await self._locked(checkout_id)
         if await self._checkouts.cancel(checkout):
             await self._append(
                 checkout, CHECKOUT_CANCELLED, {"status": CheckoutStatus.CANCELLED.value}
@@ -254,6 +264,14 @@ class CheckoutService:
             )
         # Committed either way. When nothing changed this just closes the read.
         await self._session.commit()
+        return checkout
+
+    async def _locked(self, checkout_id: uuid.UUID) -> CheckoutSession:
+        """Fetch a checkout held against other transactions, raising rather than returning
+        None."""
+        checkout = await self._checkouts.get_for_update(checkout_id)
+        if checkout is None:
+            raise NotFoundError("checkout", str(checkout_id))
         return checkout
 
     async def _append(

@@ -119,6 +119,34 @@ class InventoryReservationService:
         self._reservations = InventoryReservationRepository(session)
         self._audit = AuditRepository(session)
 
+    async def lock_variants_for(self, checkout: CheckoutSession) -> None:
+        """Take the variant locks this checkout will need, without deciding anything yet.
+
+        `reserve` takes exactly these locks itself and is complete on its own. This exists
+        for a caller that has to make a decision between acquiring them and writing, and
+        the only such decision is the current time: a caller that blocked here for a minute
+        has to find out before it commits, and it can only find out once it is no longer
+        going to block.
+
+        Taking them twice in one transaction is free. A transaction never waits on a lock
+        it already holds, so the second acquisition inside `reserve` is a row lookup and
+        nothing else. That redundancy is the price of leaving the reservation algorithm
+        self contained, which is worth more than saving a statement: a lock separated from
+        the accounting it protects is a lock that eventually gets forgotten.
+
+        Last in the lock order, after the mandate and the checkout. See
+        agentrank_api.locking.
+        """
+        quantities = checkout_quantities(checkout)
+        if not quantities:
+            # Not reachable through `CheckoutRepository.create`, which refuses an empty
+            # quote. Stated anyway, because locking nothing must never look like locking.
+            raise ValueError("a checkout with no lines has no variant rows to lock")
+
+        await self._reservations.lock_variants(
+            merchant_id=checkout.merchant_id, variant_ids=sorted(quantities, key=str)
+        )
+
     async def reserve(
         self, checkout: CheckoutSession, *, expires_at: datetime, at: datetime
     ) -> ReservationOutcome:

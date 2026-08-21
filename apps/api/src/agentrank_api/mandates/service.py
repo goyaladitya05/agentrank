@@ -138,12 +138,31 @@ class MandateService:
         nothing, so a retried request cannot produce a second revocation event or move
         the original timestamp. Revocation is terminal; there is no reactivation, and the
         database enforces that too.
+
+        The mandate is read under a row lock rather than plainly, which is what makes that
+        idempotence survive two revocations arriving at once: without it both would read an
+        active mandate, both would take the transition, and the second would move
+        `revoked_at` and append a second event.
+
+        The same lock is what execution preparation takes before treating this mandate as
+        authoritative, so the two serialize. Either this finishes first and preparation
+        observes a revoked mandate and refuses, or preparation finishes first and this
+        waits for it. There is no schedule where a revocation commits and a preparation
+        then succeeds on an active reading taken before it.
         """
-        mandate = await self.get_mandate(mandate_id)
+        mandate = await self._locked(mandate_id)
         if await self._mandates.revoke(mandate):
             await self._append(mandate, MANDATE_REVOKED, {"status": MandateStatus.REVOKED.value})
         # Committed either way. When nothing changed this just closes the read.
         await self._session.commit()
+        return mandate
+
+    async def _locked(self, mandate_id: uuid.UUID) -> SpendingMandate:
+        """Fetch a mandate held against other transactions, raising rather than returning
+        None."""
+        mandate = await self._mandates.get_for_update(mandate_id)
+        if mandate is None:
+            raise NotFoundError("mandate", str(mandate_id))
         return mandate
 
     async def _append(

@@ -31,6 +31,7 @@ holds no constraints is a different thing and is not this case.
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+from typing import Self
 
 from agentrank_api.checkout.authorization import (
     CheckoutAuthorizationDecision,
@@ -82,6 +83,21 @@ class CheckoutExecutionAuthorization:
             and self.intent is not None
             and self.intent.satisfied
         )
+
+    def with_financial(self, financial: CheckoutAuthorizationDecision) -> Self:
+        """This authorization with the financial half decided again, at a later instant.
+
+        Only half of this decision can move with the clock. The financial gate reads a
+        mandate's validity window and a quote's expiry and status, all of which can be
+        different a moment later. The semantic gate reads the quote's own snapshot against
+        an immutable constraint set, so re-evaluating it against a different instant would
+        do the same work and reach the same answer.
+
+        For a caller that blocked on a lock after deciding once and has to decide again
+        before committing anything. Carrying the semantic half forward rather than
+        recomputing it is what says out loud which half was capable of changing.
+        """
+        return type(self)(financial=financial, intent=self.intent, violations=self.violations)
 
 
 def authorize_checkout_execution(
