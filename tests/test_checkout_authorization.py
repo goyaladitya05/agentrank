@@ -204,3 +204,27 @@ def test_every_mandate_violation_has_a_checkout_violation() -> None:
     """The translation table is written out, so a new mandate violation must be added here
     rather than becoming a KeyError the first time it is reported."""
     assert set(FROM_MANDATE_VIOLATION) == set(MandateViolation)
+
+
+def test_the_ceiling_is_per_purchase_and_not_a_running_budget() -> None:
+    """A mandate authorizes one purchase, not a balance that several draw down.
+
+    `max_total_amount_minor` is the maximum final amount of the single successful purchase
+    this mandate authorizes. Several candidate checkouts may be quoted against it, and each
+    is judged on its own total, so three quotes at the ceiling are three allowed candidates
+    rather than one allowed and two overdrawn.
+
+    Nothing in this system spends a mandate, because nothing pays. The invariant that at most
+    one successful payment may consume a mandate belongs to Phase 1F and will be enforced
+    structurally there, not by subtracting from this number. This test is what makes turning
+    the ceiling into a running budget an explicit decision rather than a quiet one.
+    """
+    mandate = a_mandate()
+    candidates = [a_checkout(mandate, 1) for _ in range(3)]
+
+    assert all(authorize_checkout(candidate, mandate, at=NOW).allowed for candidate in candidates)
+    # Every one of them is at the ceiling, which is the whole point: they are alternatives,
+    # not instalments.
+    assert all(
+        candidate.total_amount_minor == mandate.max_total_amount_minor for candidate in candidates
+    )

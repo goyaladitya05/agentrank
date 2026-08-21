@@ -94,6 +94,13 @@ def authorize_checkout(
     The checkout is read as the snapshot it is. No catalog row is consulted, so a price
     change after the quote was written cannot alter what this decision was made against.
 
+    The amount ceiling is compared against this checkout's total and against nothing else. A
+    mandate is a single purchase authorization, so its ceiling is the most one successful
+    purchase may cost rather than a balance several checkouts draw down. Nothing here sums
+    what other checkouts against the same mandate came to, and nothing should: at most one
+    successful payment may ever consume a mandate, and that is a rule about payments, which
+    do not exist yet. See docs/security.md.
+
     The amount comparison is skipped when the currencies disagree. Comparing 4999 EUR
     against a ceiling of 500000 INR is not a stricter check, it is a meaningless one, and
     reporting MAX_TOTAL_EXCEEDED from it would be reporting a fact nobody established. The

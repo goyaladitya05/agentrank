@@ -73,6 +73,25 @@ _STATUS_VALUES = ", ".join(f"'{status.value}'" for status in MandateStatus)
 class SpendingMandate(Base):
     """What a buyer is permitted to spend with one merchant, and until when.
 
+    A single purchase authorization. `max_total_amount_minor` is the maximum final amount of
+    the one successful purchase this mandate authorizes, not a balance that several purchases
+    draw down. There is no cumulative spend column and no running total anywhere, and that is
+    a decision rather than an omission: a budget and an authorization are different things,
+    and a recurring or multi purchase budget belongs in a different concept with a different
+    name.
+
+    What that permits and what it does not:
+
+    - several candidate checkouts may be quoted against one mandate, each judged on its own
+      total. Three quotes at the ceiling are three alternatives, not three instalments
+    - several future payment attempts may reference one mandate, because an attempt that was
+      declined consumed nothing
+    - at most one successful payment may ever consume a mandate
+
+    The last one is written down here and enforced nowhere yet, because nothing in this
+    application pays for anything. Phase 1F makes it structural. Until then, nothing subtracts
+    from this number and nothing should start: see docs/security.md.
+
     There is no `updated_at`. Every field except `status` and `revoked_at` is immutable,
     and the one transition that exists stamps its own timestamp, so a general purpose
     modification time would only be a second name for `revoked_at`.
