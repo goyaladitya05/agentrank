@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentrank_api.audit.models import ActorType
 from agentrank_api.audit.repository import AuditRepository
-from agentrank_api.checkout.models import CheckoutSession
+from agentrank_api.checkout.models import CheckoutSession, CheckoutStatus
 from agentrank_api.checkout.quote import (
     MAX_CHECKOUT_LINES,
     QuotedLine,
@@ -41,6 +41,7 @@ from agentrank_api.money import validate_amount_minor
 
 CHECKOUT_RESOURCE = "checkout_session"
 CHECKOUT_CREATED = "checkout.created"
+CHECKOUT_CANCELLED = "checkout.cancelled"
 
 # A quote is prepared on the buyer's behalf, so it is the buyer's act. This names a role
 # and not a verified identity: nothing authenticates a caller yet.
@@ -157,6 +158,27 @@ class CheckoutService:
         checkout = await self._checkouts.get(checkout_id)
         if checkout is None:
             raise NotFoundError("checkout", str(checkout_id))
+        return checkout
+
+    async def cancel_checkout(self, checkout_id: uuid.UUID) -> CheckoutSession:
+        """Withdraw a quote and record it, once.
+
+        Idempotent. Cancelling an already cancelled checkout returns it unchanged and
+        appends nothing, so a retried request cannot produce a second cancellation event or
+        move the original timestamp. Cancellation is terminal; there is no counterpart that
+        reopens one, and the database enforces that too.
+
+        Nothing about the price changes. Cancelling a quote withdraws it, it does not
+        rewrite what was quoted, and the trigger on the table refuses any attempt to do
+        both at once.
+        """
+        checkout = await self.get_checkout(checkout_id)
+        if await self._checkouts.cancel(checkout):
+            await self._append(
+                checkout, CHECKOUT_CANCELLED, {"status": CheckoutStatus.CANCELLED.value}
+            )
+        # Committed either way. When nothing changed this just closes the read.
+        await self._session.commit()
         return checkout
 
     async def _append(

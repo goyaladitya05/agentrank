@@ -363,3 +363,33 @@ async def test_nothing_persists_when_the_audit_append_fails(
     assert await committed.get(Merchant, shop.merchant_id) is not None
     assert await committed.scalar(select(func.count()).select_from(CheckoutSession)) == 0
     assert await committed.scalar(select(func.count()).select_from(AuditEvent)) == 0
+
+
+async def test_cancelling_records_one_event_and_repeating_records_none(
+    session: AsyncSession, committed: AsyncSession, shop: Shop
+) -> None:
+    service = CheckoutService(session)
+    checkout = await service.create_checkout(request_for(shop))
+    quoted = checkout.total_amount_minor
+
+    cancelled = await service.cancel_checkout(checkout.id)
+    assert cancelled.status is CheckoutStatus.CANCELLED
+    assert cancelled.cancelled_at is not None
+    # Withdrawing a quote does not rewrite what was quoted.
+    assert cancelled.total_amount_minor == quoted
+
+    again = await service.cancel_checkout(checkout.id)
+    assert again.cancelled_at == cancelled.cancelled_at
+
+    events = await AuditRepository(committed).list_for_resource(
+        resource_type=CHECKOUT_RESOURCE, resource_id=checkout.id
+    )
+    assert [event.event_type for event in events] == ["checkout.created", "checkout.cancelled"]
+    # The cancellation and the event that records it share the transaction clock.
+    assert events[1].occurred_at == cancelled.cancelled_at
+
+
+async def test_cancelling_an_unknown_checkout_is_not_found(session: AsyncSession) -> None:
+    with pytest.raises(NotFoundError) as unknown:
+        await CheckoutService(session).cancel_checkout(uuid.uuid7())
+    assert unknown.value.resource == "checkout"
