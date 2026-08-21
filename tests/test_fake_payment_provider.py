@@ -36,13 +36,32 @@ DISPATCHED_AT = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
 MINUTE = timedelta(minutes=1)
 
 
-def question(key: str = KEY) -> PaymentQuery:
-    return PaymentQuery(idempotency_key=key, dispatched_at=DISPATCHED_AT)
+def reference(key: str = KEY) -> str:
+    """A stand in for a derived operation reference, stable per key inside one test.
+
+    The real one comes from `provider_operation_reference` and is a digest over a merchant and
+    an attempt. Nothing here has either, and what this file tests is the fake's own contract
+    rather than the derivation, so a recognizable string keyed the same way is enough. The two
+    are kept apart on purpose: a test that reproduced the derivation would pass even if the
+    derivation stopped being used.
+    """
+    return f"ar_test_{key}"
 
 
-def instruction(key: str = KEY, *, amount_minor: int = 499900) -> PaymentInstruction:
+def question(key: str = KEY, *, operation_reference: str | None = None) -> PaymentQuery:
+    return PaymentQuery(
+        operation_reference=operation_reference or reference(key),
+        idempotency_key=key,
+        dispatched_at=DISPATCHED_AT,
+    )
+
+
+def instruction(
+    key: str = KEY, *, amount_minor: int = 499900, operation_reference: str | None = None
+) -> PaymentInstruction:
     return PaymentInstruction(
         attempt_id=uuid.uuid7(),
+        operation_reference=operation_reference or reference(key),
         idempotency_key=key,
         amount_minor=amount_minor,
         currency="INR",
@@ -190,7 +209,7 @@ async def test_a_query_never_charges() -> None:
 
 
 async def test_the_provider_records_what_it_was_asked_to_charge() -> None:
-    """The instruction is five frozen values, and the provider sees exactly those."""
+    """The instruction is a frozen record, and the provider sees exactly what it holds."""
     provider = FakePaymentProvider()
     sent = instruction(amount_minor=123456)
 
@@ -335,3 +354,38 @@ def test_a_query_result_cannot_claim_an_outcome_it_has_no_record_for() -> None:
 
     with pytest.raises(ValueError, match="NEVER_EXECUTED"):
         ProviderQueryResult(outcome=ProviderOutcome.FAILED, record=ProviderRecord.NEVER_EXECUTED)
+
+
+async def test_one_caller_key_under_two_operation_references_is_two_charges() -> None:
+    """The namespacing property, asserted at the boundary that has to hold it.
+
+    Two merchants may present the same idempotency key, because inside this application a key
+    is scoped by a checkout and a checkout belongs to one merchant. A provider account has no
+    such scoping, so the identity that reaches it is derived instead. If the fake deduplicated
+    on the caller's key, the second payment here would silently inherit the first one's result
+    and no money would move for it.
+    """
+    provider = FakePaymentProvider(default=FakeOutcome.SUCCESS)
+
+    first = await provider.execute(instruction(KEY, operation_reference="ar_merchant_a"))
+    second = await provider.execute(instruction(KEY, operation_reference="ar_merchant_b"))
+
+    assert first.outcome is ProviderOutcome.SUCCEEDED
+    assert second.outcome is ProviderOutcome.SUCCEEDED
+    assert first.reference != second.reference
+    assert provider.charges == 2
+    assert len(provider.ledger) == 2
+
+
+async def test_a_query_reads_the_ledger_by_operation_reference() -> None:
+    """Asking under the caller's key would ask about whoever else used that string."""
+    provider = FakePaymentProvider(default=FakeOutcome.SUCCESS)
+    await provider.execute(instruction(KEY, operation_reference="ar_merchant_a"))
+
+    mine = await provider.query(question(KEY, operation_reference="ar_merchant_a"))
+    theirs = await provider.query(question(KEY, operation_reference="ar_merchant_b"))
+
+    assert mine.record is ProviderRecord.PRESENT
+    assert mine.outcome is ProviderOutcome.SUCCEEDED
+    assert theirs.record is ProviderRecord.ABSENT
+    assert theirs.outcome is ProviderOutcome.UNKNOWN

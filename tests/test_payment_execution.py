@@ -49,6 +49,7 @@ from agentrank_api.payments.provider import (
     ProviderQueryResult,
     ProviderResult,
 )
+from agentrank_api.payments.references import provider_operation_reference
 
 pytestmark = pytest.mark.anyio
 
@@ -402,9 +403,12 @@ async def test_a_retry_is_safe_after_the_provider_has_forgotten_the_key(
     await PaymentExecutionService(session, provider).dispatch(attempt_id)
 
     # The provider forgets. Its ledger still holds the payment, and it would no longer replay
-    # the identity, so an execute under this key now would be a second operation.
+    # the identity, so an execute under this identity now would be a second operation. The
+    # ledger is keyed by the derived operation reference rather than by the caller's key,
+    # because that is what a provider is asked to be idempotent on.
     provider.clock = NOW + timedelta(minutes=10)
-    recorded = provider.ledger[KEY].recorded_at
+    identity = provider_operation_reference(first.attempt.merchant_id, attempt_id)
+    recorded = provider.ledger[identity].recorded_at
     assert recorded is not None
     assert provider.clock - recorded >= provider.idempotency_retention
 

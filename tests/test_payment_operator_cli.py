@@ -43,6 +43,7 @@ from agentrank_api.payments.fake import FakeOutcome, FakePaymentProvider
 from agentrank_api.payments.models import OutcomeSource, PaymentAttempt, PaymentAttemptStatus
 from agentrank_api.payments.provider import PaymentInstruction
 from agentrank_api.payments.recovery import OPERATOR_ABANDONED, validate_operator_note
+from agentrank_api.payments.references import provider_operation_reference
 from agentrank_api.payments.repository import PaymentAttemptRepository
 
 pytestmark = pytest.mark.anyio
@@ -896,6 +897,7 @@ def _instruction_for(attempt: PaymentAttempt, key: str) -> PaymentInstruction:
     """The instruction a dispatch would have sent for this attempt."""
     return PaymentInstruction(
         attempt_id=attempt.id,
+        operation_reference=provider_operation_reference(attempt.merchant_id, attempt.id),
         idempotency_key=key,
         amount_minor=attempt.amount_minor,
         currency=attempt.currency,

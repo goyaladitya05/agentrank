@@ -6,12 +6,18 @@ settlement and no webhook, because nothing in this phase needs any of them and a
 method with no caller is a guess about a vendor's API rather than a boundary.
 
 The instruction is the important half of this module. A provider receives a
-`PaymentInstruction`, which is a frozen record of five values read off a committed
+`PaymentInstruction`, which is a frozen record of values read off a committed
 `PaymentAttempt`. It never receives a `CheckoutSession`, a `SpendingMandate`, an
 `InventoryReservation` or a database session. That is not tidiness: a provider that could
 navigate to a live checkout could read a number the attempt was supposed to have frozen, and
 the whole guarantee of this phase is that what was authorized and what was charged are the
 same value because they came from the same row.
+
+The identity a provider is idempotent on is `operation_reference`, and it is deliberately not
+the caller's idempotency key. Inside this application a key is scoped by the checkout it was
+presented against, so two merchants may choose the same string and mean two payments. A
+provider account has no such scoping, so what travels outward is derived from the merchant and
+the attempt instead. See `agentrank_api.payments.references`.
 
 Three outcome classes and no fourth. Definitive success, definitive failure, and ambiguous.
 The last one is the reason this interface exists in this shape:
@@ -88,9 +94,18 @@ class ProviderOutcome(StrEnum):
 class PaymentInstruction:
     """Everything a provider is told, and nothing that could change under it.
 
-    Five values, all read off a committed `PaymentAttempt`. Frozen because a provider is
-    handed this and a provider is not this application's code: an object it could mutate is an
-    object that could disagree with the row the money was authorized against.
+    Every value is read off a committed `PaymentAttempt`. Frozen because a provider is handed
+    this and a provider is not this application's code: an object it could mutate is an object
+    that could disagree with the row the money was authorized against.
+
+    `operation_reference` is the identity, and it is the one field a provider must key its own
+    idempotency on. It is derived from the merchant and the attempt, so it is globally unique
+    inside one provider account however many merchants share it, and no caller can state it.
+
+    `idempotency_key` is the application's own name for the same operation, carried for
+    correlation and for a provider's logs. It is caller chosen and it is scoped by a checkout
+    rather than globally, so an implementation that used it as its idempotency identity would
+    let one merchant's payment answer for another's. Nothing may key on it.
 
     `merchant_reference` and `checkout_reference` are strings rather than identifiers, because
     they are for the provider's records and its dashboard rather than for a join. Nothing this
@@ -102,6 +117,7 @@ class PaymentInstruction:
     """
 
     attempt_id: uuid.UUID
+    operation_reference: str
     idempotency_key: str
     amount_minor: int
     currency: str
@@ -160,16 +176,25 @@ class ProviderRecord(StrEnum):
 class PaymentQuery:
     """Everything a provider is told when it is asked what happened to one identity.
 
-    Two values, both facts this application holds and a provider does not. `dispatched_at` is
-    the instant the dispatch began, committed before the network call, and it is here for one
-    reason: a provider whose visibility guarantee is a duration cannot evaluate it without
-    knowing when the clock started. Nothing above this interface knows what that duration is,
-    and no code outside a provider implementation may contain one.
+    Three values, all facts this application holds and a provider does not.
+
+    `operation_reference` is the same derived identity `execute` was given, and it is what a
+    provider looks its records up by. Asking under the caller's key instead would ask about
+    whatever payment happened to share that string on the account.
+
+    `idempotency_key` rides along for correlation and for nothing else, exactly as it does on
+    an instruction.
+
+    `dispatched_at` is the instant the dispatch began, committed before the network call, and
+    it is here for one reason: a provider whose visibility guarantee is a duration cannot
+    evaluate it without knowing when the clock started. Nothing above this interface knows what
+    that duration is, and no code outside a provider implementation may contain one.
 
     There is no instant for now. A provider reads its own clock, exactly as it reads its own
     records, and a fake reads an injected one so a test never sleeps.
     """
 
+    operation_reference: str
     idempotency_key: str
     dispatched_at: datetime
 
@@ -218,11 +243,16 @@ class PaymentProvider(Protocol):
     async def execute(self, instruction: PaymentInstruction) -> ProviderResult:
         """Perform one payment operation, or report that the answer is unknown.
 
-        Idempotent on `instruction.idempotency_key`. Two calls carrying one key are one
-        logical charge, and the second returns the first one's result rather than creating a
-        second. This application makes that unnecessary by never issuing the second call, and
-        the contract requires it anyway, because the case that matters is the one where the
-        first call's response never arrived and nobody knows whether it happened.
+        Idempotent on `instruction.operation_reference`, and on nothing else. Two calls
+        carrying one reference are one logical charge, and the second returns the first one's
+        result rather than creating a second. This application makes that unnecessary by never
+        issuing the second call, and the contract requires it anyway, because the case that
+        matters is the one where the first call's response never arrived and nobody knows
+        whether it happened.
+
+        Keying on `instruction.idempotency_key` instead is a defect rather than a shortcut. It
+        is a caller chosen string scoped by one checkout, so on an account serving several
+        merchants two unrelated payments can present the same one.
 
         Never raises for a transport failure. A timeout, a reset connection and a response
         that never arrived are all UNKNOWN results, not exceptions and not declines.

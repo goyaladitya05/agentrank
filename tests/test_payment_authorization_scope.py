@@ -293,13 +293,13 @@ async def test_two_merchants_using_one_key_are_two_payments_here(
     two attempts, two identifiers, and neither can read the other's. That is the property
     authentication had to preserve and it is preserved.
 
-    What this test also pins is the edge of that property. `provider.executions` shows two
-    instructions leaving this application, and `provider.charges` shows the fake performing one,
-    because the key that travels to a provider is the caller's own string and the fake keeps one
-    ledger for all of them. That is a real limitation of a shared provider account rather than a
-    bug in scoping, and it is recorded in docs/shortcomings.md rather than fixed here: changing
-    the identity that reaches a provider is a change to payment semantics, and this phase
-    deliberately made none.
+    What this test also pins is the edge of that property, which Phase 1H found and Phase 1I
+    closed. `provider.executions` shows two instructions leaving this application, and
+    `provider.charges` now shows the fake performing two, because the identity a provider is
+    given is derived from the merchant and the attempt rather than copied from the caller.
+    Before that change the fake collapsed both into one charge and the second merchant's payment
+    inherited the first one's result, which against a real processor sharing one account is a
+    duplicate receipt rejection at best. See `agentrank_api.payments.references`.
     """
     with client_for(catalog_settings, provider, alice) as client:
         alices_checkout = prepared(client, alice)
@@ -319,10 +319,13 @@ async def test_two_merchants_using_one_key_are_two_payments_here(
     assert mine.json()["attempt"]["merchant_id"] == str(alice.merchant_id)
     assert theirs.json()["attempt"]["merchant_id"] == str(bob.merchant_id)
 
-    # Two instructions left this application. The fake collapsed them, because one key string
-    # is one entry in its single ledger.
+    # Two instructions left this application carrying one caller key, and the provider saw two
+    # distinct identities, so it performed two operations rather than replaying one.
     assert len(provider.executions) == 2
-    assert provider.charges == 1
+    assert {sent.idempotency_key for sent in provider.executions} == {KEY}
+    assert len({sent.operation_reference for sent in provider.executions}) == 2
+    assert provider.charges == 2
+    assert len(provider.ledger) == 2
 
     # Neither merchant can read the other's payment, even holding the identifier.
     with client_for(catalog_settings, provider, alice) as client:

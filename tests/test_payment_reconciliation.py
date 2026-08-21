@@ -43,6 +43,7 @@ from agentrank_api.payments.provider import (
     ProviderQueryResult,
     ProviderResult,
 )
+from agentrank_api.payments.references import provider_operation_reference
 
 pytestmark = pytest.mark.anyio
 
@@ -571,6 +572,10 @@ def _replayed(attempt: PaymentAttempt) -> PaymentInstruction:
     """
     return PaymentInstruction(
         attempt_id=attempt.id,
+        # The derived identity, because that is what the fake's ledger is keyed by. Recomputed
+        # from the domain function rather than copied from the service, so a crash simulated
+        # here lands under exactly the reference a real dispatch would have used.
+        operation_reference=provider_operation_reference(attempt.merchant_id, attempt.id),
         idempotency_key=attempt.idempotency_key,
         amount_minor=attempt.amount_minor,
         currency=attempt.currency,

@@ -87,6 +87,7 @@ from agentrank_api.payments.provider import (
     ProviderRecord,
     ProviderResult,
 )
+from agentrank_api.payments.references import provider_operation_reference
 from agentrank_api.payments.repository import PaymentAttemptRepository
 
 PAYMENT_SUCCEEDED = "payment.succeeded"
@@ -645,9 +646,15 @@ def _instruction(attempt: PaymentAttempt) -> PaymentInstruction:
     currency on this row are what was authorized, held there by a composite foreign key onto an
     immutable quote, and reading them from anywhere else would be reading a number that could
     have moved since.
+
+    The identity is derived rather than forwarded. `operation_reference` comes from the merchant
+    and the attempt, both immutable on this row, so it is unique inside one provider account
+    however many merchants share it. The caller's key travels beside it for correlation and is
+    never what a provider keys on. See `agentrank_api.payments.references`.
     """
     return PaymentInstruction(
         attempt_id=attempt.id,
+        operation_reference=provider_operation_reference(attempt.merchant_id, attempt.id),
         idempotency_key=attempt.idempotency_key,
         amount_minor=attempt.amount_minor,
         currency=attempt.currency,
@@ -663,13 +670,19 @@ def _question(attempt: PaymentAttempt) -> PaymentQuery:
     evaluate it without knowing when the clock started, and this application is the only side
     that knows. It carries the fact and never the duration: how long a provider needs before an
     empty answer becomes final is that provider's business.
+
+    The identity is the same derived reference `execute` was given, recomputed rather than
+    stored. Both inputs are immutable, so recomputing cannot produce a different answer than
+    the dispatch did.
     """
     if attempt.dispatched_at is None:
         # Not reachable. ADMITTED is the only status with no dispatch instant, a check
         # constraint keeps the two in agreement, and reconciliation refuses ADMITTED above.
         raise ValueError(f"payment attempt {attempt.id} has no dispatch instant to query from")
     return PaymentQuery(
-        idempotency_key=attempt.idempotency_key, dispatched_at=attempt.dispatched_at
+        operation_reference=provider_operation_reference(attempt.merchant_id, attempt.id),
+        idempotency_key=attempt.idempotency_key,
+        dispatched_at=attempt.dispatched_at,
     )
 
 

@@ -10,10 +10,18 @@ is either configured for a specific idempotency key or it is the default, and bo
 whoever constructed the fake. A provider that failed one time in ten would make every test
 that touched it flaky and would prove nothing about the case it did not happen to produce.
 
-It behaves like an idempotent provider rather than like a stub. Its ledger is keyed by
-idempotency key, so a second execute under one key returns the first one's result and creates
-no second charge, which is what lets a test validate provider idempotency and application
-idempotency separately rather than hoping one covers the other.
+It behaves like an idempotent provider rather than like a stub. Its ledger is keyed by the
+operation reference, which is the merchant namespaced identity the provider contract says a
+provider must key on, so a second execute under one reference returns the first one's result
+and creates no second charge. That is what lets a test validate provider idempotency and
+application idempotency separately rather than hoping one covers the other, and it is what
+makes two merchants presenting one caller key two charges here rather than one.
+
+Configured outcomes are keyed by the caller's idempotency key instead, and the asymmetry is
+deliberate rather than an oversight. The ledger models the provider's own namespace, which is
+the thing under test. The outcome map is a test knob, decided before an attempt exists and
+therefore before its derived reference does, so keying it on the string a test already chose
+is the only thing it could be keyed on.
 
 The four outcomes are the four things a real processor does:
 
@@ -146,10 +154,15 @@ class FakePaymentProvider:
     charges: int = 0
 
     def set_outcome(self, idempotency_key: str, outcome: FakeOutcome) -> None:
-        """Decide what happens to one identity, before anything asks.
+        """Decide what happens to one application identity, before anything asks.
 
         Per key rather than per call, so that a test can set up two payments that behave
         differently and then let the code under test decide the order they happen in.
+
+        Keyed by the caller's idempotency key and not by the operation reference, because a
+        test decides this before the attempt exists and the reference is derived from the
+        attempt. Only the ledger below is keyed by the reference, and the ledger is the half
+        that models a provider's namespace.
         """
         self.outcomes[idempotency_key] = outcome
 
@@ -176,7 +189,8 @@ class FakePaymentProvider:
         """
         self.executions.append(instruction)
 
-        recorded = self._honoured(instruction.idempotency_key)
+        identity = instruction.operation_reference
+        recorded = self._honoured(identity)
         if recorded is not None:
             return ProviderResult(
                 outcome=recorded.outcome,
@@ -185,28 +199,20 @@ class FakePaymentProvider:
             )
 
         outcome = self.outcomes.get(instruction.idempotency_key, self.default)
-        reference = f"{REFERENCE_PREFIX}_{instruction.idempotency_key}"
+        reference = f"{REFERENCE_PREFIX}_{identity}"
 
         if outcome is FakeOutcome.SUCCESS:
-            self._record(
-                instruction.idempotency_key, ProviderOutcome.SUCCEEDED, reference=reference
-            )
+            self._record(identity, ProviderOutcome.SUCCEEDED, reference=reference)
             return ProviderResult(outcome=ProviderOutcome.SUCCEEDED, reference=reference)
 
         if outcome is FakeOutcome.DECLINE:
-            self._record(
-                instruction.idempotency_key,
-                ProviderOutcome.FAILED,
-                failure_code=self.decline_code,
-            )
+            self._record(identity, ProviderOutcome.FAILED, failure_code=self.decline_code)
             return ProviderResult(outcome=ProviderOutcome.FAILED, failure_code=self.decline_code)
 
         if outcome is FakeOutcome.LOST_RESPONSE:
             # The charge went through and the answer did not come back. The ledger records
             # the success, the caller is told nothing, and only a query can close the gap.
-            self._record(
-                instruction.idempotency_key, ProviderOutcome.SUCCEEDED, reference=reference
-            )
+            self._record(identity, ProviderOutcome.SUCCEEDED, reference=reference)
             return ProviderResult(outcome=ProviderOutcome.UNKNOWN)
 
         # AMBIGUOUS: nothing reached the provider, or nothing it kept. No ledger entry, so a
@@ -233,7 +239,7 @@ class FakePaymentProvider:
         """
         self.queries.append(query.idempotency_key)
 
-        recorded = self.ledger.get(query.idempotency_key)
+        recorded = self.ledger.get(query.operation_reference)
         if recorded is not None:
             return ProviderQueryResult(
                 outcome=recorded.outcome,
@@ -250,21 +256,26 @@ class FakePaymentProvider:
         )
 
     def executions_for(self, idempotency_key: str) -> int:
-        """How many times this identity was sent to the provider, repeats included."""
+        """How many times this application identity was sent to the provider, repeats included.
+
+        By idempotency key, because that is what a test naming a payment has in hand. What the
+        provider deduplicated on is the operation reference, and `charges` is where the
+        difference between the two shows up.
+        """
         return sum(
             1 for instruction in self.executions if instruction.idempotency_key == idempotency_key
         )
 
     def _record(
         self,
-        idempotency_key: str,
+        operation_reference: str,
         outcome: ProviderOutcome,
         *,
         reference: str | None = None,
         failure_code: str | None = None,
     ) -> None:
         """Write what this provider did with one identity, and count it if money moved."""
-        self.ledger[idempotency_key] = LedgerEntry(
+        self.ledger[operation_reference] = LedgerEntry(
             outcome=outcome,
             reference=reference,
             failure_code=failure_code,
@@ -273,9 +284,9 @@ class FakePaymentProvider:
         if outcome is ProviderOutcome.SUCCEEDED:
             self.charges += 1
 
-    def _honoured(self, idempotency_key: str) -> LedgerEntry | None:
+    def _honoured(self, operation_reference: str) -> LedgerEntry | None:
         """The entry this provider will still replay for an identity, if it will replay one."""
-        entry = self.ledger.get(idempotency_key)
+        entry = self.ledger.get(operation_reference)
         if entry is None or entry.recorded_at is None:
             return entry
         if self._elapsed(entry.recorded_at, self.idempotency_retention):
