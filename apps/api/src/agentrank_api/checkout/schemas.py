@@ -16,7 +16,7 @@ able to move a quote total. See docs/decisions.md.
 
 import uuid
 from datetime import UTC, datetime
-from typing import Self
+from typing import Any, Self
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -76,10 +76,14 @@ class CreateCheckoutRequest(BaseModel):
 
 
 class CheckoutLineView(BaseModel):
-    """One quoted line, priced.
+    """One quoted line: priced, and described as the catalog described it at the time.
 
-    The unit price is the one that was snapshotted, so a caller never has to reread a
-    variant to understand what was quoted.
+    Every field here is the snapshot that was taken when the quote was made, so a caller
+    never has to reread a variant to understand what was offered, and rereading one could
+    not tell them anyway once the catalog has moved on.
+
+    `product_category` and `variant_attributes` are what semantic authorization is decided
+    against, and showing them is what makes a denial explainable without a second request.
     """
 
     id: uuid.UUID
@@ -88,6 +92,8 @@ class CheckoutLineView(BaseModel):
     unit_price_amount_minor: int
     line_amount_minor: int
     currency: str
+    product_category: str | None
+    variant_attributes: dict[str, Any]
 
     @classmethod
     def from_model(cls, line: CheckoutLine) -> Self:
@@ -98,6 +104,8 @@ class CheckoutLineView(BaseModel):
             unit_price_amount_minor=line.unit_price_amount_minor,
             line_amount_minor=line.line_amount_minor,
             currency=line.currency,
+            product_category=line.product_category,
+            variant_attributes=line.variant_attributes,
         )
 
 

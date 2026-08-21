@@ -44,6 +44,10 @@ class CheckoutRepository:
 
         A checkout is always created open. There is no parameter for status, so a
         cancelled checkout cannot be brought into existence, only arrived at.
+
+        The semantic snapshot on each line is copied out of the quoted line rather than
+        read from the catalog here. This repository writes what it is given; deciding what
+        the catalog said is the service's job, and it does it once.
         """
         totals = checkout_totals(
             lines,
@@ -68,6 +72,11 @@ class CheckoutRepository:
                 quantity=line.quantity,
                 unit_price_amount_minor=line.unit_price_amount_minor,
                 currency=currency,
+                product_category=line.product_category,
+                # Copied rather than referenced. The source is a live `Variant.attributes`
+                # dictionary, and sharing the object would let a later catalog edit reach
+                # into a written quote through the ORM identity map.
+                variant_attributes=dict(line.variant_attributes),
             )
             for line in lines
         ]

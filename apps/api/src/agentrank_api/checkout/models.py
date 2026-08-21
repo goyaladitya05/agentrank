@@ -5,11 +5,13 @@ payment and it holds no payment fields. What it does hold is enough immutable de
 a later decision to be reproducible: the prices that were quoted, what they add up to,
 which mandate the quote was prepared against, and when the quote stops being good.
 
-Four properties are enforced by the database rather than by application code, because the
+Five properties are enforced by the database rather than by application code, because the
 database is the only layer that cannot be bypassed:
 
 - money is a non negative integer count of minor units, its currency is never absent, and
   `total = subtotal + shipping - discount` holds on every row
+- the semantic snapshot on a line is a JSON object, so the evaluator that reads it can rely
+  on a shape rather than testing what arrived
 - a checkout, its mandate, its lines and their variants all belong to one merchant, and
   every line is priced in the checkout's own currency, all through composite foreign keys
 - a quote expires, and it cannot be created already expired
@@ -22,6 +24,7 @@ transition rather than about a row. See the migration for the statement itself.
 import uuid
 from datetime import datetime
 from enum import StrEnum
+from typing import Any
 
 from sqlalchemy import (
     BigInteger,
@@ -34,7 +37,9 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
     func,
+    text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from agentrank_api.models import Base
@@ -151,11 +156,21 @@ class CheckoutSession(Base):
 
 
 class CheckoutLine(Base):
-    """One variant on a quote, at the price the quote fixed.
+    """One variant on a quote, as the catalog described it when the quote was made.
 
     `unit_price_amount_minor` is a snapshot, not a pointer. Recomputing a total from the
     live variant would mean a catalog edit silently rewrote what a buyer was quoted, which
     is exactly what a quote exists to prevent.
+
+    `product_category` and `variant_attributes` are snapshots for the same reason, and
+    they are what semantic authorization is evaluated against. Reading them from the live
+    catalog instead would mean a merchant changing `black` to `blue` after the fact could
+    change whether a historical quote satisfied what the buyer asked for. A checkout has to
+    stay explainable as the exact offer the buyer considered.
+
+    Only structured commerce values are copied here. Title, description and anything else a
+    merchant wrote in prose are absent: the evaluator compares machine readable fields, and
+    prose in a financial row is duplication that answers nothing.
 
     The line carries its own currency rather than inheriting one by convention, because
     the project rule is that an amount and its currency travel together. It cannot
@@ -189,6 +204,12 @@ class CheckoutLine(Base):
         CheckConstraint("quantity > 0", name="quantity_positive"),
         CheckConstraint("unit_price_amount_minor >= 0", name="unit_price_not_negative"),
         CheckConstraint(f"currency ~ '{CURRENCY_PATTERN}'", name="currency_format"),
+        # The same shape rule the catalog holds on variant.attributes, so a consumer of
+        # either can rely on a JSON object rather than testing what arrived.
+        CheckConstraint(
+            "jsonb_typeof(variant_attributes) = 'object'",
+            name="variant_attributes_are_an_object",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)
@@ -198,6 +219,13 @@ class CheckoutLine(Base):
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     unit_price_amount_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    # Nullable because product.category is. A catalog that does not say what something is
+    # cannot satisfy an allowed category constraint, and that failure is the honest answer
+    # rather than a reason to guess.
+    product_category: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    variant_attributes: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb"), default=dict
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

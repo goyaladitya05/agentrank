@@ -68,6 +68,7 @@ async def build_shop(session: AsyncSession, slug: str) -> Shop:
             merchant_id=merchant.id,
             external_id=f"{slug}-{external_id}",
             title=external_id.title(),
+            category="chargers",
             is_active=is_active,
         )
 
@@ -80,6 +81,7 @@ async def build_shop(session: AsyncSession, slug: str) -> Shop:
         price_amount_minor=CHARGER,
         currency="INR",
         inventory_quantity=5,
+        attributes={"color": "black", "wattage": 100},
     )
     cable = await catalog.create_variant(
         product=live,
@@ -87,6 +89,7 @@ async def build_shop(session: AsyncSession, slug: str) -> Shop:
         price_amount_minor=CABLE,
         currency="INR",
         inventory_quantity=10,
+        attributes={"color": "black", "length_m": 1},
     )
     euro = await catalog.create_variant(
         product=live,
@@ -190,6 +193,43 @@ async def test_a_later_catalog_price_change_does_not_move_an_existing_quote(
     assert reread.lines[0].unit_price_amount_minor == CHARGER
     assert reread.subtotal_amount_minor == 2 * CHARGER
     assert reread.total_amount_minor == 2 * CHARGER
+
+
+async def test_a_later_catalog_edit_does_not_move_an_existing_quotes_description(
+    session: AsyncSession, shop: Shop
+) -> None:
+    """The same rule as the price snapshot, for the fields authorization reads.
+
+    If this did not hold, a merchant could turn a checkout the buyer asked for into one
+    they did not by editing a variant after the quote was written.
+    """
+    service = CheckoutService(session)
+    checkout = await service.create_checkout(request_for(shop))
+    assert checkout.lines[0].variant_attributes == {"color": "black", "wattage": 100}
+    assert checkout.lines[0].product_category == "chargers"
+
+    shop.charger.attributes = {"color": "blue", "wattage": 100}
+    shop.charger.product.category = "headphones"
+    await session.commit()
+
+    session.expunge_all()
+    reread = await service.get_checkout(checkout.id)
+    assert reread.lines[0].variant_attributes == {"color": "black", "wattage": 100}
+    assert reread.lines[0].product_category == "chargers"
+
+
+async def test_a_new_quote_observes_the_edited_catalog(session: AsyncSession, shop: Shop) -> None:
+    """The other half of the same rule: a snapshot is fixed, not frozen forever."""
+    service = CheckoutService(session)
+    product = await session.get(Product, shop.charger.product_id)
+    assert product is not None
+    shop.charger.attributes = {"color": "blue", "wattage": 100}
+    product.category = "headphones"
+    await session.commit()
+
+    checkout = await service.create_checkout(request_for(shop))
+    assert checkout.lines[0].variant_attributes == {"color": "blue", "wattage": 100}
+    assert checkout.lines[0].product_category == "headphones"
 
 
 async def test_a_multi_line_quote_adds_up(session: AsyncSession, shop: Shop) -> None:

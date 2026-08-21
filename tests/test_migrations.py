@@ -1,5 +1,6 @@
 """Migrations must round trip against a real PostgreSQL database."""
 
+import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -9,13 +10,11 @@ from alembic import command
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine, func, inspect, select
+from sqlalchemy import create_engine, func, inspect, select, text
 
 from agentrank_api.audit.models import ActorType, AuditEvent
 from agentrank_api.audit.repository import AuditRepository
 from agentrank_api.checkout.models import CheckoutLine, CheckoutSession
-from agentrank_api.checkout.quote import QuotedLine
-from agentrank_api.checkout.repository import CheckoutRepository
 from agentrank_api.commerce import models as commerce_models  # noqa: F401  registers tables
 from agentrank_api.commerce.dev_catalog import MERCHANT_SLUG, seed_dev_catalog
 from agentrank_api.commerce.models import Merchant, Product, Variant
@@ -38,6 +37,7 @@ PHASE_1B_HEAD = "9360057d8773"
 PHASE_1C_HEAD = "4dc1a0f57b18"
 
 HOUR = timedelta(hours=1)
+CHECKOUT_ID = uuid.uuid7()
 
 
 def catalog_snapshot(settings: Settings) -> dict[str, Any]:
@@ -79,6 +79,19 @@ def authorization_snapshot(settings: Settings) -> dict[str, Any]:
                     connection.execute(select(AuditEvent.event_type)).scalars().all()
                 ),
             }
+    finally:
+        engine.dispose()
+
+
+def line_snapshots(settings: Settings) -> list[tuple[str | None, dict[str, Any]]]:
+    """The semantic snapshot columns a Phase 1D migration adds to checkout_line."""
+    engine = create_engine(settings.database_url)
+    try:
+        with engine.connect() as connection:
+            rows = connection.execute(
+                select(CheckoutLine.product_category, CheckoutLine.variant_attributes)
+            ).all()
+            return sorted(((row[0], row[1]) for row in rows), key=str)
     finally:
         engine.dispose()
 
@@ -211,6 +224,10 @@ async def test_migrations_apply_to_a_database_that_already_holds_data(
         assert catalog_snapshot(throwaway_database) == seeded
         assert authorization_snapshot(throwaway_database) == authorized
 
+        # Written as SQL rather than through the repository, on purpose. The ORM models
+        # always describe head, and at this revision checkout_line has no semantic snapshot
+        # columns. Writing the row the way the Phase 1C release wrote it is the only way to
+        # meet the next migration with the data it will actually find.
         async with factory() as session:
             variant = (
                 (
@@ -224,18 +241,35 @@ async def test_migrations_apply_to_a_database_that_already_holds_data(
                 .first()
             )
             assert variant is not None
-            await CheckoutRepository(session).create(
-                merchant_id=merchant_id,
-                mandate_id=mandate_id,
-                currency="INR",
-                lines=[
-                    QuotedLine(
-                        variant_id=variant.id,
-                        quantity=1,
-                        unit_price_amount_minor=variant.price_amount_minor,
-                    )
-                ],
-                expires_at=datetime.now(UTC) + HOUR,
+            await session.execute(
+                text(
+                    "INSERT INTO checkout_session (id, merchant_id, mandate_id, currency,"
+                    " subtotal_amount_minor, shipping_amount_minor, discount_amount_minor,"
+                    " total_amount_minor, status, expires_at)"
+                    " VALUES (:id, :merchant_id, :mandate_id, 'INR', :amount, 0, 0,"
+                    " :amount, 'OPEN', now() + interval '1 hour')"
+                ),
+                {
+                    "id": CHECKOUT_ID,
+                    "merchant_id": merchant_id,
+                    "mandate_id": mandate_id,
+                    "amount": variant.price_amount_minor,
+                },
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO checkout_line (id, checkout_id, merchant_id, variant_id,"
+                    " quantity, unit_price_amount_minor, currency)"
+                    " VALUES (:id, :checkout_id, :merchant_id, :variant_id, 1, :amount,"
+                    " 'INR')"
+                ),
+                {
+                    "id": uuid.uuid7(),
+                    "checkout_id": CHECKOUT_ID,
+                    "merchant_id": merchant_id,
+                    "variant_id": variant.id,
+                    "amount": variant.price_amount_minor,
+                },
             )
             await session.commit()
 
@@ -249,6 +283,9 @@ async def test_migrations_apply_to_a_database_that_already_holds_data(
         assert {table.name for table in Base.metadata.sorted_tables} <= table_names(
             throwaway_database
         )
+        # A line written before the snapshot existed takes the column defaults rather than
+        # a backfill from today's catalog, and an empty snapshot fails closed.
+        assert line_snapshots(throwaway_database) == [(None, {})]
 
         # Semantic authorization written against that existing mandate, so the downgrade
         # below has rows to remove rather than only tables. The foreign key onto the

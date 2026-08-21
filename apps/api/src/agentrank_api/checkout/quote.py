@@ -8,9 +8,10 @@ count of minor units, the currency travels with it, and there is no rounding any
 because there is nothing to round: a total is a sum of integers.
 """
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import Any
 from uuid import UUID
 
 from agentrank_api.money import validate_amount_minor
@@ -30,16 +31,28 @@ MAX_CHECKOUT_TTL = timedelta(hours=24)
 
 @dataclass(frozen=True, slots=True)
 class QuotedLine:
-    """One variant, a quantity, and the price this quote fixed it at.
+    """One variant, a quantity, and what the catalog said about it when the quote was made.
 
-    `unit_price_amount_minor` is a snapshot. It is read from the catalog once, when the
-    quote is made, and never again: a checkout has to stay readable as the quote it was
-    even after the catalog moves on.
+    Everything here except the identifiers is a snapshot. The price is read from the
+    catalog once and never again, and so are the two semantic fields beside it: a checkout
+    has to stay readable as the offer it was even after the catalog moves on.
+
+    `product_category` and `variant_attributes` are here because semantic authorization
+    asks what was actually being bought, and asking the live catalog would mean a merchant
+    edit could change the answer for a quote made yesterday. They carry structured commerce
+    values only. No title, no description, no merchant prose: the evaluator compares
+    machine readable fields and nothing else can be compared anyway.
+
+    `product_category` is nullable because `product.category` is. A catalog that does not
+    say what something is fails an allowed category constraint, which is the right answer
+    rather than a reason to guess.
     """
 
     variant_id: UUID
     quantity: int
     unit_price_amount_minor: int
+    product_category: str | None = None
+    variant_attributes: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.quantity <= 0:

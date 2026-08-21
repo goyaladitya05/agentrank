@@ -37,7 +37,7 @@ async def quotable(session: AsyncSession) -> dict[str, uuid.UUID]:
     )
     catalog = CatalogRepository(session)
     product = await catalog.create_product(
-        merchant_id=merchant.id, external_id="amp-1", title="Charger"
+        merchant_id=merchant.id, external_id="amp-1", title="Charger", category="chargers"
     )
     variant = await catalog.create_variant(
         product=product,
@@ -45,6 +45,7 @@ async def quotable(session: AsyncSession) -> dict[str, uuid.UUID]:
         price_amount_minor=PRICE,
         currency="INR",
         inventory_quantity=2,
+        attributes={"color": "black", "wattage": 100},
     )
     await session.commit()
     return {"merchant_id": merchant.id, "mandate_id": mandate.id, "variant_id": variant.id}
@@ -75,7 +76,8 @@ async def test_a_checkout_is_created_read_back_and_authorized(
         assert body["total_quantity"] == 1
         assert body["status"] == "OPEN"
         assert body["cancelled_at"] is None
-        # The quoted price is in the response, so nothing has to reread the variant.
+        # The whole snapshot is in the response, price and description alike, so nothing
+        # has to reread the variant to understand what was offered.
         assert body["lines"] == [
             {
                 "id": body["lines"][0]["id"],
@@ -84,6 +86,8 @@ async def test_a_checkout_is_created_read_back_and_authorized(
                 "unit_price_amount_minor": PRICE,
                 "line_amount_minor": PRICE,
                 "currency": "INR",
+                "product_category": "chargers",
+                "variant_attributes": {"color": "black", "wattage": 100},
             }
         ]
 

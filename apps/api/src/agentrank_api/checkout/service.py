@@ -7,7 +7,9 @@ call one method and serialize the result.
 Three rules shape this module:
 
 - a quote is priced from the catalog, never from the request. A caller states which
-  variants and how many; what they cost is not a caller's to say
+  variants and how many; what they cost is not a caller's to say. The same applies to what
+  they are: the category and the structured attributes are snapshotted from the catalog at
+  the same moment the price is
 - a checkout and the audit event recording it commit together or not at all
 - creating a quote is not authorizing it. This service never asks whether the mandate
   permits the total, only that the mandate belongs to the same merchant. A quote for more
@@ -224,6 +226,10 @@ def _quote_line(item: CheckoutItem, by_id: dict[uuid.UUID, Variant]) -> QuotedLi
     Inventory is compared, never decremented and never reserved. This is a quote, and a
     quote does not take stock off the shelf. What that leaves open is recorded in
     docs/shortcomings.md: stock can change between the quote and any later execution.
+
+    The price and the semantic snapshot are read together, from the same variant, at the
+    same instant. A later catalog edit changes neither, so what the quote says it costs and
+    what the quote says it is stay one consistent description of one offer.
     """
     variant = by_id.get(item.variant_id)
     if variant is None:
@@ -254,6 +260,11 @@ def _quote_line(item: CheckoutItem, by_id: dict[uuid.UUID, Variant]) -> QuotedLi
         variant_id=variant.id,
         quantity=item.quantity,
         unit_price_amount_minor=variant.price_amount_minor,
+        # Read once, here, and never again. This is the only place the live catalog is
+        # consulted for what an item actually is, which is what makes a later semantic
+        # decision a decision about the offer the buyer saw.
+        product_category=variant.product.category,
+        variant_attributes=variant.attributes,
     )
 
 
