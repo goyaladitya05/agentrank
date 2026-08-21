@@ -14,6 +14,7 @@ from agentrank_api.models import Base
 # Importing the model modules is what registers their tables on Base.metadata.
 # Autogenerate and `alembic check` see an empty schema without this.
 from agentrank_api.commerce import models as commerce_models  # noqa: F401  isort:skip
+from agentrank_api.mandates import models as mandate_models  # noqa: F401  isort:skip
 
 config = context.config
 target_metadata = Base.metadata
