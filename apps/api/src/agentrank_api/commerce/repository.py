@@ -6,11 +6,13 @@ of work.
 """
 
 import uuid
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload, selectinload
 
-from agentrank_api.commerce.models import Merchant
+from agentrank_api.commerce.models import Merchant, Product, Variant
 
 
 class MerchantRepository:
@@ -30,3 +32,79 @@ class MerchantRepository:
     async def get_by_slug(self, slug: str) -> Merchant | None:
         result = await self._session.execute(select(Merchant).where(Merchant.slug == slug))
         return result.scalar_one_or_none()
+
+
+class CatalogRepository:
+    """Products and their variants.
+
+    Relationships are declared `lazy="raise_on_sql"`, so every query here states what it
+    loads. That is deliberate: a missing loader option fails loudly instead of turning
+    into one extra query per row at serialization time.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create_product(
+        self,
+        *,
+        merchant_id: uuid.UUID,
+        external_id: str,
+        title: str,
+        description: str | None = None,
+        category: str | None = None,
+        is_active: bool = True,
+    ) -> Product:
+        product = Product(
+            merchant_id=merchant_id,
+            external_id=external_id,
+            title=title,
+            description=description,
+            category=category,
+            is_active=is_active,
+        )
+        self._session.add(product)
+        await self._session.flush()
+        return product
+
+    async def create_variant(
+        self,
+        *,
+        product: Product,
+        sku: str,
+        price_amount_minor: int,
+        currency: str,
+        label: str | None = None,
+        attributes: dict[str, Any] | None = None,
+        inventory_quantity: int = 0,
+        is_active: bool = True,
+    ) -> Variant:
+        """Add a variant to a product.
+
+        The product is passed rather than its id so that the merchant is derived from it.
+        A caller cannot supply a merchant, and therefore cannot mis-attribute a variant.
+        """
+        variant = Variant(
+            product_id=product.id,
+            merchant_id=product.merchant_id,
+            sku=sku,
+            label=label,
+            attributes=attributes if attributes is not None else {},
+            price_amount_minor=price_amount_minor,
+            currency=currency,
+            inventory_quantity=inventory_quantity,
+            is_active=is_active,
+        )
+        self._session.add(variant)
+        await self._session.flush()
+        return variant
+
+    async def get_product(self, product_id: uuid.UUID) -> Product | None:
+        """Fetch one product with its merchant and every variant loaded."""
+        statement = (
+            select(Product)
+            .options(joinedload(Product.merchant), selectinload(Product.variants))
+            .where(Product.id == product_id)
+        )
+        result = await self._session.execute(statement)
+        return result.unique().scalar_one_or_none()
