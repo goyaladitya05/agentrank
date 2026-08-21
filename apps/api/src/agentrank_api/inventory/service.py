@@ -47,19 +47,29 @@ from agentrank_api.inventory.rules import is_effective
 RESERVATION_RESOURCE = "inventory_reservation"
 INVENTORY_RESERVED = "inventory.reserved"
 INVENTORY_RELEASED = "inventory.released"
+INVENTORY_CONSUMED = "inventory.consumed"
+INVENTORY_OVERSOLD = "inventory.oversold"
 
 # Stock is held while preparing a purchase the buyer asked for, so it is the buyer's act,
 # exactly as quoting is. This names a role and not a verified identity: nothing
 # authenticates a caller yet.
 RESERVATION_ACTOR = ActorType.BUYER
 
+# Consumption is not. Stock leaves a merchant's shelf permanently because a provider said the
+# money moved, which is the provider's report rather than anything the buyer chose.
+PAYMENT_ACTOR = ActorType.PAYMENT_PROVIDER
+
 
 class ReleaseReason(StrEnum):
     """Why stock was given back.
 
-    A code rather than prose, so the trail stays answerable by a machine. A payment phase
-    that gives stock back after a definitive decline adds a member here rather than writing
-    a sentence into a payload.
+    A code rather than prose, so the trail stays answerable by a machine.
+
+    `PAYMENT_DECLINED` is the definitive decline path and only that. It means a provider said
+    no and no money moved, so the units go back on the shelf. An ambiguous provider result is
+    not this and must never use it: stock stays committed until the attempt has a definitive
+    answer, because releasing it under a payment that may have gone through is how one unit
+    gets sold twice.
 
     `RESERVATION_RECOVERED` is not an ordinary lifecycle event and reads as an admission
     that something was wrong. That is deliberate. It means a reservation was found holding
@@ -71,6 +81,7 @@ class ReleaseReason(StrEnum):
 
     CHECKOUT_CANCELLED = "checkout_cancelled"
     RESERVATION_RECOVERED = "reservation_recovered"
+    PAYMENT_DECLINED = "payment_declined"
 
 
 class InventoryViolationCode(StrEnum):
@@ -232,6 +243,76 @@ class InventoryReservationService:
         await self._append(reservation, INVENTORY_RESERVED, _reserved_payload(reservation))
         return ReservationOutcome(reservation=reservation, created=True)
 
+    async def commit_to_payment(self, reservation: InventoryReservation) -> bool:
+        """Bind a hold to an admitted payment, and report whether this call changed it.
+
+        The transition that takes a reservation out of the clock's hands. An ACTIVE hold stops
+        holding stock at `expires_at`; a COMMITTED one holds it until the payment bound to it
+        has a definitive answer, because admission was the instant the purchase was authorized
+        and time passing cannot withdraw an authorization already acted on.
+
+        No audit event is appended, and that is deliberate rather than an omission. The record
+        of this transition is the `payment.admitted` event, which names this reservation and
+        is written in the same transaction. A second event saying the same thing from the
+        other side would be two rows for one fact, and the trail would suggest two things
+        happened.
+
+        Called with the checkout and the variant rows already locked, by the one operation
+        allowed to do it. It is not a public lifecycle operation: a hold becomes committed
+        because a payment was admitted, never on its own.
+        """
+        return await self._reservations.commit_to_payment(reservation)
+
+    async def consume(self, reservation: InventoryReservation) -> bool:
+        """Turn a committed hold into a permanent sale, stock included.
+
+        Two writes and one meaning. The reservation becomes CONSUMED, and the units come out
+        of `variant.inventory_quantity` for good. They happen together because either alone
+        is wrong: marking the reservation without decrementing loses the sale, and
+        decrementing without marking counts it twice, once as a smaller total and once as a
+        hold that is still standing.
+
+        A CONSUMED reservation stops counting as a hold, which is what makes available
+        quantity the same number either side of a purchase and one purchase subtracted
+        exactly once.
+
+        The variant rows must already be locked by the caller, in ascending identifier order.
+        They are locked again here, which costs nothing and keeps the decrement beside the
+        rows it reads. An underflow is clamped at zero and recorded as `inventory.oversold`
+        rather than hidden or raised: the money has moved by the time this runs, and a
+        merchant who is oversold needs to be told rather than have the transaction refused.
+
+        One `inventory.consumed` event, in this transaction, or none of it happens.
+        """
+        quantities = {line.variant_id: line.quantity for line in reservation.lines}
+        if not await self._reservations.consume(reservation):
+            return False
+
+        shortfalls = await self._reservations.consume_stock(
+            merchant_id=reservation.merchant_id, quantities=quantities
+        )
+        await self._append(
+            reservation, INVENTORY_CONSUMED, _consumed_payload(reservation), actor=PAYMENT_ACTOR
+        )
+        if shortfalls:
+            # Unreachable while nothing in this application writes stock, and stated loudly
+            # rather than swallowed. See docs/shortcomings.md.
+            await self._append(
+                reservation,
+                INVENTORY_OVERSOLD,
+                {
+                    "checkout_id": str(reservation.checkout_id),
+                    "shortfalls": [
+                        {"variant_id": str(variant_id), "quantity": quantity}
+                        for variant_id, quantity in sorted(
+                            shortfalls.items(), key=lambda item: str(item[0])
+                        )
+                    ],
+                },
+                actor=PAYMENT_ACTOR,
+            )
+        return True
+
     async def release(self, reservation: InventoryReservation, *, reason: ReleaseReason) -> bool:
         """Give the stock back, once, and record that it happened.
 
@@ -262,11 +343,16 @@ class InventoryReservationService:
         return await self.release(reservation, reason=reason)
 
     async def _append(
-        self, reservation: InventoryReservation, event_type: str, payload: dict[str, Any]
+        self,
+        reservation: InventoryReservation,
+        event_type: str,
+        payload: dict[str, Any],
+        *,
+        actor: ActorType = RESERVATION_ACTOR,
     ) -> None:
         await self._audit.append(
             merchant_id=reservation.merchant_id,
-            actor_type=RESERVATION_ACTOR,
+            actor_type=actor,
             event_type=event_type,
             resource_type=RESERVATION_RESOURCE,
             resource_id=reservation.id,
@@ -350,6 +436,24 @@ def _released_payload(reservation: InventoryReservation, reason: ReleaseReason) 
         "status": ReservationStatus.RELEASED.value,
         "line_count": len(reservation.lines),
         "total_quantity": reservation.total_quantity,
+    }
+
+
+def _consumed_payload(reservation: InventoryReservation) -> dict[str, Any]:
+    """What was permanently sold, in the words of the reservation itself.
+
+    The lines are recorded as well as the total, because this is the event that says which
+    stock left the shelf and by how much, and reading it should not need a join.
+    """
+    return {
+        "checkout_id": str(reservation.checkout_id),
+        "status": ReservationStatus.CONSUMED.value,
+        "line_count": len(reservation.lines),
+        "total_quantity": reservation.total_quantity,
+        "lines": [
+            {"variant_id": str(line.variant_id), "quantity": line.quantity}
+            for line in reservation.lines
+        ],
     }
 
 

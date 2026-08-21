@@ -127,6 +127,20 @@ class PaymentAttemptRepository:
         )
         return (await self._session.execute(statement)).scalar_one_or_none()
 
+    async def get_open_for_checkout(self, checkout_id: uuid.UUID) -> PaymentAttempt | None:
+        """The one non terminal attempt for this checkout, if there is one.
+
+        At most one exists, implied rather than indexed: the mandate scoped index allows one
+        non terminal attempt per mandate, and a checkout names exactly one mandate. This asks
+        the narrower question, which is the one a cancellation needs: a checkout with a
+        payment that may still reach a provider must not be withdrawn underneath it.
+        """
+        statement = select(PaymentAttempt).where(
+            PaymentAttempt.checkout_id == checkout_id,
+            PaymentAttempt.status.in_(OPEN_STATUSES),
+        )
+        return (await self._session.execute(statement)).scalar_one_or_none()
+
     async def get_succeeded_for_mandate(self, mandate_id: uuid.UUID) -> PaymentAttempt | None:
         """The one successful payment that consumed this mandate, if there is one.
 

@@ -4,6 +4,7 @@ Backend tests run against a real PostgreSQL 18 instance, never SQLite. Locally t
 the Docker Compose service, and in CI it is a service container.
 """
 
+import re
 import socket
 from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
@@ -11,8 +12,8 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, text
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+from sqlalchemy import create_engine, event, text
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from agentrank_api.audit import models as audit_models  # noqa: F401  registers tables
 from agentrank_api.checkout import models as checkout_models  # noqa: F401  registers tables
@@ -134,3 +135,43 @@ async def session(catalog_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
 
     async with catalog_engine.begin() as connection:
         await connection.execute(text(TRUNCATE_ALL))
+
+
+@pytest.fixture
+def factory(catalog_engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
+    """Independent sessions on the catalog database, so operations can genuinely race.
+
+    A concurrency test that shares one session proves nothing: two coroutines on one
+    connection take their turns because they have to, not because PostgreSQL made them.
+    """
+    return create_session_factory(catalog_engine)
+
+
+@pytest.fixture
+def row_locks(catalog_engine: AsyncEngine) -> Iterator[list[str]]:
+    """Every row lock taken on this engine, as the table each one targeted.
+
+    Deadlock freedom is a property of the order locks are taken in, so the order is the thing
+    worth asserting, and the only honest way to assert it is to watch the statements.
+    """
+    taken: list[str] = []
+
+    def record(
+        connection: object,
+        cursor: object,
+        statement: str,
+        parameters: object,
+        context: object,
+        executemany: object,
+    ) -> None:
+        if "FOR UPDATE" not in statement:
+            return
+        target = re.search(r"\bFROM\s+(\w+)", statement)
+        if target is not None:
+            taken.append(target.group(1))
+
+    event.listen(catalog_engine.sync_engine, "before_cursor_execute", record)
+    try:
+        yield taken
+    finally:
+        event.remove(catalog_engine.sync_engine, "before_cursor_execute", record)

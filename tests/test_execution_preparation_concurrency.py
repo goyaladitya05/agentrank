@@ -17,16 +17,14 @@ accident, and a test that passes by accident would pass with no locking at all.
 """
 
 import asyncio
-import re
 import uuid
-from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from itertools import groupby
 
 import pytest
-from sqlalchemy import event, func, select
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.audit.repository import AuditRepository
 from agentrank_api.checkout.authorization import CheckoutAuthorizationViolation
@@ -41,7 +39,6 @@ from agentrank_api.checkout.service import CHECKOUT_RESOURCE, CheckoutService
 from agentrank_api.commerce.repository import CatalogRepository, MerchantRepository
 from agentrank_api.constraints.repository import IntentConstraintRepository
 from agentrank_api.constraints.rules import ConstraintOperator, IntentConstraintSpec
-from agentrank_api.database import create_session_factory
 from agentrank_api.inventory.models import InventoryReservation, ReservationStatus
 from agentrank_api.inventory.repository import InventoryReservationRepository
 from agentrank_api.locking import LOCK_ORDER, respects_lock_order
@@ -139,12 +136,6 @@ async def quote(
 @pytest.fixture
 async def shop(session: AsyncSession) -> Shop:
     return await build_shop(session)
-
-
-@pytest.fixture
-def factory(catalog_engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
-    """Independent sessions, so that operations can genuinely race."""
-    return create_session_factory(catalog_engine)
 
 
 async def prepare_in_new_session(
@@ -413,32 +404,6 @@ async def test_two_concurrent_revocations_transition_once(
             resource_type=MANDATE_RESOURCE, resource_id=shop.mandate.id
         )
         assert [event.event_type for event in events] == ["mandate.revoked"]
-
-
-@pytest.fixture
-def row_locks(catalog_engine: AsyncEngine) -> Iterator[list[str]]:
-    """Every row lock taken on this engine, as the table each one targeted."""
-    taken: list[str] = []
-
-    def record(
-        connection: object,
-        cursor: object,
-        statement: str,
-        parameters: object,
-        context: object,
-        executemany: object,
-    ) -> None:
-        if "FOR UPDATE" not in statement:
-            return
-        target = re.search(r"\bFROM\s+(\w+)", statement)
-        if target is not None:
-            taken.append(target.group(1))
-
-    event.listen(catalog_engine.sync_engine, "before_cursor_execute", record)
-    try:
-        yield taken
-    finally:
-        event.remove(catalog_engine.sync_engine, "before_cursor_execute", record)
 
 
 def test_the_lock_order_is_one_rule_in_one_place() -> None:

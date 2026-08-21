@@ -55,6 +55,7 @@ from agentrank_api.errors import ConflictError, NotFoundError
 from agentrank_api.inventory.service import InventoryReservationService, ReleaseReason
 from agentrank_api.mandates.repository import MandateRepository
 from agentrank_api.money import validate_amount_minor
+from agentrank_api.payments.repository import PaymentAttemptRepository
 
 CHECKOUT_RESOURCE = "checkout_session"
 CHECKOUT_CREATED = "checkout.created"
@@ -121,6 +122,7 @@ class CheckoutService:
         self._checkouts = CheckoutRepository(session)
         self._constraints = IntentConstraintRepository(session)
         self._inventory = InventoryReservationService(session)
+        self._payments = PaymentAttemptRepository(session)
         self._audit = AuditRepository(session)
 
     async def create_checkout(self, request: NewCheckout) -> CheckoutSession:
@@ -261,11 +263,23 @@ class CheckoutService:
         Healing is all it does. `cancelled_at` does not move, no second `checkout.cancelled`
         event is appended, and nothing but the inconsistent reservation is touched.
 
+        Two states refuse cancellation outright rather than being healed. A checkout with a
+        non terminal payment attempt answers `payment_in_progress`, because a provider call
+        may be in flight for it and releasing the stock underneath one is how a unit gets sold
+        twice. A paid checkout answers `checkout_already_paid`, because a completed purchase
+        is not a withdrawable quote. Both are decided under the checkout lock, which is the
+        same lock payment admission holds while it writes its attempt, so a cancellation
+        cannot slip between the admission and the row that records it.
+
+        A definitively failed attempt is not in progress. Once a decline has released the
+        stock, cancelling is an ordinary withdrawal again.
+
         Nothing about the price changes. Cancelling a quote withdraws it, it does not
         rewrite what was quoted, and the trigger on the table refuses any attempt to do
         both at once.
         """
         checkout = await self._locked(checkout_id)
+        await self._require_cancellable(checkout)
         if await self._checkouts.cancel(checkout):
             await self._append(
                 checkout, CHECKOUT_CANCELLED, {"status": CheckoutStatus.CANCELLED.value}
@@ -277,6 +291,35 @@ class CheckoutService:
         # Committed either way. When nothing changed this just closes the read.
         await self._session.commit()
         return checkout
+
+    async def _require_cancellable(self, checkout: CheckoutSession) -> None:
+        """Refuse a withdrawal that would race a payment, or undo one.
+
+        Read with the checkout already locked. Payment admission takes the same lock before
+        it writes its attempt and holds it until commit, so either this observes the attempt
+        or admission waits for this and then finds a cancelled checkout and refuses.
+
+        Structured refusals rather than a race. The alternative was to let cancellation
+        proceed and have the payment discover it afterwards, which means deciding what to do
+        about a provider call that has already been dispatched for a quote nobody wants. There
+        is no good answer to that question, so the question is not asked.
+        """
+        if checkout.status is CheckoutStatus.PAID:
+            raise ConflictError(
+                "checkout_already_paid",
+                f"checkout {checkout.id} has been paid and cannot be withdrawn",
+                resource="checkout",
+                identifier=str(checkout.id),
+            )
+
+        attempt = await self._payments.get_open_for_checkout(checkout.id)
+        if attempt is not None:
+            raise ConflictError(
+                "payment_in_progress",
+                f"checkout {checkout.id} has a payment that has not resolved",
+                resource="checkout",
+                identifier=str(checkout.id),
+            )
 
     async def _locked(self, checkout_id: uuid.UUID) -> CheckoutSession:
         """Fetch a checkout held against other transactions, raising rather than returning

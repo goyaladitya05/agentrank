@@ -135,6 +135,54 @@ class CheckoutExecutionReadiness:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class LockedAuthorization:
+    """Both gates decided while every relevant row is held, and nothing committed yet.
+
+    The shared half of two operations. Execution preparation reserves stock on the strength
+    of it; payment admission writes a `PaymentAttempt` on the strength of it. Both need the
+    same locks taken in the same order, the same two gates, and the same second reading of
+    the clock, and both need to keep holding all of that while they write.
+
+    That last point is why this exists at all. An operation that called a method which
+    committed and then wrote its own row afterwards would be running two transactions with a
+    gap between them, and a revocation or a cancellation committing in that gap would make
+    the first decision stale before the second write landed. So nothing here commits and
+    nothing here rolls back: the caller owns the transaction, and the locks stay held from
+    the decision through to the write.
+
+    The two ORM objects are live and locked, and a caller that rolls back must stop reading
+    them. `evaluated_at`, `admitted_at` and `authorization` are plain data and stay readable
+    afterwards, which is what a refusal is assembled from.
+
+    `admitted` requires both that the composed authorization allows and that an admission
+    instant was reached, so a result that refused before the variant locks were taken cannot
+    read as permitting anything.
+    """
+
+    checkout: CheckoutSession
+    mandate: SpendingMandate
+    evaluated_at: datetime
+    authorization: CheckoutExecutionAuthorization
+    admitted_at: datetime | None = None
+
+    @property
+    def admitted(self) -> bool:
+        return self.authorization.authorized and self.admitted_at is not None
+
+    def admission_instant(self) -> datetime:
+        """The instant this was admitted at, for a caller that has checked `admitted`.
+
+        A method rather than an attribute read, because `admitted_at` is legitimately absent
+        on a refusal and every caller that has already established otherwise would have to
+        say so again to a type checker. Raising here is the honest alternative to each of
+        them asserting it separately.
+        """
+        if self.admitted_at is None:
+            raise RuntimeError("this authorization was refused before it reached an instant")
+        return self.admitted_at
+
+
 class CheckoutExecutionService:
     """Prepare a checkout for an execution that does not exist yet.
 
@@ -151,6 +199,69 @@ class CheckoutExecutionService:
         self._mandates = MandateRepository(session)
         self._constraints = IntentConstraintRepository(session)
         self._inventory = InventoryReservationService(session)
+
+    async def authorize_under_locks(
+        self, checkout_id: uuid.UUID, *, at: datetime | None = None
+    ) -> LockedAuthorization:
+        """Decide both gates with every relevant row held, and hand the locks to the caller.
+
+        The order is the one `agentrank_api.locking` writes down: the mandate, then the
+        checkout, then the variant rows. The mandate and the checkout are held against the
+        two operations that could withdraw them, and the variant rows against every other
+        preparation and every other payment admission.
+
+        Two instants, and the difference is the point. `at` is the accounting instant, used
+        for both gates, and it is injectable so those decisions are reproducible. The
+        admission instant is read from the real clock after the last lock is taken, which is
+        the first moment this operation knows it will not wait again, and the financial gate
+        is required a second time against it. Locks hold rows still; they do not hold the
+        clock still, and an operation that queued behind a lock for longer than the quote had
+        left has to find that out before it writes anything.
+
+        A denial before the variant locks returns with no catalog row locked and no admission
+        instant, so a request that may not proceed never touches a merchant's shelf. A denial
+        at the admission instant returns with the locks held, and the caller rolls back.
+
+        Nothing is committed and nothing is rolled back. Both are the caller's, because the
+        whole value of this method is that its locks are still held when the caller writes.
+
+        The variant locks are taken even though nothing here reads stock. They are what makes
+        this operation serialize against every other one that decides something about the
+        same shelf, and taking them before the clock is read again is what makes the reading
+        one this operation cannot be delayed past.
+        """
+        checkout, mandate = await self._load_locked(checkout_id)
+        constraint_set = await self._constraints.get_for_mandate(checkout.mandate_id)
+
+        evaluated_at = at or datetime.now(UTC)
+        authorization = authorize_checkout_execution(
+            checkout, mandate, constraint_set, at=evaluated_at
+        )
+        if not authorization.authorized:
+            return LockedAuthorization(
+                checkout=checkout,
+                mandate=mandate,
+                evaluated_at=evaluated_at,
+                authorization=authorization,
+            )
+
+        # The last class of lock, and the one that actually waits.
+        await self._inventory.lock_variants_for(checkout)
+
+        admitted_at = datetime.now(UTC)
+        return LockedAuthorization(
+            checkout=checkout,
+            mandate=mandate,
+            evaluated_at=evaluated_at,
+            admitted_at=admitted_at,
+            authorization=authorization.with_financial(
+                # The existing rule, against the new instant, rather than a second set of
+                # timestamp comparisons that could disagree with it. The semantic half is
+                # carried forward because a snapshot and an immutable constraint set cannot
+                # have moved.
+                authorize_checkout(checkout, mandate, at=admitted_at)
+            ),
+        )
 
     async def prepare_execution(
         self, checkout_id: uuid.UUID, *, at: datetime | None = None
@@ -178,43 +289,27 @@ class CheckoutExecutionService:
         together. Preparing again while that reservation is still effective returns the same
         one and writes nothing further.
         """
-        checkout, mandate = await self._load_locked(checkout_id)
-        constraint_set = await self._constraints.get_for_mandate(checkout.mandate_id)
-
-        evaluated_at = at or datetime.now(UTC)
-        authorization = authorize_checkout_execution(
-            checkout, mandate, constraint_set, at=evaluated_at
-        )
-        if not authorization.authorized:
-            # Nothing has been written and no catalog row has been locked. A request that
-            # may not proceed must not be able to take stock off a merchant's shelf, even
-            # briefly.
-            await self._session.rollback()
-            return CheckoutExecutionReadiness(
-                checkout_id=checkout_id, evaluated_at=evaluated_at, authorization=authorization
-            )
-
-        # The last class of lock, and the one that actually waits. Taken before the clock is
-        # read again, so that the reading is of an instant this operation cannot be delayed
-        # past.
-        await self._inventory.lock_variants_for(checkout)
-
-        admitted_at = datetime.now(UTC)
-        admission = authorization.with_financial(
-            # The existing rule, against the new instant, rather than a second set of
-            # timestamp comparisons that could disagree with it. The semantic half is
-            # carried forward because a snapshot and an immutable constraint set cannot
-            # have moved.
-            authorize_checkout(checkout, mandate, at=admitted_at)
-        )
-        if not admission.authorized:
+        admission = await self.authorize_under_locks(checkout_id, at=at)
+        if not admission.admitted:
+            # Nothing has been written. An authorization denial returns before any catalog
+            # row is locked at all, so a request that may not proceed cannot take stock off a
+            # merchant's shelf even briefly, and a denial at the admission instant rolls back
+            # what it held. Only the plain data on the admission is read after this point:
+            # the rollback expires the two ORM objects it carries.
+            evaluated_at, admitted_at = admission.evaluated_at, admission.admitted_at
+            authorization = admission.authorization
             await self._session.rollback()
             return CheckoutExecutionReadiness(
                 checkout_id=checkout_id,
                 evaluated_at=evaluated_at,
                 admitted_at=admitted_at,
-                authorization=admission,
+                authorization=authorization,
             )
+
+        checkout = admission.checkout
+        mandate = admission.mandate
+        evaluated_at = admission.evaluated_at
+        admitted_at = admission.admission_instant()
 
         async with translated_conflicts(self._session, identifier=str(checkout_id)):
             # A backstop rather than the mechanism. The locks and the admission check above
@@ -234,7 +329,7 @@ class CheckoutExecutionService:
                 checkout_id=checkout_id,
                 evaluated_at=evaluated_at,
                 admitted_at=admitted_at,
-                authorization=admission,
+                authorization=admission.authorization,
                 inventory_violations=outcome.violations,
             )
 
@@ -250,7 +345,7 @@ class CheckoutExecutionService:
                 checkout_id=checkout_id,
                 evaluated_at=evaluated_at,
                 admitted_at=admitted_at,
-                authorization=admission,
+                authorization=admission.authorization,
                 inventory_violations=(
                     InventoryViolation(code=InventoryViolationCode.RESERVATION_EXPIRED),
                 ),
@@ -261,7 +356,7 @@ class CheckoutExecutionService:
             checkout_id=checkout_id,
             evaluated_at=evaluated_at,
             admitted_at=admitted_at,
-            authorization=admission,
+            authorization=admission.authorization,
             reservation=outcome.reservation,
         )
 
