@@ -49,10 +49,17 @@ right now leaves everything exactly where it is, for as long as that stays its a
 provider incapable of the stronger statement leaves an attempt that only
 `agentrank_api.payments.recovery` can end, deliberately and with the risk written down.
 
+Two writers can hold definitive answers about one attempt and disagree, when a response that
+was thought lost finally arrives beside a query that was made while it was still on its way.
+Whichever commits first is authoritative and stays authoritative. The other changes nothing,
+appends `payment.outcome_conflict` and returns a `PaymentOutcome` carrying an `OutcomeConflict`.
+It used to raise out of a repository, which reached a caller as a 500 for an operation that had
+in fact behaved correctly. A settled payment is never rewritten in either direction.
+
 What this module never does: retry an UNKNOWN attempt, treat a transport failure as a decline,
 treat a missing record as a failure, release stock under an unresolved payment, decrement
-inventory outside the success transaction, or claim exactly once execution. See
-docs/security.md.
+inventory outside the success transaction, rewrite a terminal outcome because a later
+observation disagrees, or claim exactly once execution. See docs/security.md.
 """
 
 import uuid
@@ -105,6 +112,29 @@ PROVIDER_NEVER_EXECUTED = "PROVIDER_NEVER_EXECUTED"
 
 
 @dataclass(frozen=True, slots=True)
+class OutcomeConflict:
+    """A definitive observation that disagrees with the terminal state already recorded.
+
+    Two writers can be resolving one attempt at the same time and see different things: an
+    execution whose response finally arrived, and a reconciliation that queried while it was
+    still on its way. One of them wins the lock, commits, and is authoritative. The other
+    arrives holding an answer that contradicts a settled payment.
+
+    The committed state was always safe, because a terminal attempt cannot be transitioned by
+    the database. What was not safe was the response: the second writer used to raise a
+    `ValueError` from inside a repository, which reaches a caller as a 500 for an operation
+    that in fact did exactly the right thing. This is what it returns instead.
+
+    `authoritative` is the state that stands and will keep standing. `observed` is what the
+    losing writer was told. Nothing is decided from this; it is a record of a disagreement,
+    for a reader who has to work out afterwards which of two answers a provider gave and when.
+    """
+
+    authoritative: PaymentAttemptStatus
+    observed: ProviderOutcome
+
+
+@dataclass(frozen=True, slots=True)
 class PaymentOutcome:
     """What one execution or one reconciliation produced.
 
@@ -115,11 +145,17 @@ class PaymentOutcome:
     `provider_called` is separate from both. A dispatch that found nothing to dispatch and a
     reconciliation that resolved from local state both leave it false, and a test asserting
     "the provider was called exactly once" needs to be able to see it.
+
+    `conflict` is set only when this call observed something definitive that contradicts a
+    terminal state somebody else had already recorded. It is None in every ordinary case,
+    including the common one where a second writer observed the same outcome and simply had
+    nothing to add.
     """
 
     attempt: PaymentAttempt
     changed: bool = False
     provider_called: bool = False
+    conflict: OutcomeConflict | None = None
 
 
 class PaymentExecutionService:
@@ -170,7 +206,10 @@ class PaymentExecutionService:
 
         recorded = await self._record(attempt_id, result, source=OutcomeSource.EXECUTION)
         return PaymentOutcome(
-            attempt=recorded.attempt, changed=recorded.changed, provider_called=True
+            attempt=recorded.attempt,
+            changed=recorded.changed,
+            provider_called=True,
+            conflict=recorded.conflict,
         )
 
     async def reconcile(self, attempt_id: uuid.UUID) -> PaymentOutcome:
@@ -195,6 +234,11 @@ class PaymentExecutionService:
         goes back and the checkout stays open for another try. A provider reporting merely that
         it has no record right now gets none of that, and the difference between the two is the
         whole reason `ProviderRecord` exists rather than a boolean.
+
+        A definitive answer that contradicts a terminal state somebody else already recorded
+        changes nothing and returns a `PaymentOutcome` carrying an `OutcomeConflict`. The
+        authoritative state stands, in both directions, and the disagreement is recorded rather
+        than resolved.
 
         Idempotent in two layers. A terminal attempt is returned without asking the provider
         anything, because there is nothing left to learn, and that is the cheap layer. An
@@ -243,7 +287,10 @@ class PaymentExecutionService:
         )
         await self._append_reconciled(attempt_id, found)
         return PaymentOutcome(
-            attempt=recorded.attempt, changed=recorded.changed, provider_called=True
+            attempt=recorded.attempt,
+            changed=recorded.changed,
+            provider_called=True,
+            conflict=recorded.conflict,
         )
 
     async def _append_reconciled(self, attempt_id: uuid.UUID, found: ProviderQueryResult) -> None:
@@ -349,11 +396,19 @@ class PaymentExecutionService:
         Idempotent. An attempt already SUCCEEDED is left exactly as it is and reported
         unchanged, so a reconciliation arriving after the execution recorded the same success
         writes no second outcome, consumes no second unit and appends no second event.
+
+        An attempt already FAILED is a disagreement rather than a repeat, and it is answered
+        rather than raised. The authoritative state stands, a `payment.outcome_conflict` event
+        records what was observed against what was recorded, and the caller gets a typed
+        result. Rewriting a settled payment because a later observation disagrees is the one
+        thing that must never happen here.
         """
         attempt, checkout, reservation = await self._lock_outcome(attempt_id, with_stock=True)
         if attempt.status is PaymentAttemptStatus.SUCCEEDED:
             await self._session.commit()
             return PaymentOutcome(attempt=attempt)
+        if attempt.is_terminal:
+            return await self._record_conflict(attempt, ProviderOutcome.SUCCEEDED)
 
         reference = result.reference or _fallback_reference(attempt)
         if not await self._attempts.mark_succeeded(
@@ -392,11 +447,18 @@ class PaymentExecutionService:
         No variant lock. Releasing only ever frees capacity, so a concurrent preparation that
         has not seen it counts this stock as still held and refuses, which is conservative
         rather than wrong.
+
+        An attempt already SUCCEEDED is a disagreement and is answered rather than raised, in
+        exactly the way a success meeting a failure is. This is the expensive direction of the
+        two: a failure observation arriving after a recorded success must not release stock
+        that was already consumed for money that already moved.
         """
         attempt, _, reservation = await self._lock_outcome(attempt_id, with_stock=False)
         if attempt.status is PaymentAttemptStatus.FAILED:
             await self._session.commit()
             return PaymentOutcome(attempt=attempt)
+        if attempt.is_terminal:
+            return await self._record_conflict(attempt, ProviderOutcome.FAILED)
 
         failure_code = result.failure_code or UNSPECIFIED_DECLINE
         if not await self._attempts.mark_failed(
@@ -435,7 +497,9 @@ class PaymentExecutionService:
             raise NotFoundError("payment_attempt", str(attempt_id))
         if attempt.status is not PaymentAttemptStatus.IN_FLIGHT:
             # Already resolved by something else, or already recorded as unknown. Either way
-            # this call has nothing to add.
+            # this call has nothing to add. Deliberately not a conflict even when the attempt
+            # is terminal: an ambiguous observation does not contradict a definitive one, it
+            # only fails to add to it.
             await self._session.commit()
             return PaymentOutcome(attempt=attempt)
 
@@ -443,6 +507,43 @@ class PaymentExecutionService:
         await self._append(attempt, PAYMENT_UNKNOWN)
         await self._session.commit()
         return PaymentOutcome(attempt=attempt, changed=True)
+
+    async def _record_conflict(
+        self, attempt: PaymentAttempt, observed: ProviderOutcome
+    ) -> PaymentOutcome:
+        """Record that two definitive answers disagreed, and change nothing else.
+
+        Called with every lock the outcome would have needed already held, and the attempt
+        already terminal. Nothing about the payment moves: no status, no reservation, no
+        stock, no checkout. The only write is the event, which is why appending it in this
+        transaction costs nothing and keeps it atomic with the read that established the
+        disagreement.
+
+        The authoritative state is whichever one committed first, and it is never revisited.
+        A success is not rewritten into a failure because a stale query said so, and a failure
+        is not rewritten into a success because a late response arrived. Which observation is
+        true is a question about a provider's records, and answering it by mutating this row
+        would destroy the evidence needed to answer it at all.
+        """
+        conflict = OutcomeConflict(authoritative=attempt.status, observed=observed)
+        await self._audit.append(
+            merchant_id=attempt.merchant_id,
+            actor_type=OUTCOME_ACTOR,
+            event_type=PAYMENT_OUTCOME_CONFLICT,
+            resource_type=PAYMENT_RESOURCE,
+            resource_id=attempt.id,
+            payload={
+                "checkout_id": str(attempt.checkout_id),
+                # What stands, and what was observed against it. Both, because either alone
+                # is half the fact.
+                "authoritative_status": conflict.authoritative.value,
+                "observed_outcome": conflict.observed.value,
+                "failure_code": attempt.failure_code,
+                "provider_reference": attempt.provider_reference,
+            },
+        )
+        await self._session.commit()
+        return PaymentOutcome(attempt=attempt, conflict=conflict)
 
     async def _lock_outcome(
         self, attempt_id: uuid.UUID, *, with_stock: bool

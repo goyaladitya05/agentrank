@@ -37,7 +37,12 @@ from agentrank_api.payments.admission import PAYMENT_RESOURCE, PaymentAdmissionS
 from agentrank_api.payments.execution import PaymentExecutionService
 from agentrank_api.payments.fake import FakeOutcome, FakePaymentProvider
 from agentrank_api.payments.models import OutcomeSource, PaymentAttempt, PaymentAttemptStatus
-from agentrank_api.payments.provider import PaymentInstruction
+from agentrank_api.payments.provider import (
+    PaymentInstruction,
+    PaymentQuery,
+    ProviderQueryResult,
+    ProviderResult,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -486,6 +491,59 @@ async def test_the_reconciled_event_records_whether_the_provider_knew_anything(
     assert reconciled[0].payload["provider_record"] == "ABSENT"
     assert reconciled[0].payload["provider_outcome"] == "UNKNOWN"
     assert reconciled[0].payload["status"] == "UNKNOWN"
+
+
+async def test_the_query_takes_no_lock_across_the_provider_call(
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+    shop: Shop,
+    provider: FakePaymentProvider,
+) -> None:
+    """The same property the dispatch has, asserted for the other network call.
+
+    A transaction held open across a provider query holds its locks for as long as the network
+    takes, which for a payment processor is unbounded. The dispatch side of this has a test and
+    the query side did not, so the mechanism was documented and unproven. The provider asks the
+    database whether a transaction is open, at the exact moment a real one would be waiting on
+    a wire.
+
+    A fresh session on purpose. The reconciliation's first read is `session.get`, which is
+    answered from the identity map without any SQL when the attempt was already loaded, and a
+    read that emits nothing opens no transaction to observe. A new session is what a restarted
+    process would have, and it is what makes the observation mean something.
+    """
+    provider.default = FakeOutcome.AMBIGUOUS
+    attempt = await admitted(session, shop)
+    attempt_id = attempt.id
+    await PaymentExecutionService(session, provider).dispatch(attempt_id)
+
+    async with factory() as fresh:
+        watcher = _QueryWatcher(provider, fresh)
+        await PaymentExecutionService(fresh, watcher).reconcile(attempt_id)
+
+    assert watcher.saw_open_transaction is False
+    assert provider.queries == [KEY]
+
+
+class _QueryWatcher:
+    """A provider that asks whether a database transaction is open while it is being queried.
+
+    Wraps the real fake rather than replacing it, so the reconciliation behaves normally and
+    the only added behavior is the observation. `execute` refuses outright, because a
+    reconciliation reaching it would be a bug worth failing on rather than counting.
+    """
+
+    def __init__(self, provider: FakePaymentProvider, session: AsyncSession) -> None:
+        self._provider = provider
+        self._session = session
+        self.saw_open_transaction: bool | None = None
+
+    async def execute(self, instruction: PaymentInstruction) -> ProviderResult:
+        raise AssertionError("reconciliation must never execute")
+
+    async def query(self, query: PaymentQuery) -> ProviderQueryResult:
+        self.saw_open_transaction = self._session.in_transaction()
+        return await self._provider.query(query)
 
 
 def _replayed(attempt: PaymentAttempt) -> PaymentInstruction:
