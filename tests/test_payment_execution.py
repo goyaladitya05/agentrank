@@ -45,6 +45,7 @@ from agentrank_api.payments.fake import FakeOutcome, FakePaymentProvider
 from agentrank_api.payments.models import OutcomeSource, PaymentAttempt, PaymentAttemptStatus
 from agentrank_api.payments.provider import (
     PaymentInstruction,
+    PaymentQuery,
     ProviderQueryResult,
     ProviderResult,
 )
@@ -739,8 +740,8 @@ class _TransactionWatcher:
         self._locks.clear()
         return await self._provider.execute(instruction)
 
-    async def query(self, idempotency_key: str) -> ProviderQueryResult:
-        return await self._provider.query(idempotency_key)
+    async def query(self, query: PaymentQuery) -> ProviderQueryResult:
+        return await self._provider.query(query)
 
 
 def _break_audit(service: PaymentExecutionService) -> None:

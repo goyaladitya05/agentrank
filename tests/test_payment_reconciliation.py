@@ -483,7 +483,7 @@ async def test_the_reconciled_event_records_whether_the_provider_knew_anything(
     )
     reconciled = [event for event in recorded if event.event_type == "payment.reconciled"]
     assert len(reconciled) == 1
-    assert reconciled[0].payload["provider_known"] is False
+    assert reconciled[0].payload["provider_record"] == "ABSENT"
     assert reconciled[0].payload["provider_outcome"] == "UNKNOWN"
     assert reconciled[0].payload["status"] == "UNKNOWN"
 

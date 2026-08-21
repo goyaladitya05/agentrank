@@ -10,6 +10,7 @@ ours and the whole point of the instruction is that it never did.
 """
 
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -21,13 +22,22 @@ from agentrank_api.payments.fake import (
 from agentrank_api.payments.provider import (
     PaymentInstruction,
     PaymentProvider,
+    PaymentQuery,
     ProviderOutcome,
+    ProviderQueryResult,
+    ProviderRecord,
 )
 
 pytestmark = pytest.mark.anyio
 
 KEY = "pay-ampere-0001"
 OTHER_KEY = "pay-ampere-0002"
+DISPATCHED_AT = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
+MINUTE = timedelta(minutes=1)
+
+
+def question(key: str = KEY) -> PaymentQuery:
+    return PaymentQuery(idempotency_key=key, dispatched_at=DISPATCHED_AT)
 
 
 def instruction(key: str = KEY, *, amount_minor: int = 499900) -> PaymentInstruction:
@@ -81,9 +91,9 @@ async def test_an_ambiguous_result_records_nothing() -> None:
     assert result.reference is None
     assert provider.charges == 0
 
-    found = await provider.query(KEY)
+    found = await provider.query(question())
     assert found.outcome is ProviderOutcome.UNKNOWN
-    assert found.known is False
+    assert found.record is ProviderRecord.ABSENT
 
 
 async def test_a_lost_response_records_a_success_the_caller_never_hears_about() -> None:
@@ -101,9 +111,9 @@ async def test_a_lost_response_records_a_success_the_caller_never_hears_about() 
     # The provider disagrees with the caller, which is exactly the state worth simulating.
     assert provider.charges == 1
 
-    found = await provider.query(KEY)
+    found = await provider.query(question())
     assert found.outcome is ProviderOutcome.SUCCEEDED
-    assert found.known is True
+    assert found.record is ProviderRecord.PRESENT
     assert found.reference is not None
 
 
@@ -171,9 +181,9 @@ async def test_the_same_configuration_always_produces_the_same_answer() -> None:
 async def test_a_query_never_charges() -> None:
     provider = FakePaymentProvider(default=FakeOutcome.SUCCESS)
 
-    found = await provider.query(KEY)
+    found = await provider.query(question())
 
-    assert found.known is False
+    assert found.record is ProviderRecord.ABSENT
     assert provider.charges == 0
     assert provider.executions == []
     assert provider.queries == [KEY]
@@ -199,3 +209,129 @@ def test_an_instruction_cannot_be_changed_after_it_is_built() -> None:
 
     with pytest.raises(AttributeError):
         sent.amount_minor = 1  # type: ignore[misc]
+
+
+async def test_absence_is_not_final_without_a_visibility_window() -> None:
+    """The default answer for a provider that has promised nothing.
+
+    A processor that cannot guarantee when its records become visible must say "no record
+    right now" forever, because the alternative is releasing a merchant's stock under a charge
+    that may still be on its way.
+    """
+    provider = FakePaymentProvider(clock=DISPATCHED_AT + 100 * MINUTE)
+
+    found = await provider.query(question())
+
+    assert found.record is ProviderRecord.ABSENT
+    assert found.outcome is ProviderOutcome.UNKNOWN
+
+
+async def test_absence_stays_temporary_inside_the_visibility_window() -> None:
+    provider = FakePaymentProvider(clock=DISPATCHED_AT + 4 * MINUTE, visibility_window=5 * MINUTE)
+
+    found = await provider.query(question())
+
+    assert found.record is ProviderRecord.ABSENT
+
+
+async def test_absence_becomes_final_once_the_visibility_window_has_passed() -> None:
+    """The answer that lets an unresolved payment end, stated by the provider and by nothing else.
+
+    The window is measured from the dispatch instant this application supplied, and the
+    provider's own clock decides that it has passed. No duration appears above the interface.
+    """
+    provider = FakePaymentProvider(visibility_window=5 * MINUTE)
+    provider.clock = DISPATCHED_AT + 5 * MINUTE
+
+    found = await provider.query(question())
+
+    assert found.record is ProviderRecord.NEVER_EXECUTED
+    assert found.outcome is ProviderOutcome.UNKNOWN
+    assert provider.charges == 0
+
+
+async def test_a_recorded_identity_is_never_reported_as_never_executed() -> None:
+    """A window elapsing does not overwrite a fact the provider actually holds."""
+    provider = FakePaymentProvider(default=FakeOutcome.LOST_RESPONSE, visibility_window=5 * MINUTE)
+    provider.clock = DISPATCHED_AT
+    await provider.execute(instruction())
+    provider.clock = DISPATCHED_AT + 100 * MINUTE
+
+    found = await provider.query(question())
+
+    assert found.record is ProviderRecord.PRESENT
+    assert found.outcome is ProviderOutcome.SUCCEEDED
+
+
+async def test_time_advances_only_when_a_test_advances_it() -> None:
+    """No sleeps and no real clock, so a window elapses because somebody said so."""
+    provider = FakePaymentProvider(visibility_window=5 * MINUTE)
+    provider.clock = DISPATCHED_AT + 4 * MINUTE
+
+    before = await provider.query(question())
+    provider.clock = DISPATCHED_AT + 6 * MINUTE
+    after = await provider.query(question())
+
+    assert before.record is ProviderRecord.ABSENT
+    assert after.record is ProviderRecord.NEVER_EXECUTED
+
+
+async def test_an_identity_is_replayed_while_the_retention_window_holds() -> None:
+    provider = FakePaymentProvider(default=FakeOutcome.SUCCESS, idempotency_retention=10 * MINUTE)
+    provider.clock = DISPATCHED_AT
+
+    first = await provider.execute(instruction())
+    provider.clock = DISPATCHED_AT + 9 * MINUTE
+    second = await provider.execute(instruction())
+
+    assert second.reference == first.reference
+    assert provider.charges == 1
+
+
+async def test_a_forgotten_identity_is_executed_again() -> None:
+    """Provider idempotency is finite everywhere, and the fake says so out loud.
+
+    This is what a real processor does once its idempotency retention has passed, and it is
+    exactly why this application never relies on it. Nothing above this interface may treat a
+    provider's memory as the thing that stops a second charge.
+    """
+    provider = FakePaymentProvider(default=FakeOutcome.SUCCESS, idempotency_retention=10 * MINUTE)
+    provider.clock = DISPATCHED_AT
+
+    await provider.execute(instruction())
+    provider.clock = DISPATCHED_AT + 10 * MINUTE
+    await provider.execute(instruction())
+
+    # Two operations, because the provider genuinely forgot the first one.
+    assert provider.charges == 2
+    assert provider.executions_for(KEY) == 2
+
+
+async def test_retention_does_not_make_the_provider_forget_the_payment() -> None:
+    """An idempotency window and a payment record are different things.
+
+    Collapsing them would make this fake report that a payment it definitely made never
+    happened, which is the one lie a provider must never be able to tell.
+    """
+    provider = FakePaymentProvider(
+        default=FakeOutcome.LOST_RESPONSE,
+        idempotency_retention=10 * MINUTE,
+        visibility_window=MINUTE,
+    )
+    provider.clock = DISPATCHED_AT
+    await provider.execute(instruction())
+    provider.clock = DISPATCHED_AT + 100 * MINUTE
+
+    found = await provider.query(question())
+
+    assert found.record is ProviderRecord.PRESENT
+    assert found.outcome is ProviderOutcome.SUCCEEDED
+
+
+def test_a_query_result_cannot_claim_an_outcome_it_has_no_record_for() -> None:
+    """Two incompatible statements, caught at the moment a provider makes them."""
+    with pytest.raises(ValueError, match="ABSENT"):
+        ProviderQueryResult(outcome=ProviderOutcome.SUCCEEDED, record=ProviderRecord.ABSENT)
+
+    with pytest.raises(ValueError, match="NEVER_EXECUTED"):
+        ProviderQueryResult(outcome=ProviderOutcome.FAILED, record=ProviderRecord.NEVER_EXECUTED)

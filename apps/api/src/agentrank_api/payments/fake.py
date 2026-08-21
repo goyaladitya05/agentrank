@@ -33,15 +33,40 @@ tested for the failure that actually costs money.
 It records every call. `executions` and `queries` are the evidence a test needs to assert that
 a provider was called exactly once, or not at all, or with the same identity twice, which is
 the difference between an idempotency test and a test of what the database happens to contain.
+
+Time is a field rather than a reading. `clock` is the instant this provider believes it is,
+and a test advances it by assigning to it. Two durations are measured against it and both are
+off by default:
+
+```text
+visibility_window       after this long since the dispatch began, an identity with no
+                        record is reported NEVER_EXECUTED rather than ABSENT
+idempotency_retention   after this long, the provider stops honouring an identity it
+                        recorded, and executing under it again performs a second operation
+```
+
+Both default to None, which means "this provider makes no such guarantee": absence is never
+final and an identity is remembered forever. That is the conservative reading in both cases,
+and it is what lets every test that does not care about timing ignore all of this.
+
+The retention knob exists to prove something about this application rather than about the
+fake. Provider idempotency is a second line of defence and was never the first one: a
+duplicate logical payment is stopped by a committed `PaymentAttempt` and by the mandate scoped
+uniqueness above it, both of which outlive any provider's memory. A test that makes the
+provider forget and then shows nothing is executed twice is a test that this application does
+not quietly depend on that memory.
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from enum import StrEnum
 
 from agentrank_api.payments.provider import (
     PaymentInstruction,
+    PaymentQuery,
     ProviderOutcome,
     ProviderQueryResult,
+    ProviderRecord,
     ProviderResult,
 )
 
@@ -74,11 +99,16 @@ class LedgerEntry:
     The provider side of the world, kept apart from this application's `PaymentAttempt` on
     purpose. The two disagreeing is the interesting state, and a fake that shared a record
     with the system under test could never produce it.
+
+    `recorded_at` is the provider's clock reading at the moment the entry was written, and it
+    is None when the fake had no clock set. It is what an idempotency retention window is
+    measured from, and nothing else reads it.
     """
 
     outcome: ProviderOutcome
     reference: str | None = None
     failure_code: str | None = None
+    recorded_at: datetime | None = None
 
 
 @dataclass
@@ -100,6 +130,20 @@ class FakePaymentProvider:
     executions: list[PaymentInstruction] = field(default_factory=list)
     queries: list[str] = field(default_factory=list)
     decline_code: str = DEFAULT_DECLINE_CODE
+    # What this provider believes the time is. Assigned by a test rather than read from a
+    # real clock, so a window elapses because somebody said so and never because a suite ran
+    # slowly. None means it has no reading, and every window below stays unelapsed.
+    clock: datetime | None = None
+    # How long after a dispatch began this provider guarantees that anything it was ever
+    # going to record has become visible. None means it offers no such guarantee and reports
+    # ABSENT forever, which is the honest answer for a processor that cannot promise one.
+    visibility_window: timedelta | None = None
+    # How long this provider honours an identity it has recorded. None means forever.
+    idempotency_retention: timedelta | None = None
+    # How many logical operations this provider believes it performed. A counter rather than
+    # a ledger size, because an identity that expired out of the idempotency window and was
+    # executed again is genuinely two operations and the ledger holds one entry per key.
+    charges: int = 0
 
     def set_outcome(self, idempotency_key: str, outcome: FakeOutcome) -> None:
         """Decide what happens to one identity, before anything asks.
@@ -116,17 +160,23 @@ class FakePaymentProvider:
         asked twice and only charged once" and "the provider was asked once" are different
         facts and a test asserting idempotency needs to tell them apart.
 
-        A repeat under a known identity returns the recorded result and creates no second
-        charge, which is what a real idempotent provider does.
+        A repeat under an identity this provider still honours returns the recorded result and
+        creates no second charge, which is what a real idempotent provider does.
 
         A repeat under an identity that recorded nothing, which is the AMBIGUOUS case, is
         performed again. That is honest rather than convenient: the provider genuinely has no
         record of the first attempt, so it has nothing to return. This application never
         issues that second call, and the fake does not pretend the case away.
+
+        A repeat under an identity whose retention window has passed is performed again for
+        the same reason, and the second operation is counted as a second charge. That is the
+        case worth being blunt about: provider idempotency is not permanent anywhere, so it is
+        not what stops this application from paying twice, and a fake that remembered forever
+        would let that dependency hide.
         """
         self.executions.append(instruction)
 
-        recorded = self.ledger.get(instruction.idempotency_key)
+        recorded = self._honoured(instruction.idempotency_key)
         if recorded is not None:
             return ProviderResult(
                 outcome=recorded.outcome,
@@ -138,22 +188,24 @@ class FakePaymentProvider:
         reference = f"{REFERENCE_PREFIX}_{instruction.idempotency_key}"
 
         if outcome is FakeOutcome.SUCCESS:
-            self.ledger[instruction.idempotency_key] = LedgerEntry(
-                outcome=ProviderOutcome.SUCCEEDED, reference=reference
+            self._record(
+                instruction.idempotency_key, ProviderOutcome.SUCCEEDED, reference=reference
             )
             return ProviderResult(outcome=ProviderOutcome.SUCCEEDED, reference=reference)
 
         if outcome is FakeOutcome.DECLINE:
-            self.ledger[instruction.idempotency_key] = LedgerEntry(
-                outcome=ProviderOutcome.FAILED, failure_code=self.decline_code
+            self._record(
+                instruction.idempotency_key,
+                ProviderOutcome.FAILED,
+                failure_code=self.decline_code,
             )
             return ProviderResult(outcome=ProviderOutcome.FAILED, failure_code=self.decline_code)
 
         if outcome is FakeOutcome.LOST_RESPONSE:
             # The charge went through and the answer did not come back. The ledger records
             # the success, the caller is told nothing, and only a query can close the gap.
-            self.ledger[instruction.idempotency_key] = LedgerEntry(
-                outcome=ProviderOutcome.SUCCEEDED, reference=reference
+            self._record(
+                instruction.idempotency_key, ProviderOutcome.SUCCEEDED, reference=reference
             )
             return ProviderResult(outcome=ProviderOutcome.UNKNOWN)
 
@@ -161,34 +213,40 @@ class FakePaymentProvider:
         # query finds nothing and the payment stays undecided.
         return ProviderResult(outcome=ProviderOutcome.UNKNOWN)
 
-    async def query(self, idempotency_key: str) -> ProviderQueryResult:
+    async def query(self, query: PaymentQuery) -> ProviderQueryResult:
         """Report what the ledger holds for one identity, and perform nothing.
 
-        A query never charges. An identity the provider has never seen answers UNKNOWN with
-        `known=False`, which says "no record" rather than "it failed", because those are
-        different facts and only one of them is safe to release stock on.
-        """
-        self.queries.append(idempotency_key)
+        A query never charges. An identity the provider has no entry for answers UNKNOWN, and
+        the interesting half of the answer is which kind of nothing it is.
 
-        recorded = self.ledger.get(idempotency_key)
-        if recorded is None:
-            return ProviderQueryResult(outcome=ProviderOutcome.UNKNOWN, known=False)
+        ABSENT while the visibility window has not passed, or while there is no window at all.
+        That says "no record right now" rather than "it failed", and those are different facts
+        with opposite consequences for a merchant's stock.
+
+        NEVER_EXECUTED once `visibility_window` has elapsed since the dispatch began. Only then
+        does this provider claim that nothing exists and nothing can appear, and it is a claim
+        about this fake's own guarantee rather than a rule anything above it applies.
+
+        Retention is not consulted here. A processor's idempotency window governs whether it
+        will replay an operation, not whether it still holds the record of one, and collapsing
+        the two would make this fake report that a payment it definitely made never happened.
+        """
+        self.queries.append(query.idempotency_key)
+
+        recorded = self.ledger.get(query.idempotency_key)
+        if recorded is not None:
+            return ProviderQueryResult(
+                outcome=recorded.outcome,
+                record=ProviderRecord.PRESENT,
+                reference=recorded.reference,
+                failure_code=recorded.failure_code,
+            )
+
         return ProviderQueryResult(
-            outcome=recorded.outcome,
-            known=True,
-            reference=recorded.reference,
-            failure_code=recorded.failure_code,
-        )
-
-    @property
-    def charges(self) -> int:
-        """How many logical charges this provider believes it made.
-
-        The ledger size rather than the call count. Two executes under one identity are one
-        charge, and asserting that is the point of a provider having its own record.
-        """
-        return sum(
-            1 for entry in self.ledger.values() if entry.outcome is ProviderOutcome.SUCCEEDED
+            outcome=ProviderOutcome.UNKNOWN,
+            record=ProviderRecord.NEVER_EXECUTED
+            if self._elapsed(query.dispatched_at, self.visibility_window)
+            else ProviderRecord.ABSENT,
         )
 
     def executions_for(self, idempotency_key: str) -> int:
@@ -196,3 +254,41 @@ class FakePaymentProvider:
         return sum(
             1 for instruction in self.executions if instruction.idempotency_key == idempotency_key
         )
+
+    def _record(
+        self,
+        idempotency_key: str,
+        outcome: ProviderOutcome,
+        *,
+        reference: str | None = None,
+        failure_code: str | None = None,
+    ) -> None:
+        """Write what this provider did with one identity, and count it if money moved."""
+        self.ledger[idempotency_key] = LedgerEntry(
+            outcome=outcome,
+            reference=reference,
+            failure_code=failure_code,
+            recorded_at=self.clock,
+        )
+        if outcome is ProviderOutcome.SUCCEEDED:
+            self.charges += 1
+
+    def _honoured(self, idempotency_key: str) -> LedgerEntry | None:
+        """The entry this provider will still replay for an identity, if it will replay one."""
+        entry = self.ledger.get(idempotency_key)
+        if entry is None or entry.recorded_at is None:
+            return entry
+        if self._elapsed(entry.recorded_at, self.idempotency_retention):
+            return None
+        return entry
+
+    def _elapsed(self, since: datetime, window: timedelta | None) -> bool:
+        """Whether a window measured from an instant has passed on this provider's clock.
+
+        False whenever either half is missing. A provider with no clock reading and a provider
+        with no window are both providers that have promised nothing, and the answer that
+        promises nothing is the answer that changes nothing.
+        """
+        if window is None or self.clock is None:
+            return False
+        return self.clock - since >= window

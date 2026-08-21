@@ -27,6 +27,25 @@ decline is the single most expensive mistake available here, because it releases
 invites a second payment for a charge that may already have gone through. An implementation of
 this interface that raises on a network failure has not implemented it.
 
+A query answers a second question beside the outcome, and the two are kept apart on purpose.
+`ProviderRecord` says whether the provider has a record of the identity at all, and whether
+that answer is final:
+
+```text
+PRESENT          there is a record, and `outcome` describes it
+ABSENT           no record is visible right now, and one may still appear
+NEVER_EXECUTED   the provider guarantees no operation for this identity exists,
+                 and none can appear later from the original dispatch
+```
+
+The distance between the middle value and the last one is the whole reason this enumeration
+exists. "I cannot find it" and "it never happened" are different facts, and only the second
+one is safe to release stock on. Which of the two an implementation may report, and after how
+long, is that implementation's decision and never this application's: a processor knows its
+own visibility guarantee and nothing above the interface does. `PaymentQuery` carries the
+instant the dispatch began so that a provider with such a guarantee can evaluate it, and no
+duration appears anywhere outside a provider.
+
 What this interface does not promise, and what nothing in this system promises, is exactly
 once execution. PostgreSQL and an external payment processor cannot be committed atomically
 together, and no amount of careful ordering changes that. What is promised is at most one
@@ -36,6 +55,7 @@ back ambiguous. See docs/security.md.
 
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from typing import Protocol
 
@@ -107,22 +127,80 @@ class ProviderResult:
     failure_code: str | None = None
 
 
+class ProviderRecord(StrEnum):
+    """Whether a provider has a record of one identity, and whether that answer is final.
+
+    Separate from the outcome on purpose, and the separation is the safety property. A
+    provider that cannot find an identity has not told us the payment failed; it has told us
+    it cannot find one, which is a different fact and usually a temporary one. Folding "not
+    found" into FAILED would turn a lookup that arrived a moment early into a released
+    reservation and an invitation to pay twice.
+
+    PRESENT
+        The provider has a record. `outcome` describes it, and may itself still be UNKNOWN
+        while the operation is undecided at the provider.
+
+    ABSENT
+        Nothing is visible right now, and something may still appear. Not a failure, and never
+        to be treated as one. An attempt stays exactly where it is.
+
+    NEVER_EXECUTED
+        The provider guarantees that no operation exists for this identity and that none can
+        appear later from the original dispatch. This is the one answer that lets an
+        unresolved attempt terminate, because it is the one answer that says no money moved.
+        Only an implementation that actually has such a guarantee may report it.
+    """
+
+    PRESENT = "PRESENT"
+    ABSENT = "ABSENT"
+    NEVER_EXECUTED = "NEVER_EXECUTED"
+
+
+@dataclass(frozen=True, slots=True)
+class PaymentQuery:
+    """Everything a provider is told when it is asked what happened to one identity.
+
+    Two values, both facts this application holds and a provider does not. `dispatched_at` is
+    the instant the dispatch began, committed before the network call, and it is here for one
+    reason: a provider whose visibility guarantee is a duration cannot evaluate it without
+    knowing when the clock started. Nothing above this interface knows what that duration is,
+    and no code outside a provider implementation may contain one.
+
+    There is no instant for now. A provider reads its own clock, exactly as it reads its own
+    records, and a fake reads an injected one so a test never sleeps.
+    """
+
+    idempotency_key: str
+    dispatched_at: datetime
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderQueryResult:
     """What a provider says about an identity it may or may not have seen.
 
-    `known` is separate from the outcome on purpose. A provider that has no record of an
-    identity has not told us the payment failed; it has told us it cannot find one, which is a
-    different fact and often a temporary one. Folding "not found" into FAILED would turn a
-    lookup that arrived a moment early into a released reservation and an invitation to pay
-    twice, so a query that finds nothing reports UNKNOWN and `known=False`, and the attempt
-    stays where it is.
+    `record` is separate from `outcome` because they answer different questions: whether there
+    is anything to report, and what it says. A query that finds nothing reports UNKNOWN with
+    ABSENT or NEVER_EXECUTED, and only the second of those is a fact this application may act
+    on.
+
+    An outcome is refused for anything other than PRESENT. A provider claiming it definitively
+    succeeded and that it has no record of the operation is stating two incompatible things,
+    and the cheapest place to catch that is the moment it says it.
     """
 
     outcome: ProviderOutcome
-    known: bool = True
+    record: ProviderRecord = ProviderRecord.PRESENT
     reference: str | None = None
     failure_code: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            self.record is not ProviderRecord.PRESENT
+            and self.outcome is not ProviderOutcome.UNKNOWN
+        ):
+            raise ValueError(
+                f"a {self.record.value} query result cannot also report {self.outcome.value}"
+            )
 
 
 class PaymentProvider(Protocol):
@@ -151,11 +229,20 @@ class PaymentProvider(Protocol):
         """
         ...
 
-    async def query(self, idempotency_key: str) -> ProviderQueryResult:
+    async def query(self, query: PaymentQuery) -> ProviderQueryResult:
         """Ask what happened to one identity.
 
         The other half of the answer to an ambiguous execute. It reports what the provider
         knows now, including that it knows nothing, and it never performs a payment: a query
         for an identity a provider has never seen must not create one.
+
+        An implementation reports NEVER_EXECUTED only if it can honestly guarantee it. The
+        guarantee is the implementation's own and is usually a visibility window measured from
+        `query.dispatched_at`: after it, anything the provider was ever going to record has
+        been recorded, so a still empty answer means the operation never happened. A provider
+        that offers no such guarantee reports ABSENT forever, and the attempt is resolved by
+        `agentrank_api.payments.recovery` instead. Reporting NEVER_EXECUTED without the
+        guarantee behind it releases stock under a charge that may have gone through, which is
+        the one mistake this whole boundary is shaped to prevent.
         """
         ...

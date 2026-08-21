@@ -37,14 +37,22 @@ outcome touches. Success touches everything: the mandate, the checkout, the stoc
 and the attempt. A decline touches the hold and the attempt. An ambiguous result touches the
 attempt alone, because the correct response to not knowing is to change as little as possible.
 
-Beside dispatch is `reconcile`, which is the only way out of UNKNOWN. It queries rather than
+Beside dispatch is `reconcile`, which is the way out of UNKNOWN. It queries rather than
 charges, records whatever it learns through exactly the same outcome logic, and leaves an
 attempt where it is when the provider still does not know. Nothing calls it automatically:
 retrying an ambiguous payment on a timer is how one gets charged twice.
 
+It has one answer that ends an unresolved payment without any money having moved. A provider
+that guarantees an identity was never executed has said something stronger than "I cannot find
+it", and only that stronger statement releases the stock. A provider that merely has no record
+right now leaves everything exactly where it is, for as long as that stays its answer. A
+provider incapable of the stronger statement leaves an attempt that only
+`agentrank_api.payments.recovery` can end, deliberately and with the risk written down.
+
 What this module never does: retry an UNKNOWN attempt, treat a transport failure as a decline,
-release stock under an unresolved payment, decrement inventory outside the success transaction,
-or claim exactly once execution. See docs/security.md.
+treat a missing record as a failure, release stock under an unresolved payment, decrement
+inventory outside the success transaction, or claim exactly once execution. See
+docs/security.md.
 """
 
 import uuid
@@ -66,8 +74,10 @@ from agentrank_api.payments.models import OutcomeSource, PaymentAttempt, Payment
 from agentrank_api.payments.provider import (
     PaymentInstruction,
     PaymentProvider,
+    PaymentQuery,
     ProviderOutcome,
     ProviderQueryResult,
+    ProviderRecord,
     ProviderResult,
 )
 from agentrank_api.payments.repository import PaymentAttemptRepository
@@ -76,6 +86,7 @@ PAYMENT_SUCCEEDED = "payment.succeeded"
 PAYMENT_FAILED = "payment.failed"
 PAYMENT_UNKNOWN = "payment.unknown"
 PAYMENT_RECONCILED = "payment.reconciled"
+PAYMENT_OUTCOME_CONFLICT = "payment.outcome_conflict"
 
 # A payment outcome is reported by the provider, not decided by this application. Attributing
 # it to the buyer would claim the buyer chose whether their card was declined.
@@ -85,6 +96,12 @@ OUTCOME_ACTOR = ActorType.PAYMENT_PROVIDER
 # provider reporting no reason is still reporting a decline, and inventing a taxonomy before a
 # real provider exists would be inventing a vendor's vocabulary.
 UNSPECIFIED_DECLINE = "PROVIDER_DECLINED"
+
+# The failure this application records when a provider guarantees that an operation never
+# happened. Deliberately not a decline code: nothing was declined, because nothing was ever
+# performed, and a trail that said CARD_DECLINED here would describe an event that did not
+# occur. It is the only failure code this application invents rather than receives.
+PROVIDER_NEVER_EXECUTED = "PROVIDER_NEVER_EXECUTED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,12 +181,20 @@ class PaymentExecutionService:
         created a payment because somebody asked about one would make this the most dangerous
         method in the system rather than the safest.
 
-        Three answers and three behaviours. A definitive success or failure is recorded through
+        Four answers and three behaviours. A definitive success or failure is recorded through
         exactly the same outcome logic a dispatch uses, so a payment resolved an hour later by a
         query consumes its stock or releases it in the same atomic transaction it would have. An
         indefinite answer leaves the attempt exactly where it was: the provider still does not
         know, and writing a state change to record that we asked would be noise in the one place
         noise is expensive.
+
+        The fourth answer is the one that gives an unresolved payment a way to end. A provider
+        that reports NEVER_EXECUTED is not saying it cannot find the operation; it is
+        guaranteeing that none exists and that none can appear from the original dispatch. That
+        is a definitive statement that no money moved, so it is recorded as a failure, the stock
+        goes back and the checkout stays open for another try. A provider reporting merely that
+        it has no record right now gets none of that, and the difference between the two is the
+        whole reason `ProviderRecord` exists rather than a boolean.
 
         Idempotent in two layers. A terminal attempt is returned without asking the provider
         anything, because there is nothing left to learn, and that is the cheap layer. An
@@ -203,16 +228,19 @@ class PaymentExecutionService:
             await self._session.rollback()
             raise refusal
 
-        idempotency_key = attempt.idempotency_key
+        question = _question(attempt)
         # Nothing is held while the provider answers. The read above opened a transaction and
         # this closes it before the network call.
         await self._session.commit()
 
-        found = await self._provider.query(idempotency_key)
-        result = ProviderResult(
-            outcome=found.outcome, reference=found.reference, failure_code=found.failure_code
+        found = await self._provider.query(question)
+        result, release_reason = _from_query(found)
+        recorded = await self._record(
+            attempt_id,
+            result,
+            source=OutcomeSource.RECONCILIATION,
+            release_reason=release_reason,
         )
-        recorded = await self._record(attempt_id, result, source=OutcomeSource.RECONCILIATION)
         await self._append_reconciled(attempt_id, found)
         return PaymentOutcome(
             attempt=recorded.attempt, changed=recorded.changed, provider_called=True
@@ -241,9 +269,10 @@ class PaymentExecutionService:
             payload={
                 "checkout_id": str(attempt.checkout_id),
                 "provider_outcome": found.outcome.value,
-                # Whether the provider had any record of this identity at all, which is a
-                # different fact from what it said happened. No record is not a failure.
-                "provider_known": found.known,
+                # What the provider had on file for this identity, which is a different fact
+                # from what it said happened. ABSENT is not a failure and NEVER_EXECUTED is,
+                # and a trail that recorded only a boolean could not tell them apart.
+                "provider_record": found.record.value,
                 "status": attempt.status.value,
             },
         )
@@ -271,7 +300,12 @@ class PaymentExecutionService:
         return attempt
 
     async def _record(
-        self, attempt_id: uuid.UUID, result: ProviderResult, *, source: OutcomeSource
+        self,
+        attempt_id: uuid.UUID,
+        result: ProviderResult,
+        *,
+        source: OutcomeSource,
+        release_reason: ReleaseReason = ReleaseReason.PAYMENT_DECLINED,
     ) -> PaymentOutcome:
         """Persist one provider answer, with every row the answer touches locked.
 
@@ -279,13 +313,20 @@ class PaymentExecutionService:
         rather than reused: the object from the dispatch transaction was read before the
         network call, and between then and now anything could have happened to the row.
 
+        `release_reason` is why the stock goes back, and it is a parameter because a definitive
+        failure has more than one cause. A dispatch that is told no is a decline and defaults
+        to one; a reconciliation that is told the operation never existed is not, and calling
+        it a decline in the inventory trail would record a refusal that never happened.
+
         Locks are taken in the documented order and only as far down as the outcome reaches.
         See `agentrank_api.locking`.
         """
         if result.outcome is ProviderOutcome.SUCCEEDED:
             return await self._record_success(attempt_id, result, source=source)
         if result.outcome is ProviderOutcome.FAILED:
-            return await self._record_failure(attempt_id, result, source=source)
+            return await self._record_failure(
+                attempt_id, result, source=source, release_reason=release_reason
+            )
         return await self._record_unknown(attempt_id, source=source)
 
     async def _record_success(
@@ -329,15 +370,24 @@ class PaymentExecutionService:
         return PaymentOutcome(attempt=attempt, changed=True)
 
     async def _record_failure(
-        self, attempt_id: uuid.UUID, result: ProviderResult, *, source: OutcomeSource
+        self,
+        attempt_id: uuid.UUID,
+        result: ProviderResult,
+        *,
+        source: OutcomeSource,
+        release_reason: ReleaseReason = ReleaseReason.PAYMENT_DECLINED,
     ) -> PaymentOutcome:
-        """A definitive decline, which specifically means no money moved.
+        """A definitive failure, which specifically means no money moved.
 
-        The attempt becomes FAILED with the provider's reason, and the hold goes back on the
-        shelf with `payment_declined` in the trail. The checkout is left OPEN: a declined
-        payment is a fact about an attempt, not about the quote, and the price is still good.
-        Marking it failed would destroy an offer the merchant never withdrew and would make a
-        later retry impossible.
+        The attempt becomes FAILED with the reason, and the hold goes back on the shelf under
+        `release_reason`. The checkout is left OPEN: a failed payment is a fact about an
+        attempt, not about the quote, and the price is still good. Marking it failed would
+        destroy an offer the merchant never withdrew and would make a later retry impossible.
+
+        Two causes reach here and the trail keeps them apart. A provider that declined said no
+        to something it did; a provider that guaranteed it never executed said there was
+        nothing to say no to. Both mean the stock is safe to release and only one of them is a
+        refusal.
 
         No variant lock. Releasing only ever frees capacity, so a concurrent preparation that
         has not seen it counts this stock as still held and refuses, which is conservative
@@ -359,7 +409,7 @@ class PaymentExecutionService:
             await self._session.commit()
             return PaymentOutcome(attempt=attempt)
 
-        await self._inventory.release(reservation, reason=ReleaseReason.PAYMENT_DECLINED)
+        await self._inventory.release(reservation, reason=release_reason)
         await self._append(attempt, PAYMENT_FAILED, failure_code=failure_code)
         await self._session.commit()
         return PaymentOutcome(attempt=attempt, changed=True)
@@ -485,6 +535,48 @@ def _instruction(attempt: PaymentAttempt) -> PaymentInstruction:
         currency=attempt.currency,
         merchant_reference=str(attempt.merchant_id),
         checkout_reference=str(attempt.checkout_id),
+    )
+
+
+def _question(attempt: PaymentAttempt) -> PaymentQuery:
+    """What the provider is asked about this attempt, read off the attempt itself.
+
+    `dispatched_at` is here because a provider whose visibility guarantee is a duration cannot
+    evaluate it without knowing when the clock started, and this application is the only side
+    that knows. It carries the fact and never the duration: how long a provider needs before an
+    empty answer becomes final is that provider's business.
+    """
+    if attempt.dispatched_at is None:
+        # Not reachable. ADMITTED is the only status with no dispatch instant, a check
+        # constraint keeps the two in agreement, and reconciliation refuses ADMITTED above.
+        raise ValueError(f"payment attempt {attempt.id} has no dispatch instant to query from")
+    return PaymentQuery(
+        idempotency_key=attempt.idempotency_key, dispatched_at=attempt.dispatched_at
+    )
+
+
+def _from_query(found: ProviderQueryResult) -> tuple[ProviderResult, ReleaseReason]:
+    """Turn what a provider knows into an outcome this application can record.
+
+    One translation and it is the important one. A provider that guarantees an operation never
+    existed has stated definitively that no money moved, which is a failure even though it
+    never reported one, so this application supplies the outcome and the failure code itself.
+    That is the only place a failure is invented rather than received, and it is invented from
+    a guarantee rather than from an absence.
+
+    Everything else passes through untouched, including ABSENT, which stays UNKNOWN and leaves
+    the attempt exactly where it is.
+    """
+    if found.record is ProviderRecord.NEVER_EXECUTED:
+        return (
+            ProviderResult(outcome=ProviderOutcome.FAILED, failure_code=PROVIDER_NEVER_EXECUTED),
+            ReleaseReason.PAYMENT_NOT_EXECUTED,
+        )
+    return (
+        ProviderResult(
+            outcome=found.outcome, reference=found.reference, failure_code=found.failure_code
+        ),
+        ReleaseReason.PAYMENT_DECLINED,
     )
 
 

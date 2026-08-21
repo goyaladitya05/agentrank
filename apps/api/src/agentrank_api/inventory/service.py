@@ -77,11 +77,24 @@ class ReleaseReason(StrEnum):
     `CheckoutExecutionService.prepare_execution` is supposed to make unreachable. A release
     under this reason in the trail is a signal worth reading, and merging it into
     `CHECKOUT_CANCELLED` would hide exactly the thing worth knowing.
+
+    `PAYMENT_NOT_EXECUTED` is the other definitive path and is a different fact from a
+    decline. It means the provider guaranteed that the operation never happened at all, so
+    there was nothing to decline. Both are safe to release on and only one of them is a card
+    saying no, and a trail that called them the same thing would lose that.
+
+    `PAYMENT_ABANDONED` is not definitive and does not pretend to be. It means an operator
+    decided an unresolved payment would never be resolved and accepted the residual risk that
+    the provider may yet reveal that money moved. It is deliberately its own reason so that no
+    reader mistakes it for a provider confirmed outcome. See
+    `agentrank_api.payments.recovery`.
     """
 
     CHECKOUT_CANCELLED = "checkout_cancelled"
     RESERVATION_RECOVERED = "reservation_recovered"
     PAYMENT_DECLINED = "payment_declined"
+    PAYMENT_NOT_EXECUTED = "payment_not_executed"
+    PAYMENT_ABANDONED = "payment_abandoned"
 
 
 class InventoryViolationCode(StrEnum):
