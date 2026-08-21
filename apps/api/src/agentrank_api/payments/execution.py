@@ -37,6 +37,11 @@ outcome touches. Success touches everything: the mandate, the checkout, the stoc
 and the attempt. A decline touches the hold and the attempt. An ambiguous result touches the
 attempt alone, because the correct response to not knowing is to change as little as possible.
 
+Beside dispatch is `reconcile`, which is the only way out of UNKNOWN. It queries rather than
+charges, records whatever it learns through exactly the same outcome logic, and leaves an
+attempt where it is when the provider still does not know. Nothing calls it automatically:
+retrying an ambiguous payment on a timer is how one gets charged twice.
+
 What this module never does: retry an UNKNOWN attempt, treat a transport failure as a decline,
 release stock under an unresolved payment, decrement inventory outside the success transaction,
 or claim exactly once execution. See docs/security.md.
@@ -62,6 +67,7 @@ from agentrank_api.payments.provider import (
     PaymentInstruction,
     PaymentProvider,
     ProviderOutcome,
+    ProviderQueryResult,
     ProviderResult,
 )
 from agentrank_api.payments.repository import PaymentAttemptRepository
@@ -69,6 +75,7 @@ from agentrank_api.payments.repository import PaymentAttemptRepository
 PAYMENT_SUCCEEDED = "payment.succeeded"
 PAYMENT_FAILED = "payment.failed"
 PAYMENT_UNKNOWN = "payment.unknown"
+PAYMENT_RECONCILED = "payment.reconciled"
 
 # A payment outcome is reported by the provider, not decided by this application. Attributing
 # it to the buyer would claim the buyer chose whether their card was declined.
@@ -148,6 +155,99 @@ class PaymentExecutionService:
         return PaymentOutcome(
             attempt=recorded.attempt, changed=recorded.changed, provider_called=True
         )
+
+    async def reconcile(self, attempt_id: uuid.UUID) -> PaymentOutcome:
+        """Ask the provider what happened to an unresolved payment, and record the answer.
+
+        The only way out of UNKNOWN, and the only way out of an IN_FLIGHT attempt whose process
+        died before it could record anything. It queries; it never charges. A provider that
+        created a payment because somebody asked about one would make this the most dangerous
+        method in the system rather than the safest.
+
+        Three answers and three behaviours. A definitive success or failure is recorded through
+        exactly the same outcome logic a dispatch uses, so a payment resolved an hour later by a
+        query consumes its stock or releases it in the same atomic transaction it would have. An
+        indefinite answer leaves the attempt exactly where it was: the provider still does not
+        know, and writing a state change to record that we asked would be noise in the one place
+        noise is expensive.
+
+        Idempotent in two layers. A terminal attempt is returned without asking the provider
+        anything, because there is nothing left to learn, and that is the cheap layer. An
+        attempt that is still unresolved is queried again, and if two queries somehow both
+        return a success, the outcome writers record one outcome, consume one unit and append
+        one event, because each reports whether it is what changed the row. The second layer is
+        what makes the first one a convenience rather than the guarantee.
+
+        The query happens outside every transaction, exactly as `execute` does, and for the same
+        reason.
+
+        A `payment.reconciled` event is appended whenever a query was actually made, whatever it
+        found. That is the record that somebody looked, which is worth having separately from
+        what they learned: a payment that has been queried five times and is still unknown is a
+        different operational fact from one nobody has asked about.
+        """
+        attempt = await self._attempts.get(attempt_id)
+        if attempt is None:
+            raise NotFoundError("payment_attempt", str(attempt_id))
+        if attempt.is_terminal:
+            # Nothing to learn. Deliberately not an error: a reconciliation sweep that meets an
+            # attempt somebody else already resolved has done its job.
+            await self._session.commit()
+            return PaymentOutcome(attempt=attempt)
+
+        if attempt.status is PaymentAttemptStatus.ADMITTED:
+            # Certainly never dispatched, so the provider has never heard of this identity and
+            # a query would tell us only that. Dispatching is the answer, and it is a different
+            # decision from resolving an uncertain result.
+            refusal = _not_reconcilable(attempt)
+            await self._session.rollback()
+            raise refusal
+
+        idempotency_key = attempt.idempotency_key
+        # Nothing is held while the provider answers. The read above opened a transaction and
+        # this closes it before the network call.
+        await self._session.commit()
+
+        found = await self._provider.query(idempotency_key)
+        result = ProviderResult(
+            outcome=found.outcome, reference=found.reference, failure_code=found.failure_code
+        )
+        recorded = await self._record(attempt_id, result, source=OutcomeSource.RECONCILIATION)
+        await self._append_reconciled(attempt_id, found)
+        return PaymentOutcome(
+            attempt=recorded.attempt, changed=recorded.changed, provider_called=True
+        )
+
+    async def _append_reconciled(self, attempt_id: uuid.UUID, found: ProviderQueryResult) -> None:
+        """Record that somebody asked, and what the provider said when they did.
+
+        Its own transaction rather than part of the outcome one. The outcome transaction is
+        atomic with the state it writes, and an indefinite answer writes no state at all, so
+        there is nothing for this to be atomic with. Recording the query separately also keeps
+        the meaning clean: `payment.reconciled` says a query was made, and `payment.succeeded`
+        beside it says what it resolved to.
+        """
+        attempt = await self._attempts.get(attempt_id)
+        if attempt is None:
+            # Not reachable: the outcome transaction just read and wrote this row.
+            raise NotFoundError("payment_attempt", str(attempt_id))
+
+        await self._audit.append(
+            merchant_id=attempt.merchant_id,
+            actor_type=OUTCOME_ACTOR,
+            event_type=PAYMENT_RECONCILED,
+            resource_type=PAYMENT_RESOURCE,
+            resource_id=attempt.id,
+            payload={
+                "checkout_id": str(attempt.checkout_id),
+                "provider_outcome": found.outcome.value,
+                # Whether the provider had any record of this identity at all, which is a
+                # different fact from what it said happened. No record is not a failure.
+                "provider_known": found.known,
+                "status": attempt.status.value,
+            },
+        )
+        await self._session.commit()
 
     async def _dispatchable(self, attempt_id: uuid.UUID) -> PaymentAttempt:
         """Mark one attempt as dispatched and commit, or refuse to dispatch it.
@@ -397,6 +497,20 @@ def _fallback_reference(attempt: PaymentAttempt) -> str:
     processor issued.
     """
     return f"unreferenced:{attempt.id}"
+
+
+def _not_reconcilable(attempt: PaymentAttempt) -> ConflictError:
+    """The refusal for an attempt that has nothing to reconcile.
+
+    Only ADMITTED reaches here, and the answer is specific rather than generic: this payment has
+    provably never been sent, so what it needs is a dispatch and not a query.
+    """
+    return ConflictError(
+        "payment_not_dispatched",
+        f"payment attempt {attempt.id} has never been dispatched and has nothing to reconcile",
+        resource="payment_attempt",
+        identifier=str(attempt.id),
+    )
 
 
 def _not_dispatchable(attempt: PaymentAttempt) -> ConflictError:
