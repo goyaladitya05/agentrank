@@ -77,6 +77,19 @@ make api
 |----------|---------|
 | `GET /health` | The API process is running. Never touches the database. |
 | `GET /ready` | Every required dependency is reachable. Returns 503 when one is not. |
+| `GET /api/v1/commerce/products/{product_id}` | One product with its merchant and every variant. |
+| `POST /api/v1/commerce/products/search` | Search one merchant's catalog. |
+
+Search is merchant scoped, deterministic and variant aware. A product is returned when at
+least one of its variants satisfies every filter, and the response carries exactly those
+variants as `eligible_variants`. Amounts are integers of minor currency units and always
+travel with their currency, so a price ceiling must state the currency it is in.
+
+```bash
+curl -sS localhost:8000/api/v1/commerce/products/search \
+  -H 'content-type: application/json' \
+  -d '{"merchant_id":"...","query":"100W charger","max_price_amount_minor":500000,"currency":"INR"}'
+```
 
 Run the backend tests, which need a running database:
 
