@@ -6,13 +6,19 @@ of work.
 """
 
 import uuid
+from collections import defaultdict
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
 from agentrank_api.commerce.models import Merchant, Product, Variant
+from agentrank_api.commerce.search import (
+    MAX_SEARCH_LIMIT,
+    ProductMatch,
+    ProductSearchCriteria,
+)
 
 
 class MerchantRepository:
@@ -32,6 +38,22 @@ class MerchantRepository:
     async def get_by_slug(self, slug: str) -> Merchant | None:
         result = await self._session.execute(select(Merchant).where(Merchant.slug == slug))
         return result.scalar_one_or_none()
+
+
+LIKE_ESCAPE = "\\"
+
+
+def _escape_like(term: str) -> str:
+    """Neutralise LIKE wildcards in a user supplied term.
+
+    Without this a query of "%" matches every product, and "_" matches any character,
+    which turns a search box into a way to dump a catalog.
+    """
+    return (
+        term.replace(LIKE_ESCAPE, LIKE_ESCAPE * 2)
+        .replace("%", f"{LIKE_ESCAPE}%")
+        .replace("_", f"{LIKE_ESCAPE}_")
+    )
 
 
 class CatalogRepository:
@@ -108,3 +130,90 @@ class CatalogRepository:
         )
         result = await self._session.execute(statement)
         return result.unique().scalar_one_or_none()
+
+    def _variant_conditions(self, criteria: ProductSearchCriteria) -> list[ColumnElement[bool]]:
+        """Conditions a variant must satisfy to be eligible.
+
+        Used twice: once inside the EXISTS that decides whether a product matches at all,
+        and once to select the variants that are returned. Sharing them is what keeps a
+        product from being reported as matching on one variant while a different variant
+        is shown.
+        """
+        conditions: list[ColumnElement[bool]] = []
+        if not criteria.include_inactive:
+            conditions.append(Variant.is_active.is_(True))
+        if criteria.currency is not None:
+            conditions.append(Variant.currency == criteria.currency)
+        if criteria.max_price_amount_minor is not None:
+            conditions.append(Variant.price_amount_minor <= criteria.max_price_amount_minor)
+        return conditions
+
+    def _product_conditions(self, criteria: ProductSearchCriteria) -> list[ColumnElement[bool]]:
+        conditions: list[ColumnElement[bool]] = [Product.merchant_id == criteria.merchant_id]
+        if not criteria.include_inactive:
+            conditions.append(Product.is_active.is_(True))
+        for token in criteria.tokens():
+            pattern = f"%{_escape_like(token)}%"
+            conditions.append(
+                or_(
+                    Product.title.ilike(pattern, escape=LIKE_ESCAPE),
+                    Product.description.ilike(pattern, escape=LIKE_ESCAPE),
+                    Product.category.ilike(pattern, escape=LIKE_ESCAPE),
+                )
+            )
+        return conditions
+
+    async def search_products(self, criteria: ProductSearchCriteria) -> list[ProductMatch]:
+        """Find products with at least one variant satisfying every variant level filter.
+
+        Two statements rather than a filtered eager load, so that no half populated
+        relationship collection ever escapes this method. `Product.variants` is left
+        unloaded on purpose: reading it raises, which is what should happen when a caller
+        wants the eligible variants and reaches for the full set by mistake.
+        """
+        variant_conditions = self._variant_conditions(criteria)
+        eligible = (
+            select(Variant.id).where(Variant.product_id == Product.id, *variant_conditions).exists()
+        )
+        limit = min(max(criteria.limit, 1), MAX_SEARCH_LIMIT)
+
+        products = (
+            (
+                await self._session.execute(
+                    select(Product)
+                    .options(joinedload(Product.merchant))
+                    .where(*self._product_conditions(criteria), eligible)
+                    .order_by(Product.title, Product.id)
+                    .limit(limit)
+                )
+            )
+            .unique()
+            .scalars()
+            .all()
+        )
+        if not products:
+            return []
+
+        variants = (
+            (
+                await self._session.execute(
+                    select(Variant)
+                    .where(
+                        Variant.product_id.in_([product.id for product in products]),
+                        *variant_conditions,
+                    )
+                    .order_by(Variant.price_amount_minor, Variant.sku)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        by_product: dict[uuid.UUID, list[Variant]] = defaultdict(list)
+        for variant in variants:
+            by_product[variant.product_id].append(variant)
+
+        return [
+            ProductMatch(product=product, eligible_variants=tuple(by_product[product.id]))
+            for product in products
+        ]
