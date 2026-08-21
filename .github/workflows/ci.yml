@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# CI is independent verification, not the debugging loop. Superseded runs are cancelled.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_DB: agentrank
+          POSTGRES_USER: agentrank
+          # CI only, throwaway, and not a secret. It never leaves the runner.
+          POSTGRES_PASSWORD: agentrank_ci_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agentrank -d agentrank"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      AGENTRANK_ENV: ci
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: agentrank
+      POSTGRES_USER: agentrank
+      POSTGRES_PASSWORD: agentrank_ci_password
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Formatting
+        run: uv run ruff format --check .
+
+      - name: Type check
+        run: uv run mypy apps/api migrations tests scripts
+
+      # Migrations must apply, reverse and reapply against a real PostgreSQL 18.
+      - name: Migrations
+        run: |
+          uv run alembic upgrade head
+          uv run alembic downgrade base
+          uv run alembic upgrade head
+
+      - name: Tests
+        run: uv run pytest
+
+      - name: Text style
+        run: uv run python scripts/check-text-style.py
+
+      - name: Whitespace
+        run: ./scripts/check-whitespace.sh
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # The pnpm version comes from packageManager in the root package.json.
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Install Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm --filter @agentrank/web lint
+
+      - name: Formatting
+        run: pnpm --filter @agentrank/web format:check
+
+      - name: Type check
+        run: pnpm --filter @agentrank/web typecheck
+
+      - name: Tests
+        run: pnpm --filter @agentrank/web test
+
+      - name: Production build
+        run: pnpm --filter @agentrank/web build

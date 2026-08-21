@@ -114,6 +114,16 @@ uv run alembic check                 # models and migrations agree
 Autogenerate is a starting point, not an answer. Read every generated revision and make
 sure `downgrade` really reverses `upgrade`.
 
+## Continuous integration
+
+GitHub Actions runs on pull requests and on pushes to `main`, in two jobs. Backend runs
+against a real PostgreSQL 18 service container: dependency install from the lock file,
+Ruff, mypy, migrations up and down and up, pytest, the text style scanner and whitespace
+validation. Frontend runs ESLint, Prettier, TypeScript, Vitest and a production build.
+
+CI needs no secrets and calls no external services. Run `make check` locally first. CI is
+independent verification, not the debugging loop.
+
 ## Layout
 
 ```text
