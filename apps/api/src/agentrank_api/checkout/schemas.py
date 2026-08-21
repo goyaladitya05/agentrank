@@ -24,6 +24,11 @@ from agentrank_api.checkout.authorization import (
     CheckoutAuthorizationDecision,
     CheckoutAuthorizationViolation,
 )
+from agentrank_api.checkout.execution import CheckoutExecutionReadiness
+from agentrank_api.checkout.execution_authorization import (
+    CheckoutExecutionAuthorization,
+    ExecutionAuthorizationViolation,
+)
 from agentrank_api.checkout.models import CheckoutLine, CheckoutSession, CheckoutStatus
 from agentrank_api.checkout.quote import (
     DEFAULT_CHECKOUT_TTL,
@@ -31,6 +36,13 @@ from agentrank_api.checkout.quote import (
     validate_checkout_expiry,
 )
 from agentrank_api.checkout.service import CheckoutItem, NewCheckout
+from agentrank_api.constraints.schemas import IntentAuthorizationView
+from agentrank_api.inventory.models import (
+    InventoryReservation,
+    InventoryReservationLine,
+    ReservationStatus,
+)
+from agentrank_api.inventory.service import InventoryViolation, InventoryViolationCode
 
 
 class CheckoutItemInput(BaseModel):
@@ -167,3 +179,146 @@ class CheckoutAuthorizationView(BaseModel):
     @classmethod
     def from_decision(cls, decision: CheckoutAuthorizationDecision) -> Self:
         return cls(allowed=decision.allowed, violations=list(decision.violations))
+
+
+class ExecutionAuthorizationView(BaseModel):
+    """Both gates over one checkout, with neither answer folded into the other.
+
+    `authorized` is the composed answer and the two decisions are stated in full beside it,
+    so a caller that has to explain a refusal never needs a second request. A denial can come
+    from the money, from the purchase, or from there being no semantic authorization at all,
+    and those are three different problems.
+
+    `intent_authorization` is null only when the mandate has no constraint set, and that case
+    always carries `INTENT_CONSTRAINTS_MISSING` in `violations`. It never means "nothing was
+    required".
+
+    This authorizes a future execution. It is not permission to pay, and nothing in this
+    application can pay.
+    """
+
+    authorized: bool
+    violations: list[ExecutionAuthorizationViolation]
+    financial_authorization: CheckoutAuthorizationView
+    intent_authorization: IntentAuthorizationView | None
+
+    @classmethod
+    def from_decision(cls, decision: CheckoutExecutionAuthorization) -> Self:
+        return cls(
+            authorized=decision.authorized,
+            violations=list(decision.violations),
+            financial_authorization=CheckoutAuthorizationView.from_decision(decision.financial),
+            intent_authorization=(
+                None
+                if decision.intent is None
+                else IntentAuthorizationView.from_decision(decision.intent)
+            ),
+        )
+
+
+class ReservationLineView(BaseModel):
+    """One variant and how many units of it are held.
+
+    No price and no currency. A reservation is a claim on stock, and what the buyer pays is
+    already on the quote.
+    """
+
+    variant_id: uuid.UUID
+    quantity: int
+
+    @classmethod
+    def from_model(cls, line: InventoryReservationLine) -> Self:
+        return cls(variant_id=line.variant_id, quantity=line.quantity)
+
+
+class ReservationView(BaseModel):
+    """Stock held for this checkout, and until when.
+
+    `expires_at` is stated because it is the useful half of the answer: it is the deadline by
+    which an execution has to be attempted, and it was derived by the server from the quote
+    and the mandate rather than chosen by anyone.
+
+    Held is not sold. Nothing has been paid for and no stock has been consumed.
+    """
+
+    id: uuid.UUID
+    checkout_id: uuid.UUID
+    status: ReservationStatus
+    total_quantity: int
+    lines: list[ReservationLineView]
+    created_at: datetime
+    expires_at: datetime
+
+    @classmethod
+    def from_model(cls, reservation: InventoryReservation) -> Self:
+        return cls(
+            id=reservation.id,
+            checkout_id=reservation.checkout_id,
+            status=reservation.status,
+            total_quantity=reservation.total_quantity,
+            lines=[ReservationLineView.from_model(line) for line in reservation.lines],
+            created_at=reservation.created_at,
+            expires_at=reservation.expires_at,
+        )
+
+
+class InventoryViolationView(BaseModel):
+    """One variant that could not be held, with the numbers that decided it.
+
+    The code is the stable part. The quantities are what was true at the instant the decision
+    was made, under the locks that made it stable, and they are what lets a caller adjust a
+    basket rather than retry the same request.
+    """
+
+    code: InventoryViolationCode
+    variant_id: uuid.UUID | None
+    requested_quantity: int | None
+    available_quantity: int | None
+
+    @classmethod
+    def from_violation(cls, violation: InventoryViolation) -> Self:
+        return cls(
+            code=violation.code,
+            variant_id=violation.variant_id,
+            requested_quantity=violation.requested_quantity,
+            available_quantity=violation.available_quantity,
+        )
+
+
+class ExecutionPreparationView(BaseModel):
+    """Whether this checkout may now be attempted, and everything that decided it.
+
+    `ready` is the composed answer, and it is never the only thing in the body. A caller that
+    cannot tell an authorization denial from an empty shelf is a caller that retries the same
+    request forever.
+
+    Ready means safe to attempt payment. It does not mean paid, and no payment exists in this
+    application to attempt. The reservation is a claim on stock held until
+    `reservation.expires_at`, which is the earlier of the quote expiry and the mandate
+    validity.
+    """
+
+    ready: bool
+    checkout_id: uuid.UUID
+    evaluated_at: datetime
+    authorization: ExecutionAuthorizationView
+    reservation: ReservationView | None
+    inventory_violations: list[InventoryViolationView]
+
+    @classmethod
+    def from_readiness(cls, readiness: CheckoutExecutionReadiness) -> Self:
+        return cls(
+            ready=readiness.ready,
+            checkout_id=readiness.checkout_id,
+            evaluated_at=readiness.evaluated_at,
+            authorization=ExecutionAuthorizationView.from_decision(readiness.authorization),
+            reservation=(
+                None
+                if readiness.reservation is None
+                else ReservationView.from_model(readiness.reservation)
+            ),
+            inventory_violations=[
+                InventoryViolationView.from_violation(violation)
+                for violation in readiness.inventory_violations
+            ],
+        )
