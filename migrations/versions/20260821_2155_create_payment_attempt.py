@@ -52,6 +52,9 @@ around it. Points worth knowing when reading this:
   and FAILED accept no update at all, not even one that changes nothing.
 - No guard refuses DELETE, so cascades still work, and DROP is not an UPDATE, so a downgrade
   does too.
+- The downgrade is conditionally irreversible and says so rather than discovering it. Once a
+  payment has been taken, this schema holds facts the previous one has no words for, and the
+  reversal refuses instead of inventing a mapping for them. See `downgrade`.
 
 Revision ID: ab60fc05d747
 Revises: 637598637298
@@ -527,7 +530,56 @@ def upgrade() -> None:
     op.execute(ATTACH_PAYMENT_GUARD)
 
 
+# The states this schema can hold that the previous one cannot express at all. Each is a fact
+# about money or about a merchant's stock, and each has exactly two ways to force it through a
+# downgrade: map it onto something that means a different thing, or delete it. Both falsify the
+# record, so the downgrade refuses instead. Stated as a table because the message a person
+# reads has to name what was found, not just that something was.
+IRREVERSIBLE_STATE = (
+    (
+        "checkout_session",
+        "status = 'PAID'",
+        "a paid checkout, which the previous schema can only call OPEN or CANCELLED",
+    ),
+    (
+        "inventory_reservation",
+        "status IN ('COMMITTED', 'CONSUMED')",
+        "a hold bound to a payment or already sold, which the previous schema can only call"
+        " ACTIVE or RELEASED",
+    ),
+    (
+        "payment_attempt",
+        "status IN ('IN_FLIGHT', 'SUCCEEDED', 'FAILED', 'UNKNOWN')",
+        "a payment attempt that has reached or may have reached a provider, which the previous"
+        " schema has no table for",
+    ),
+)
+
+
 def downgrade() -> None:
+    """Reverse this migration, or refuse because reversing it would falsify the record.
+
+    Irreversible once a payment has been taken, and deliberately so. The previous schema has no
+    PAID checkout, no COMMITTED or CONSUMED reservation and no payment_attempt table at all.
+    Mapping PAID onto OPEN would say a sale never happened; mapping CONSUMED onto ACTIVE would
+    put sold units back on a shelf; dropping a settled attempt would erase the record of money
+    moving. None of those is a downgrade, they are a rewrite of financial history, so this
+    checks first and refuses with a message naming what it found.
+
+    An ADMITTED attempt is the one payment state that does not block the reversal. It has
+    provably never reached a provider, because IN_FLIGHT is committed before any network call,
+    so dropping it loses an authorization rather than a movement of money. In practice
+    admission also commits the hold it names, so a real ADMITTED attempt arrives here beside a
+    COMMITTED reservation and the second check refuses anyway.
+
+    The refusal is intentional rather than a constraint violation discovered halfway through.
+    Letting the narrowing fail on its own would produce a check constraint error naming a
+    constraint, with nothing about what it means or what to do, after some of the reversal had
+    already been attempted. The whole run is one transaction, so nothing is half applied and
+    the database stays at head either way.
+    """
+    _require_reversible()
+
     # The guards go back to the blacklists they were, which is correct again once the
     # statuses they did not cover no longer exist. Restoring them by CREATE OR REPLACE rather
     # than dropping and recreating keeps the triggers attached throughout.
@@ -609,3 +661,27 @@ def downgrade() -> None:
     )
     op.drop_column("checkout_session", "paid_at")
     op.drop_constraint("uq_checkout_session_payment_target", "checkout_session", type_="unique")
+
+
+def _require_reversible() -> None:
+    """Refuse the downgrade if any row holds a fact the previous schema cannot state."""
+    connection = op.get_bind()
+    found = []
+    for table, predicate, description in IRREVERSIBLE_STATE:
+        # Both halves are constants in this module. Nothing here is caller supplied.
+        count = connection.exec_driver_sql(
+            f"SELECT count(*) FROM {table} WHERE {predicate}"  # noqa: S608
+        ).scalar_one()
+        if count:
+            found.append(f"{count} row(s) in {table}: {description}")
+
+    if not found:
+        return
+
+    raise RuntimeError(
+        "this downgrade is not lossless while Phase 1F payment state exists. Found "
+        + "; ".join(found)
+        + ". Mapping these onto the previous schema would falsify financial history, so no"
+        " mapping is applied and nothing has been changed. Resolve these rows deliberately"
+        " before downgrading past this revision."
+    )

@@ -167,6 +167,16 @@ def constraint_snapshot(settings: Settings) -> dict[str, Any]:
         engine.dispose()
 
 
+def checkout_status(settings: Settings) -> list[str]:
+    """The checkout statuses, which a downgrade must never quietly rewrite."""
+    engine = create_engine(settings.database_url)
+    try:
+        with engine.connect() as connection:
+            return sorted(connection.execute(select(CheckoutSession.status)).scalars().all())
+    finally:
+        engine.dispose()
+
+
 def row_count(settings: Settings, model: type[Base]) -> int:
     engine = create_engine(settings.database_url)
     try:
@@ -635,4 +645,115 @@ async def test_downgrading_past_operator_abandonment_succeeds_without_one(
     command.downgrade(config, PHASE_1F_HEAD)
 
     assert current_revision(throwaway_database) == PHASE_1F_HEAD
+    assert row_count(throwaway_database, PaymentAttempt) == 1
+
+
+@pytest.mark.anyio
+async def test_downgrading_past_payments_succeeds_with_only_representable_state(
+    throwaway_database: Settings, alembic_config_factory: AlembicConfigFactory
+) -> None:
+    """A database that was upgraded and never took a payment reverses cleanly.
+
+    The catalog, the mandate, the quote and the hold all exist in the previous schema, so
+    nothing here needs a mapping and nothing is refused. This is the case the conditional
+    guard must not break.
+    """
+    config = alembic_config_factory(throwaway_database)
+    command.upgrade(config, "head")
+    await seed_payment_chain(throwaway_database)
+    # The one payment state the previous schema loses without falsifying anything. ADMITTED
+    # has provably never reached a provider, so dropping the row loses an authorization rather
+    # than a movement of money. The hold beside it is still ACTIVE because nothing committed
+    # it, which is what a synthetic row can arrange and a real admission would not.
+    execute(throwaway_database, "UPDATE inventory_reservation SET status = 'ACTIVE'")
+
+    command.downgrade(config, PHASE_1E_HEAD)
+
+    assert current_revision(throwaway_database) == PHASE_1E_HEAD
+    assert "payment_attempt" not in table_names(throwaway_database)
+    assert row_count(throwaway_database, InventoryReservation) == 1
+
+
+@pytest.mark.anyio
+async def test_downgrading_past_a_paid_checkout_refuses_rather_than_calling_it_open(
+    throwaway_database: Settings, alembic_config_factory: AlembicConfigFactory
+) -> None:
+    """PAID has no equivalent in the previous schema, and OPEN is not one.
+
+    Mapping a sale onto OPEN would say the purchase never happened, which is the specific
+    falsification this guard exists to refuse. The message names the table and what was found.
+    """
+    config = alembic_config_factory(throwaway_database)
+    command.upgrade(config, "head")
+    head = ScriptDirectory.from_config(config).get_current_head()
+    attempt_id = await seed_payment_chain(throwaway_database)
+    execute(
+        throwaway_database,
+        "UPDATE payment_attempt SET status = 'IN_FLIGHT', dispatched_at = now() WHERE id = :id",
+        id=attempt_id,
+    )
+    execute(
+        throwaway_database,
+        "UPDATE payment_attempt SET status = 'SUCCEEDED', resolved_at = now(),"
+        " outcome_source = 'EXECUTION', provider_reference = 'paid' WHERE id = :id",
+        id=attempt_id,
+    )
+    execute(throwaway_database, "UPDATE checkout_session SET status = 'PAID', paid_at = now()")
+    # Through COMMITTED, because the reservation guard is a transition whitelist and ACTIVE to
+    # CONSUMED is not one of the transitions it permits.
+    execute(throwaway_database, "UPDATE inventory_reservation SET status = 'COMMITTED'")
+    execute(
+        throwaway_database,
+        "UPDATE inventory_reservation SET status = 'CONSUMED', consumed_at = now()",
+    )
+
+    with pytest.raises(RuntimeError) as refused:
+        command.downgrade(config, PHASE_1E_HEAD)
+
+    message = str(refused.value)
+    assert "not lossless" in message
+    assert "checkout_session" in message
+    assert "inventory_reservation" in message
+    assert "payment_attempt" in message
+
+    # Atomic. The whole run is one transaction, so a refusal leaves the database exactly where
+    # it was rather than partway back.
+    assert current_revision(throwaway_database) == head
+    assert "payment_attempt" in table_names(throwaway_database)
+    assert row_count(throwaway_database, PaymentAttempt) == 1
+    assert checkout_status(throwaway_database) == ["PAID"]
+    assert reservation_snapshot(throwaway_database)["statuses"] == ["CONSUMED"]
+
+
+@pytest.mark.anyio
+async def test_downgrading_past_an_unresolved_payment_refuses(
+    throwaway_database: Settings, alembic_config_factory: AlembicConfigFactory
+) -> None:
+    """The state that matters most, because nobody knows whether money moved.
+
+    An UNKNOWN attempt may have been charged. Dropping it would erase the only record that a
+    payment is undecided, and the hold it is bound to would go back to a schema that thinks an
+    expiry governs it.
+    """
+    config = alembic_config_factory(throwaway_database)
+    command.upgrade(config, "head")
+    head = ScriptDirectory.from_config(config).get_current_head()
+    attempt_id = await seed_payment_chain(throwaway_database)
+    execute(
+        throwaway_database,
+        "UPDATE payment_attempt SET status = 'IN_FLIGHT', dispatched_at = now() WHERE id = :id",
+        id=attempt_id,
+    )
+    execute(
+        throwaway_database,
+        "UPDATE payment_attempt SET status = 'UNKNOWN', outcome_source = 'EXECUTION'"
+        " WHERE id = :id",
+        id=attempt_id,
+    )
+    execute(throwaway_database, "UPDATE inventory_reservation SET status = 'COMMITTED'")
+
+    with pytest.raises(RuntimeError, match="not lossless"):
+        command.downgrade(config, PHASE_1E_HEAD)
+
+    assert current_revision(throwaway_database) == head
     assert row_count(throwaway_database, PaymentAttempt) == 1
