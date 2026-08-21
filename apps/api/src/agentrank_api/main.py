@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from agentrank_api.config import Settings, get_settings
 from agentrank_api.database import create_engine, create_session_factory
 from agentrank_api.errors import ConflictError, ErrorResponse, NotFoundError
-from agentrank_api.routes import checkouts, commerce, mandates, system
+from agentrank_api.routes import checkouts, commerce, constraints, mandates, system
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -69,4 +69,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(commerce.router)
     app.include_router(mandates.router)
     app.include_router(checkouts.router)
+    app.include_router(constraints.router)
     return app

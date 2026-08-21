@@ -100,8 +100,13 @@ class IntentConstraintDecision:
     `satisfied` is derived rather than stored, so a decision carrying violations cannot
     also claim the purchase was what the buyer asked for. Violations are ordered, and the
     order is fixed, so two runs of the same check produce the same decision.
+
+    The constraint set is named because a caller never chooses it. It is resolved through
+    the mandate the checkout was quoted against, so the decision has to say which
+    authorization it was actually made against.
     """
 
+    constraint_set_id: uuid.UUID
     violations: tuple[IntentConstraintViolation, ...] = ()
 
     @property
@@ -130,7 +135,9 @@ def evaluate_intent_constraints(
     """
     binding = _binding_violations(checkout, constraint_set)
     if binding:
-        return IntentConstraintDecision(violations=tuple(binding))
+        return IntentConstraintDecision(
+            constraint_set_id=constraint_set.id, violations=tuple(binding)
+        )
 
     lines = list(checkout.lines)
     if not lines:
@@ -138,7 +145,8 @@ def evaluate_intent_constraints(
         # Stated anyway, because a checkout with no lines would otherwise satisfy every
         # constraint by having nothing to check, which is the loudest possible false pass.
         return IntentConstraintDecision(
-            violations=(IntentConstraintViolation(code=IntentViolationCode.CHECKOUT_HAS_NO_LINES),)
+            constraint_set_id=constraint_set.id,
+            violations=(IntentConstraintViolation(code=IntentViolationCode.CHECKOUT_HAS_NO_LINES),),
         )
 
     violations: list[IntentConstraintViolation] = []
@@ -160,7 +168,9 @@ def evaluate_intent_constraints(
                     )
                 )
 
-    return IntentConstraintDecision(violations=tuple(violations))
+    return IntentConstraintDecision(
+        constraint_set_id=constraint_set.id, violations=tuple(violations)
+    )
 
 
 @dataclass(frozen=True, slots=True)

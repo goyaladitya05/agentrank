@@ -1,8 +1,13 @@
 """Checkout application service.
 
-Workflows live here: create a quote and read one back. The service coordinates the
-repositories, the domain rules and the audit trail, and it owns the transaction. Routes
-call one method and serialize the result.
+Workflows live here: create a quote, read one back, and answer each of the two
+authorization questions about it. The service coordinates the repositories, the domain
+rules and the audit trail, and it owns the transaction. Routes call one method and
+serialize the result.
+
+The two authorization reads stay separate methods returning separate decisions. There is no
+method that combines them, because the only caller for a combined answer is payment
+execution, which does not exist. See docs/decisions.md.
 
 Three rules shape this module:
 
@@ -31,6 +36,10 @@ from agentrank_api.checkout.authorization import (
     CheckoutAuthorizationDecision,
     authorize_checkout,
 )
+from agentrank_api.checkout.intent_authorization import (
+    IntentConstraintDecision,
+    evaluate_intent_constraints,
+)
 from agentrank_api.checkout.models import CheckoutSession, CheckoutStatus
 from agentrank_api.checkout.quote import (
     MAX_CHECKOUT_LINES,
@@ -41,6 +50,7 @@ from agentrank_api.checkout.quote import (
 from agentrank_api.checkout.repository import CheckoutRepository
 from agentrank_api.commerce.models import Variant
 from agentrank_api.commerce.repository import CatalogRepository, MerchantRepository
+from agentrank_api.constraints.repository import IntentConstraintRepository
 from agentrank_api.errors import ConflictError, NotFoundError
 from agentrank_api.mandates.repository import MandateRepository
 from agentrank_api.money import validate_amount_minor
@@ -108,6 +118,7 @@ class CheckoutService:
         self._mandates = MandateRepository(session)
         self._catalog = CatalogRepository(session)
         self._checkouts = CheckoutRepository(session)
+        self._constraints = IntentConstraintRepository(session)
         self._audit = AuditRepository(session)
 
     async def create_checkout(self, request: NewCheckout) -> CheckoutSession:
@@ -185,6 +196,30 @@ class CheckoutService:
             # RESTRICT, so the mandate cannot have been removed while this quote exists.
             raise NotFoundError("mandate", str(checkout.mandate_id))
         return authorize_checkout(checkout, mandate, at=at or datetime.now(UTC))
+
+    async def evaluate_intent_constraints(self, checkout_id: uuid.UUID) -> IntentConstraintDecision:
+        """Report whether this checkout is what the buyer asked for.
+
+        The second gate, and it is resolved entirely from persisted rows: the checkout, the
+        mandate it names, and the constraint set qualifying that mandate. No model, no
+        prompt, no conversation history and no audit event is read to reach it.
+
+        A caller does not choose the constraints. They are found through the mandate the
+        quote was written against, which is what stops an authorization from being paired
+        with terms someone picked afterwards.
+
+        A mandate with no constraint set raises rather than reporting satisfaction. Absence
+        of a semantic authorization is not a passed one.
+
+        Nothing is written, and no catalog row is read. The decision is made against the
+        semantic snapshot the quote recorded, so a catalog change since then cannot alter
+        what it was made against.
+        """
+        checkout = await self.get_checkout(checkout_id)
+        constraint_set = await self._constraints.get_for_mandate(checkout.mandate_id)
+        if constraint_set is None:
+            raise NotFoundError("intent_constraints", str(checkout.mandate_id))
+        return evaluate_intent_constraints(checkout, constraint_set)
 
     async def cancel_checkout(self, checkout_id: uuid.UUID) -> CheckoutSession:
         """Withdraw a quote and record it, once.
