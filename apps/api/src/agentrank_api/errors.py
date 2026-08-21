@@ -25,6 +25,34 @@ class NotFoundError(AgentRankError):
         self.identifier = identifier
 
 
+class ConflictError(AgentRankError):
+    """A well formed request that the current state of the system refuses.
+
+    Different from `NotFoundError`, where the thing addressed does not exist, and
+    different from a validation failure, where the request itself is wrong. An inactive
+    variant and an insufficient stock level are neither: the request is well formed and
+    the resource is there, and the answer would have been different an hour ago.
+
+    `reason` is a stable machine readable code, not prose, for the same reason event
+    types are: a buyer agent has to tell "out of stock" from "no longer sold" without
+    reading English.
+    """
+
+    def __init__(
+        self,
+        reason: str,
+        detail: str,
+        *,
+        resource: str | None = None,
+        identifier: str | None = None,
+    ) -> None:
+        super().__init__(detail)
+        self.reason = reason
+        self.detail = detail
+        self.resource = resource
+        self.identifier = identifier
+
+
 class ErrorResponse(BaseModel):
     """The body of every deliberate error response.
 

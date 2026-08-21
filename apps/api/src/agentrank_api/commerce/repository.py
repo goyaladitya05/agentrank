@@ -7,6 +7,7 @@ of work.
 
 import uuid
 from collections import defaultdict
+from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import ColumnElement, or_, select
@@ -134,6 +135,28 @@ class CatalogRepository:
         """Look a variant up by SKU, which is unique within a merchant."""
         statement = select(Variant).where(Variant.merchant_id == merchant_id, Variant.sku == sku)
         return (await self._session.execute(statement)).scalar_one_or_none()
+
+    async def get_variants(
+        self, *, merchant_id: uuid.UUID, variant_ids: Sequence[uuid.UUID]
+    ) -> list[Variant]:
+        """Fetch several variants belonging to one merchant, with their products loaded.
+
+        Merchant scope is in the query rather than checked afterwards, so a variant owned
+        by someone else is simply absent from the result. The caller decides what a
+        missing variant means; from this merchant's point of view there is no difference
+        between one that does not exist and one that is not theirs.
+
+        The product comes with it because whether a variant may be quoted depends on
+        whether its product is still active, and reading that lazily would raise.
+        """
+        if not variant_ids:
+            return []
+        statement = (
+            select(Variant)
+            .options(joinedload(Variant.product))
+            .where(Variant.merchant_id == merchant_id, Variant.id.in_(variant_ids))
+        )
+        return list((await self._session.execute(statement)).unique().scalars().all())
 
     async def get_product(self, product_id: uuid.UUID) -> Product | None:
         """Fetch one product with its merchant and every variant loaded."""
