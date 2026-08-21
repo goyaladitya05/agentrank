@@ -9,8 +9,8 @@ from fastapi.responses import JSONResponse
 
 from agentrank_api.config import Settings, get_settings
 from agentrank_api.database import create_engine, create_session_factory
-from agentrank_api.errors import ErrorResponse, NotFoundError
-from agentrank_api.routes import commerce, mandates, system
+from agentrank_api.errors import ConflictError, ErrorResponse, NotFoundError
+from agentrank_api.routes import checkouts, commerce, mandates, system
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -49,7 +49,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content=body.model_dump())
 
+    @app.exception_handler(ConflictError)
+    async def handle_conflict(_: Request, error: ConflictError) -> JSONResponse:
+        """State refused the request, rather than the request being wrong.
+
+        409 and not 422: the body is well formed and the resource exists. An inactive
+        variant or an empty shelf is a fact about now, and the same request could have
+        succeeded an hour ago.
+        """
+        body = ErrorResponse(
+            error=error.reason,
+            detail=error.detail,
+            resource=error.resource,
+            identifier=error.identifier,
+        )
+        return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=body.model_dump())
+
     app.include_router(system.router)
     app.include_router(commerce.router)
     app.include_router(mandates.router)
+    app.include_router(checkouts.router)
     return app
