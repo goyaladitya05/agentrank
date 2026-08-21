@@ -114,6 +114,10 @@ class Variant(TimestampMixin, Base):
             ondelete="CASCADE",
         ),
         UniqueConstraint("merchant_id", "sku"),
+        # Redundant against the primary key, and present for the same reason the one on
+        # product is: a composite foreign key needs a matching unique target. This is what
+        # lets a checkout line reference a variant and that variant's merchant at once.
+        UniqueConstraint("id", "merchant_id"),
         CheckConstraint("length(btrim(sku)) > 0", name="sku_not_blank"),
         CheckConstraint("price_amount_minor >= 0", name="price_not_negative"),
         CheckConstraint(f"currency ~ '{CURRENCY_PATTERN}'", name="currency_format"),

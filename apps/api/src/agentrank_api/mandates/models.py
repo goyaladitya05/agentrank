@@ -26,8 +26,10 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     String,
+    UniqueConstraint,
     Uuid,
     func,
 )
@@ -84,6 +86,13 @@ class SpendingMandate(Base):
 
     __tablename__ = "spending_mandate"
     __table_args__ = (
+        # Redundant against the primary key, and present only as a composite foreign key
+        # target: a checkout is bound through (mandate_id, merchant_id), so it cannot name
+        # a mandate granted to a different merchant.
+        UniqueConstraint("id", "merchant_id"),
+        # Merchant scoped reads and the RESTRICT check when a merchant is deleted. The
+        # unique constraint above has id leftmost, so it does not serve either.
+        Index(None, "merchant_id"),
         CheckConstraint(f"status IN ({_STATUS_VALUES})", name="status_known"),
         CheckConstraint("max_total_amount_minor >= 0", name="amount_not_negative"),
         CheckConstraint(f"currency ~ '{CURRENCY_PATTERN}'", name="currency_format"),

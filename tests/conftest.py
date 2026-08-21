@@ -15,6 +15,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from agentrank_api.audit import models as audit_models  # noqa: F401  registers tables
+from agentrank_api.checkout import models as checkout_models  # noqa: F401  registers tables
 from agentrank_api.commerce import models as commerce_models  # noqa: F401  registers tables
 from agentrank_api.config import Settings, get_settings
 from agentrank_api.database import create_engine as create_async_engine
