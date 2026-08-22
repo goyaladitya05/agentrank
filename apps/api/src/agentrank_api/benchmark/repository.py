@@ -331,6 +331,23 @@ class BenchmarkRunRepository:
         )
         return (await self._session.execute(statement)).scalar_one_or_none()
 
+    async def active_run_id(self, *, merchant_id: uuid.UUID) -> uuid.UUID | None:
+        """The identifier of the run currently executing against this merchant, or None.
+
+        One row at most, because a partial unique index says so. This read exists to turn that
+        into an ordinary refusal that names the run an operator has to close, rather than an
+        integrity error arriving from underneath a caller that had already prepared a world.
+
+        Merchant scoped like every other read here, and it deliberately returns an identifier
+        rather than a row: the caller is deciding whether it may proceed, not reading a result,
+        and handing back the whole run would invite reading somebody else's numbers out of it.
+        """
+        statement = select(BenchmarkRun.id).where(
+            BenchmarkRun.merchant_id == merchant_id,
+            BenchmarkRun.status == BenchmarkRunStatus.RUNNING,
+        )
+        return (await self._session.execute(statement)).scalars().one_or_none()
+
     async def list_for_merchant(
         self, *, merchant_id: uuid.UUID, limit: int = DEFAULT_RUN_LIMIT
     ) -> list[BenchmarkRun]:

@@ -395,6 +395,13 @@ _TERMINAL_VALUES = ", ".join(f"'{status.value}'" for status in sorted(TERMINAL_M
 _REASON_VALUES = ", ".join(f"'{reason.value}'" for reason in FailureReason)
 _REASON_JSON = ", ".join(f'"{reason.value}"' for reason in FailureReason)
 
+# The predicate that says a run currently owns the world it is measuring. Static, because a
+# partial index has to be, and it is exactly one status: PENDING means every mission run exists
+# and none has started, so nothing has been touched, and both terminal statuses mean the run has
+# let go. A run enters this predicate once and leaves it once, which the lifecycle trigger
+# guarantees by refusing every other transition.
+ACTIVE_RUN_PREDICATE = f"status = '{BenchmarkRunStatus.RUNNING.value}'"
+
 MAX_REPRESENTATION_LABEL_LENGTH = 100
 
 
@@ -480,8 +487,29 @@ class BenchmarkRun(Base):
         CheckConstraint(
             "completed_at IS NULL OR completed_at >= started_at", name="completion_after_start"
         ),
+        # At most one run may be executing against one merchant, structurally. This is the
+        # whole of benchmark environment exclusivity and it is an index rather than a lock on
+        # purpose: a run lasts as long as its missions take, and a transaction held open across
+        # LLM calls and network operations is not a claim, it is an outage waiting to happen.
+        #
+        # Keyed on the merchant rather than on the environment, and that is the stronger of the
+        # two. What a run owns is a catalog, and a catalog belongs to a merchant; two worlds
+        # registered against one merchant are two names for one shelf, and an index on
+        # `environment_id` would let them reset each other. `environment_id` is nullable
+        # besides, and PostgreSQL treats nulls in a unique index as distinct, so every run
+        # against an unregistered merchant would be exempt from the invariant that matters.
+        #
+        # Merchants are never serialized against each other. Two benchmark worlds with two
+        # merchants run at the same time, which is the point of keying it at all.
+        Index(
+            "uq_benchmark_run_active_merchant",
+            "merchant_id",
+            unique=True,
+            postgresql_where=text(ACTIVE_RUN_PREDICATE),
+        ),
         # Merchant scoped reads and the RESTRICT check when a merchant is deleted. The ownership
-        # constraint above has id leftmost, so it does not serve either.
+        # constraint above has id leftmost, so it does not serve either. The partial index above
+        # covers running rows only, so it serves neither.
         Index(None, "merchant_id"),
         Index(None, "suite_id"),
         # The RESTRICT check when an environment is deleted. A registered environment cannot be

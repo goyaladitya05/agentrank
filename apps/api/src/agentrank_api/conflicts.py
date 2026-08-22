@@ -62,6 +62,14 @@ CONFLICTS: dict[str, InvariantConflict] = {
         detail="this benchmark fixture key and version are already registered",
         resource="benchmark_environment",
     ),
+    # At most one benchmark run executes against one merchant. The run service reads the
+    # active run first and refuses by name, and two starts racing can both read that there is
+    # none. This is the backstop, and it is the layer that holds across processes.
+    "uq_benchmark_run_active_merchant": InvariantConflict(
+        reason="run_already_active",
+        detail="another benchmark run is already executing against this merchant",
+        resource="benchmark_run",
+    ),
     # A mandate is qualified once. The service refuses a second constraint set after reading
     # that one exists, and two creations racing can both read that none does.
     "uq_intent_constraint_set_mandate_id": InvariantConflict(

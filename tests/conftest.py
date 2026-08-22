@@ -9,7 +9,7 @@ import socket
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import pytest
 from alembic import command
@@ -124,13 +124,46 @@ def catalog_settings(
         _administer(settings, f'DROP DATABASE IF EXISTS "{CATALOG_DATABASE}" WITH (FORCE)')
 
 
+# Every wait these tests can make is bounded by PostgreSQL rather than by a per test timeout.
+# Benchmark and payment tests take row locks and partial unique index locks across independent
+# connections, and a test that blocks forever is strictly worse than one that fails: CI reports
+# it as a job timeout with no test name attached, and the mutation runs that deliberately break
+# a lock ordering are exactly the ones that produce it.
+#
+# Two bounds rather than one. `lock_timeout` covers waiting for a lock somebody else holds, which
+# is the failure these tests actually produce. `statement_timeout` is the backstop for a statement
+# that is slow for some other reason, and is generous enough that no honest statement reaches it.
+LOCK_TIMEOUT = "10s"
+STATEMENT_TIMEOUT = "120s"
+
+
 @pytest.fixture(scope="session")
 async def catalog_engine(catalog_settings: Settings) -> AsyncIterator[AsyncEngine]:
     engine = create_async_engine(catalog_settings)
+    _bound_waits(engine)
     try:
         yield engine
     finally:
         await engine.dispose()
+
+
+def _bound_waits(engine: AsyncEngine) -> None:
+    """Apply the wait bounds to every connection this engine opens.
+
+    On connect rather than per transaction, so nothing a test writes can forget it and no
+    `SET LOCAL` has to be threaded through a helper. The settings are per session in the
+    PostgreSQL sense, so they survive the pooled connection being handed to the next test.
+    """
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _apply(dbapi_connection: Any, record: Any) -> None:
+        del record
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute(f"SET lock_timeout = '{LOCK_TIMEOUT}'")
+            cursor.execute(f"SET statement_timeout = '{STATEMENT_TIMEOUT}'")
+        finally:
+            cursor.close()
 
 
 @pytest.fixture

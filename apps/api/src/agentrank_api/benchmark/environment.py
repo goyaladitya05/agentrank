@@ -59,7 +59,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentrank_api.benchmark.fixtures import BenchmarkFixture
 from agentrank_api.benchmark.models import BenchmarkEnvironment
-from agentrank_api.benchmark.repository import BenchmarkEnvironmentRepository
+from agentrank_api.benchmark.repository import (
+    BenchmarkEnvironmentRepository,
+    BenchmarkRunRepository,
+)
 from agentrank_api.commerce.catalog_fixture import SeedSummary, seed_catalog
 from agentrank_api.commerce.models import Product, Variant
 from agentrank_api.commerce.repository import MerchantRepository
@@ -106,6 +109,7 @@ class BenchmarkEnvironmentService:
         self._session = session
         self._merchants = MerchantRepository(session)
         self._environments = BenchmarkEnvironmentRepository(session)
+        self._runs = BenchmarkRunRepository(session)
         self._reservations = InventoryReservationRepository(session)
         self._inventory = InventoryReservationService(session)
 
@@ -157,15 +161,24 @@ class BenchmarkEnvironmentService:
         await self._session.commit()
         return environment
 
-    async def prepare(self, fixture: BenchmarkFixture) -> PreparedEnvironment:
+    async def prepare(
+        self, fixture: BenchmarkFixture, *, for_run: uuid.UUID | None = None
+    ) -> PreparedEnvironment:
         """Put this world back to exactly what the fixture describes, in one transaction.
 
-        Fail closed twice before anything is written. The world has to be registered under this
-        exact fixture key, version and content hash, so a merchant nobody deliberately made a
-        benchmark target cannot be overwritten and an edited fixture cannot be applied under an
-        identity that no longer describes it. And nothing may be holding stock against a
-        payment that has not resolved, because giving those units back is an operator decision
-        with residual risk rather than a housekeeping step.
+        Fail closed three times before anything is written. The world has to be registered under
+        this exact fixture key, version and content hash, so a merchant nobody deliberately made
+        a benchmark target cannot be overwritten and an edited fixture cannot be applied under an
+        identity that no longer describes it. Nothing may be holding stock against a payment that
+        has not resolved, because giving those units back is an operator decision with residual
+        risk rather than a housekeeping step. And no run other than `for_run` may be executing
+        against this merchant.
+
+        `for_run` is the run this preparation is part of, and passing it is what lets a run put
+        the world back between its own missions. Every other caller passes nothing and is
+        refused while a run is executing, which is the half of exclusivity a unique index on the
+        run table cannot state: an operator reseeding the world mid run does not create a second
+        run, it destroys the first one's shelf from underneath it.
 
         The order is the one `agentrank_api.locking` writes down. Every one of this merchant's
         variant rows is locked first, in ascending identifier order, so this serializes against
@@ -194,6 +207,7 @@ class BenchmarkEnvironmentService:
             )
 
         merchant_id = environment.merchant_id
+        await self._require_unclaimed(merchant_id, for_run=for_run)
         await self._lock_shelf(merchant_id)
         released = await self._release_holds(merchant_id)
         summary = await seed_catalog(
@@ -255,6 +269,33 @@ class BenchmarkEnvironmentService:
             )
         _require_same_content(existing, content_hash)
         return existing
+
+    async def _require_unclaimed(
+        self, merchant_id: uuid.UUID, *, for_run: uuid.UUID | None
+    ) -> None:
+        """Refuse to overwrite a world that a run other than this one is executing against.
+
+        A benchmark run is long, so its claim cannot be a held transaction and is a row status
+        instead. That leaves one gap a unique index does not cover: this method is the only
+        thing that resets a shelf, and nothing in the run table stops somebody calling it while
+        a run is halfway through. It is the same damage two concurrent runs would do, arriving
+        by a shorter route.
+
+        A run left RUNNING by a process that died blocks this exactly as a live one does, and
+        that is the point rather than a side effect. What that run did is unknown; resetting the
+        world would release whatever it was holding and destroy the evidence. `benchmark abort`
+        is the auditable act that says reuse is safe.
+        """
+        active = await self._runs.active_run_id(merchant_id=merchant_id)
+        if active is None or active == for_run:
+            return
+        raise ConflictError(
+            "run_already_active",
+            f"benchmark run {active} is executing against this merchant and its world cannot"
+            " be reset until that run is completed or aborted",
+            resource=ENVIRONMENT_RESOURCE,
+            identifier=str(active),
+        )
 
     async def _claim(self, merchant_slug: str) -> None:
         """Hold this merchant's benchmark world against every other preparation, until commit.

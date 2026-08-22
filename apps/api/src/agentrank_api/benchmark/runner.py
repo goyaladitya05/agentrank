@@ -77,6 +77,7 @@ from agentrank_api.benchmark.repository import BenchmarkRunRepository, Benchmark
 from agentrank_api.checkout.models import CheckoutSession
 from agentrank_api.commerce.models import Product, Variant
 from agentrank_api.commerce.repository import MerchantRepository
+from agentrank_api.conflicts import translated_conflicts
 from agentrank_api.errors import ConflictError, NotFoundError
 from agentrank_api.payments.models import PaymentAttempt, PaymentAttemptStatus
 
@@ -140,6 +141,12 @@ class BenchmarkRunService:
         suite against one world can still differ because the thing doing the shopping changed, and
         without this they would be compared as though they had not. Also optional, and null there
         means the same thing every other null pin means: nobody recorded it.
+
+        Refused while another run is already executing against this merchant. That is the whole
+        of environment exclusivity at this layer, and the read is the courtesy rather than the
+        mechanism: the partial unique index underneath refuses the same thing across processes,
+        and the transition to RUNNING is what enters it. Both statements are in one transaction,
+        so a second starter blocks on the index until the first commits and then loses.
         """
         merchant = await self._merchants.get_by_slug(merchant_slug)
         if merchant is None:
@@ -148,6 +155,7 @@ class BenchmarkRunService:
         if suite is None:
             raise NotFoundError("benchmark_suite", f"{suite_key}@{suite_version}")
 
+        await self._require_unclaimed(merchant.id)
         entries = await self.catalog(merchant.id)
         run = await self._runs.create(
             merchant=merchant,
@@ -160,7 +168,8 @@ class BenchmarkRunService:
         )
         run.status = BenchmarkRunStatus.RUNNING
         run.started_at = datetime.now(UTC)
-        await self._session.commit()
+        async with translated_conflicts(self._session, identifier=str(merchant.id)):
+            await self._session.commit()
         log.info(
             "benchmark run started",
             extra={
@@ -209,6 +218,11 @@ class BenchmarkRunService:
         deliberate: a runner that swallowed an exception and carried on would produce a
         COMPLETED run with a mission nobody executed, and the honest close for a run that
         stopped is `abort_run`.
+
+        The world is claimed for the whole run. The first preparation happens before the run
+        exists and is refused if another run already owns this merchant, so a stale RUNNING run
+        stops the world being reset before anything of this one is written down. Every later
+        preparation names this run and is therefore allowed, and is refused for everybody else.
         """
         environment = await self._environments.prepare(fixture)
         run = await self.start_run(
@@ -225,7 +239,7 @@ class BenchmarkRunService:
         run_id = run.id
 
         for mission in suite.missions:
-            await self._environments.prepare(fixture)
+            await self._environments.prepare(fixture, for_run=run_id)
             entries = await self.catalog(merchant_id)
             brief = mission.to_brief()
             started = await self.start_mission(run_id, brief.key, merchant_id=merchant_id)
@@ -514,6 +528,32 @@ class BenchmarkRunService:
         if run is None:
             raise NotFoundError(RUN_RESOURCE, str(run_id))
         return run
+
+    async def _require_unclaimed(self, merchant_id: uuid.UUID) -> None:
+        """Refuse to start a run against a merchant a run is already executing against.
+
+        Two runs against one world are not two measurements. Each prepares the world before
+        every mission, so process B's preparation resets the shelf process A is halfway through
+        shopping and releases what A was holding; both runs commit, both carry a catalog pin,
+        and both are quietly wrong.
+
+        The refusal names the run that holds the claim, because a run left RUNNING by a process
+        that died holds it exactly as a live one does, and that is deliberate. What that run did
+        is unknown, so letting the next run reset the world underneath it would destroy the only
+        evidence of it. An operator reads it with `benchmark show` and closes it with
+        `benchmark abort`, which is the existing honest close and is what releases the claim.
+        See docs/benchmark.md.
+        """
+        active = await self._runs.active_run_id(merchant_id=merchant_id)
+        if active is None:
+            return
+        raise ConflictError(
+            "run_already_active",
+            f"benchmark run {active} is already executing against this merchant and must be"
+            " completed or aborted before another starts",
+            resource=RUN_RESOURCE,
+            identifier=str(active),
+        )
 
     def _require_running(self, run: BenchmarkRun) -> None:
         """Refuse to record anything against a run that is not executing.

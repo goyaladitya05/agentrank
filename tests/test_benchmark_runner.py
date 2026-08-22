@@ -114,11 +114,19 @@ async def test_a_run_records_what_it_was_measured_against(session: AsyncSession)
 
 
 async def test_two_runs_of_an_unchanged_catalog_pin_the_same_hash(session: AsyncSession) -> None:
-    await shop(session)
+    """Two runs, one after the other, because one merchant never has two at once.
+
+    The first is closed before the second starts. That is not incidental to what this asserts:
+    a merchant may only have one run executing, so a comparison of two runs of one catalog is
+    necessarily a comparison across time, and the pin is what says the catalog did not move in
+    between.
+    """
+    merchant_id = await shop(session)
     await published(session, mission("one", budget_minor=PRICE))
     service = BenchmarkRunService(session)
 
     first = await service.start_run(suite_key="test-suite", suite_version=1, merchant_slug=SLUG)
+    await service.abort_run(first.id, merchant_id=merchant_id)
     second = await service.start_run(suite_key="test-suite", suite_version=1, merchant_slug=SLUG)
 
     assert first.catalog_hash == second.catalog_hash
