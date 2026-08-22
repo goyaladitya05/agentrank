@@ -46,6 +46,7 @@ from agentrank_api.benchmark.metrics import BenchmarkMetrics
 from agentrank_api.benchmark.models import BenchmarkMissionRun, BenchmarkRun
 from agentrank_api.benchmark.reference_executor import ReferenceMissionExecutor
 from agentrank_api.benchmark.runner import BenchmarkRunService
+from agentrank_api.benchmark.tools import MeasuredBuyerSurface, ToolLedger
 from agentrank_api.benchmark.voltedge import FIXTURE, SUITE_KEY, SUITE_VERSION, seed_voltedge
 from agentrank_api.cli.exits import ExitCode
 from agentrank_api.cli.output import write_json
@@ -207,16 +208,25 @@ async def run(
     operation, exactly as an HTTP route does, so the commerce a mission carries out is not part
     of the run's transaction sequence and an executor cannot leave the run unable to record what
     it just did.
+
+    The ledger sits between the executor and the merchant and is handed to the run service as
+    the witness. It is what decides whether an interruption was the merchant's or the harness's,
+    from what the surface actually did, and the executor is given the surface that writes to it
+    rather than the ledger itself.
     """
     del settings
     merchant_id = await _benchmark_merchant(session)
     service = BenchmarkRunService(session)
-    surface = MerchantBuyerSurface(sessions, merchant_id=merchant_id, provider=provider)
+    ledger = ToolLedger()
+    surface = MeasuredBuyerSurface(
+        MerchantBuyerSurface(sessions, merchant_id=merchant_id, provider=provider), ledger
+    )
     finished = await service.run_suite(
         ReferenceMissionExecutor(surface),
         suite_key=SUITE_KEY,
         suite_version=SUITE_VERSION,
         fixture=WORLD,
+        witness=ledger,
         representation_label=arguments.representation_label,
     )
     return await _report(service, finished.id, merchant_id, arguments, out)

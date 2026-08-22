@@ -63,6 +63,7 @@ from agentrank_api.benchmark.evaluation import (
     evaluator_version,
 )
 from agentrank_api.benchmark.execution import ExecutorIdentity, MissionExecutor
+from agentrank_api.benchmark.faults import ExecutionFault
 from agentrank_api.benchmark.fixtures import BenchmarkFixture
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
 from agentrank_api.benchmark.metrics import BenchmarkMetrics, MissionOutcome, compute_metrics
@@ -74,6 +75,7 @@ from agentrank_api.benchmark.models import (
 )
 from agentrank_api.benchmark.observation import ObservedResult
 from agentrank_api.benchmark.repository import BenchmarkRunRepository, BenchmarkSuiteRepository
+from agentrank_api.benchmark.tools import ExecutionWitness
 from agentrank_api.checkout.models import CheckoutSession
 from agentrank_api.commerce.models import Product, Variant
 from agentrank_api.commerce.repository import MerchantRepository
@@ -191,6 +193,7 @@ class BenchmarkRunService:
         suite_key: str,
         suite_version: int,
         fixture: BenchmarkFixture,
+        witness: ExecutionWitness | None = None,
         representation_label: str | None = None,
     ) -> BenchmarkRun:
         """Prepare the world, execute every mission in suite order, and complete the run.
@@ -223,6 +226,13 @@ class BenchmarkRunService:
         exists and is refused if another run already owns this merchant, so a stale RUNNING run
         stops the world being reset before anything of this one is written down. Every later
         preparation names this run and is therefore allowed, and is refused for everybody else.
+
+        `witness` is trusted evidence about how each mission's execution actually went, gathered
+        on this side of whatever boundary the executor is behind. It is what decides whether an
+        interruption was the merchant's or the harness's, and it is optional because a replayed
+        run has no boundary to gather evidence at. None means no interruption is attributed at
+        all, which is honest: with nothing watching, there is nothing to attribute from, and the
+        alternative is believing the executor.
         """
         environment = await self._environments.prepare(fixture)
         run = await self.start_run(
@@ -251,9 +261,16 @@ class BenchmarkRunService:
                     "mission_key": brief.key,
                 },
             )
+            if witness is not None:
+                witness.begin()
             observed = await executor(brief, merchant_id=merchant_id)
             result = await self.record_result(
-                run_id, brief.key, observed, merchant_id=merchant_id, catalog=entries
+                run_id,
+                brief.key,
+                observed,
+                merchant_id=merchant_id,
+                catalog=entries,
+                fault=None if witness is None else witness.fault(),
             )
             log.info(
                 "benchmark mission recorded",
@@ -327,6 +344,7 @@ class BenchmarkRunService:
         *,
         merchant_id: uuid.UUID,
         catalog: Sequence[CatalogEntry] | None = None,
+        fault: ExecutionFault | None = None,
     ) -> BenchmarkMissionRun:
         """Mark one mission and write the result, in one transaction.
 
@@ -340,6 +358,11 @@ class BenchmarkRunService:
         the mission's own ground truth against a shelf the mission itself emptied. `run_suite`
         reads it before executing and passes it down. Reading it here is the fallback for a
         caller assembling a run by hand, and it is the older, weaker behavior.
+
+        `fault` is what trusted code observed at the tool boundary, and it is passed rather than
+        read out of the report for the reason the whole of Phase 2B-R exists: an executor that
+        could put its own mission into ERRORED would be marking the one status that carries no
+        failure reason and counts the mission's value as not measured.
         """
         run = await self._locked_run(run_id, merchant_id=merchant_id)
         self._require_running(run)
@@ -362,6 +385,7 @@ class BenchmarkRunService:
             observed,
             merchant_id=merchant_id,
             catalog=facts_for(mission.to_brief(), entries, observed.selection),
+            fault=fault,
         )
 
         # RUNNING first, because the lifecycle is a transition whitelist and an outcome is

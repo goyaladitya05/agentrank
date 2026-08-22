@@ -32,7 +32,7 @@ from agentrank_api.benchmark.fixtures import BenchmarkFixture
 from agentrank_api.benchmark.observation import (
     AbstentionCode,
     CheckoutRefusal,
-    ErrorOrigin,
+    ObservedError,
     ObservedResult,
 )
 from agentrank_api.benchmark.reference_executor import (
@@ -740,11 +740,15 @@ async def test_the_executor_refuses_to_shop_at_another_merchant(
         await executor(factory, merchant_id)(brief(), merchant_id=uuid.uuid7())
 
 
-async def test_a_merchant_surface_error_is_reported_as_one(
+async def test_a_merchant_surface_refusal_stops_the_mission_and_is_reported(
     session: AsyncSession, factory: async_sessionmaker[AsyncSession]
 ) -> None:
-    """A refusal no step expected is the merchant answering with an error rather than an
-    outcome, and it is a finding about the merchant rather than a harness fault."""
+    """A refusal no step expected stops the mission, and the executor says what it saw.
+
+    What it does not say is whose fault that was. `observed.error` is this executor's own
+    account and carries no origin; attribution is decided at the tool boundary, which
+    tests/test_benchmark_error_attribution.py covers.
+    """
     merchant_id = await prepared(session, world())
 
     class Refusing(MerchantBuyerSurface):
@@ -757,9 +761,9 @@ async def test_a_merchant_surface_error_is_reported_as_one(
     )
 
     assert observed.error is not None
-    assert observed.error.origin is ErrorOrigin.MERCHANT
     assert observed.error.detail == "catalog_unavailable"
     assert observed.selection is None
+    assert not hasattr(observed.error, "origin")
 
 
 async def test_a_quote_the_merchant_will_not_make_is_recorded_as_a_refusal(
@@ -819,6 +823,7 @@ def test_an_observed_result_never_carries_a_classification() -> None:
     Asserted on the type rather than on one result, because a field added here later is the way
     that separation would be lost.
     """
+    assert set(ObservedError.__dataclass_fields__) == {"detail"}
     fields = set(ObservedResult.__dataclass_fields__)
 
     assert fields == {
@@ -862,15 +867,13 @@ async def test_a_refusal_after_a_payment_keeps_the_payment_in_the_report(
     assert observed.selection is not None
     assert observed.checkout is not None
     assert observed.error is not None
-    # The harness, not the merchant. This execution was acting on a quote it created moments ago.
-    assert observed.error.origin is ErrorOrigin.HARNESS
 
 
-async def test_a_refusal_while_reading_the_catalog_is_the_merchants(
+async def test_a_refusal_while_reading_the_catalog_stops_the_mission_before_any_selection(
     session: AsyncSession,
     factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """Before this execution has created anything, a refusal is the merchant answering badly."""
+    """Nothing was chosen, so the report carries no selection and says what stopped it."""
     merchant_id = await prepared(session, world())
 
     class Refusing(MerchantBuyerSurface):
@@ -883,7 +886,7 @@ async def test_a_refusal_while_reading_the_catalog_is_the_merchants(
     )
 
     assert observed.error is not None
-    assert observed.error.origin is ErrorOrigin.MERCHANT
+    assert observed.error.detail == "product_unreadable"
     assert observed.selection is None
 
 
@@ -893,8 +896,10 @@ async def test_a_missing_mandate_is_not_reported_as_a_variant_the_merchant_does_
 ) -> None:
     """`INVALID_VARIANT` counts as an attempt outside what the buyer authorized.
 
-    Mapping every not found from the quote step onto it would publish a harness fault as a
-    safety number, which is the one number in this benchmark that must never be manufactured.
+    Mapping every not found from the quote step onto it would publish a fault about this
+    execution's own state as a safety number, which is the one number in this benchmark that
+    must never be manufactured. The report carries no quote and no refusal, so nothing about
+    the merchant's catalog is claimed.
     """
     merchant_id = await prepared(session, world())
 
@@ -909,7 +914,7 @@ async def test_a_missing_mandate_is_not_reported_as_a_variant_the_merchant_does_
 
     assert observed.checkout is None
     assert observed.error is not None
-    assert observed.error.origin is ErrorOrigin.HARNESS
+    assert observed.selection is not None
 
 
 async def test_a_missing_variant_is_still_reported_as_one(

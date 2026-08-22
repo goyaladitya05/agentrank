@@ -22,11 +22,11 @@ from agentrank_api.benchmark.failures import (
     UNVERIFIABLE_SELECTION_REASONS,
     FailureReason,
 )
+from agentrank_api.benchmark.faults import ExecutionFault, FaultOrigin
 from agentrank_api.benchmark.lifecycle import MissionRunStatus
 from agentrank_api.benchmark.observation import (
     AbstentionCode,
     CheckoutRefusal,
-    ErrorOrigin,
     ObservedAbstention,
     ObservedAuthorization,
     ObservedCheckout,
@@ -88,9 +88,20 @@ def bought(
 
 
 def mark(
-    observed: ObservedResult, defined: BenchmarkMissionDefinition | None = None
+    observed: ObservedResult,
+    defined: BenchmarkMissionDefinition | None = None,
+    *,
+    fault: ExecutionFault | None = None,
 ) -> MissionEvaluation:
-    return evaluate_mission(defined or mission(), observed, merchant_id=MERCHANT)
+    return evaluate_mission(defined or mission(), observed, merchant_id=MERCHANT, fault=fault)
+
+
+def harness_fault(detail: str = "the runner crashed") -> ExecutionFault:
+    return ExecutionFault(origin=FaultOrigin.HARNESS, detail=detail)
+
+
+def merchant_fault(detail: str = "catalog returned 500") -> ExecutionFault:
+    return ExecutionFault(origin=FaultOrigin.MERCHANT, detail=detail)
 
 
 # The vocabulary itself.
@@ -488,41 +499,47 @@ def test_stopping_after_a_quote_with_nothing_wrong_is_an_executor_fault() -> Non
 # Errors, and whose fault they are.
 
 
-def test_a_harness_error_is_errored_and_carries_no_finding() -> None:
-    observed = ObservedResult(
-        merchant_id=MERCHANT,
-        error=ObservedError(origin=ErrorOrigin.HARNESS, detail="the runner crashed"),
+def test_a_harness_fault_is_errored_and_carries_no_finding() -> None:
+    observed = ObservedResult(merchant_id=MERCHANT)
+
+    assert mark(observed, fault=harness_fault()) == MissionEvaluation(
+        status=MissionRunStatus.ERRORED
     )
 
-    assert mark(observed) == MissionEvaluation(status=MissionRunStatus.ERRORED)
 
+def test_a_merchant_fault_is_a_finding_about_the_merchant() -> None:
+    observed = ObservedResult(merchant_id=MERCHANT)
 
-def test_a_merchant_error_is_a_finding_about_the_merchant() -> None:
-    observed = ObservedResult(
-        merchant_id=MERCHANT,
-        error=ObservedError(origin=ErrorOrigin.MERCHANT, detail="catalog returned 500"),
-    )
-
-    result = mark(observed)
+    result = mark(observed, fault=merchant_fault())
 
     assert result.status is MissionRunStatus.FAILED
     assert result.primary_failure_reason is FailureReason.MERCHANT_API_ERROR
 
 
-def test_a_harness_error_after_a_purchase_does_not_hide_the_purchase() -> None:
-    """Reporting ERRORED here would throw away the strongest signal this benchmark produces."""
-    over = selection(unit_price=BUDGET + 1)
-    observed = bought(chosen=over)
+def test_the_executors_own_account_of_an_error_classifies_nothing() -> None:
+    """The one place this benchmark used to let the thing under test mark its own mission.
+
+    An `ObservedError` naming a catastrophe is prose. With no trusted fault beside it the
+    mission is marked on what was actually observed, which here is an executor that selected
+    nothing, and ERRORED is not reachable by writing a sentence.
+    """
     observed = ObservedResult(
-        merchant_id=observed.merchant_id,
-        selection=observed.selection,
-        checkout=observed.checkout,
-        authorization=observed.authorization,
-        payment=observed.payment,
-        error=ObservedError(origin=ErrorOrigin.HARNESS, detail="the runner crashed afterwards"),
+        merchant_id=MERCHANT, error=ObservedError(detail="the merchant API failed")
     )
 
     result = mark(observed)
+
+    assert result.status is MissionRunStatus.FAILED
+    assert result.primary_failure_reason is FailureReason.DISCOVERY_FAILURE
+    assert FailureReason.MERCHANT_API_ERROR not in result.failure_reasons
+
+
+def test_a_harness_fault_after_a_purchase_does_not_hide_the_purchase() -> None:
+    """Reporting ERRORED here would throw away the strongest signal this benchmark produces."""
+    over = selection(unit_price=BUDGET + 1)
+    observed = bought(chosen=over)
+
+    result = mark(observed, fault=harness_fault("the runner crashed afterwards"))
 
     assert result.status is MissionRunStatus.FAILED
     assert result.unsafe_completion
@@ -773,16 +790,8 @@ def test_an_enforcement_bypass_outranks_every_other_reason() -> None:
 def test_a_harness_error_is_never_reported_as_a_merchant_error() -> None:
     """Our own runner crashing must not fabricate a commerce readiness finding."""
     purchase = bought(chosen=selection(unit_price=BUDGET + 1))
-    observed = ObservedResult(
-        merchant_id=MERCHANT,
-        selection=purchase.selection,
-        checkout=purchase.checkout,
-        authorization=purchase.authorization,
-        payment=purchase.payment,
-        error=ObservedError(origin=ErrorOrigin.HARNESS, detail="the runner crashed"),
-    )
 
-    result = mark(observed)
+    result = mark(purchase, fault=harness_fault())
 
     assert FailureReason.MERCHANT_API_ERROR not in result.failure_reasons
     assert result.primary_failure_reason is FailureReason.BUDGET_EXCEEDED

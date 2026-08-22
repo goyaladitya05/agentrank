@@ -50,7 +50,6 @@ from agentrank_api.benchmark.execution import ExecutorIdentity
 from agentrank_api.benchmark.observation import (
     AbstentionCode,
     CheckoutRefusal,
-    ErrorOrigin,
     ObservedAbstention,
     ObservedAuthorization,
     ObservedCheckout,
@@ -192,7 +191,7 @@ class Quoted:
 
 @dataclass(slots=True)
 class Attempt:
-    """What this execution has established so far, and whose fault an error at this point is.
+    """What this execution has established so far, so an error is reported beside it.
 
     Mutable, and the only mutable thing in this module. It exists because an error has to be
     reported *beside* what already happened rather than instead of it. The first version threw
@@ -201,15 +200,14 @@ class Attempt:
     the evaluator's rule about a harness fault after a successful payment became unreachable,
     because there was never a payment on an error result to reach it with.
 
-    `origin` moves once. While the executor is reading the catalog, a refusal is the merchant
-    surface answering with an error rather than with an outcome, and it is a commerce readiness
-    finding. From the moment this execution starts creating its own mandate, quote and hold, a
-    refusal is about state it created moments ago, which means the harness reached somewhere it
-    should not have. Calling that a fact about the merchant would manufacture evidence.
+    There is no origin here and there deliberately cannot be. This executor does not decide
+    whose fault an interruption was, and neither will the model that replaces it: that is
+    settled at the tool boundary by `agentrank_api.benchmark.tools`, from what the merchant
+    surface actually did. What this records is its own account of what stopped it, which is
+    diagnostic and is never classified from.
     """
 
     merchant_id: uuid.UUID
-    origin: ErrorOrigin = ErrorOrigin.MERCHANT
     selection: ObservedSelection | None = None
     checkout: ObservedCheckout | None = None
     authorization: ObservedAuthorization | None = None
@@ -227,8 +225,8 @@ class Attempt:
         )
 
     def failed(self, refused: AgentRankError) -> ObservedResult:
-        """Everything established so far, plus the refusal that stopped it."""
-        return self.reported(error=ObservedError(origin=self.origin, detail=_detail(refused)))
+        """Everything established so far, plus this executor's account of what stopped it."""
+        return self.reported(error=ObservedError(detail=_detail(refused)))
 
 
 def assess(brief: AgentMissionBrief, candidate: Candidate) -> Rejection | None:
@@ -372,11 +370,6 @@ class ReferenceMissionExecutor:
             variant_attributes=chosen.attributes,
         )
 
-        # From here on this execution is acting on state it created moments ago, so a refusal is
-        # the harness reaching somewhere it should not have rather than a fact about the
-        # merchant. The one refusal that is a finding is the authorization gates saying no, and
-        # that arrives as an answer rather than as an exception.
-        attempt.origin = ErrorOrigin.HARNESS
         mandate_id = await self._authorize(brief)
         quoted = await self._quote(brief, chosen, mandate_id=mandate_id)
         if quoted.checkout is None:
@@ -557,20 +550,25 @@ class ReferenceMissionExecutor:
     ) -> ObservedResult:
         """What to report when a payment was refused before any provider was involved.
 
-        One refusal is a finding and the rest are faults, and the split is the point. A payment
-        the authorization gates denied is the safety layer working, and it is reported as a
-        denial, carrying every violation code both gates gave rather than the refusal's own name.
-        Every other refusal, on a mandate and a quote and a hold this execution created moments
-        ago, means the harness reached a state it should not have: a mandate already consumed, a
-        quote already paid, a payment already in progress. None of those is a fact about the
-        merchant, and each is reported as a harness error beside the quote it happened to.
+        One refusal is a denial and the rest are this execution finding itself somewhere it
+        should not be, and the split is the point. A payment the authorization gates denied is
+        the safety layer working, and it is reported as a denial, carrying every violation code
+        both gates gave rather than the refusal's own name. Every other refusal, on a mandate and
+        a quote and a hold this execution created moments ago, means a mandate already consumed,
+        a quote already paid or a payment already in progress, and is reported as this
+        executor's own account of what stopped it beside the quote it happened to.
+
+        Which of those the benchmark treats as a fault is not decided here. An admission refusal
+        is a business answer rather than a surface failure, so the tool boundary records it as
+        one and no fault is attributed, and the evaluator marks the mission on what was actually
+        observed: a quote, no purchase and nothing identifiably wrong with the selection, which
+        is a reasoning failure and is counted as one.
         """
         if refusal in AUTHORIZATION_REFUSALS:
             return attempt.reported()
         return attempt.reported(
             error=ObservedError(
-                origin=ErrorOrigin.HARNESS,
-                detail=f"payment refused as {'unknown' if refusal is None else refusal.value}",
+                detail=f"payment refused as {'unknown' if refusal is None else refusal.value}"
             )
         )
 

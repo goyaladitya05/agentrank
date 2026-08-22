@@ -37,6 +37,12 @@ The merchant's data and the executor's account of itself are not the same kind o
 Prices, categories and attributes are marked as facts. An executor's stated reason for
 abstaining is recorded and never classified from, because marking a mission from what the thing
 under test said about its own reasoning is not measurement.
+
+That rule used to have one exception and no longer does. Whose fault an interruption was arrives
+as `ExecutionFault`, a separate input decided by trusted code at the tool boundary, rather than
+as a field on the report. It used to be the latter, which meant an executor could put its own
+mission into ERRORED, the one status that carries no failure reason, leaves every rate untouched
+and counts the mission's authored value as not measured rather than as lost.
 """
 
 import hashlib
@@ -55,11 +61,11 @@ from agentrank_api.benchmark.failures import (
     FailureReason,
     in_precedence,
 )
+from agentrank_api.benchmark.faults import ExecutionFault, FaultOrigin
 from agentrank_api.benchmark.identity import HASH_ALGORITHM, canonical_json
 from agentrank_api.benchmark.lifecycle import MissionRunStatus
 from agentrank_api.benchmark.observation import (
     CheckoutRefusal,
-    ErrorOrigin,
     ObservedResult,
     ObservedSelection,
 )
@@ -150,6 +156,7 @@ def evaluate_mission(
     *,
     merchant_id: uuid.UUID,
     catalog: CatalogFacts | None = None,
+    fault: ExecutionFault | None = None,
 ) -> MissionEvaluation:
     """Mark one attempt at one mission.
 
@@ -164,6 +171,12 @@ def evaluate_mission(
     happened when it tried to buy it. The result carries every reason found rather than only
     the first, because a mission that got several things wrong is more useful read whole.
 
+    `fault` is what trusted code observed at the tool boundary, and it is a separate parameter
+    for the same reason the catalog facts are: it is evidence this function is given rather than
+    a claim it reads out of the thing it is marking. Absent means nothing failed, and it is the
+    only input that can produce ERRORED or `MERCHANT_API_ERROR`. `observed.error` is the
+    executor's own account of what stopped it, and this function never reads it.
+
     Every return goes through `_evaluated`, which is what makes the fail closed rule impossible
     to forget. A purchase this function could not certify as compliant is reported as an escape
     from every exit, including the two early ones that return before any compliance check has
@@ -174,15 +187,15 @@ def evaluate_mission(
     if observed.merchant_id != merchant_id:
         reasons.add(FailureReason.WRONG_MERCHANT)
 
-    if _harness_failed(observed):
+    if _harness_failed(observed, fault):
         # The harness could not carry the mission out, so nothing it reports about the merchant
         # is evidence about the merchant. Deliberately not FAILED, and deliberately carrying no
         # failure reason: there is no finding here, only a fault. `_harness_failed` is false
         # when a payment succeeded, so this return can never hide a purchase.
         return MissionEvaluation(status=MissionRunStatus.ERRORED, oracle_confirmed=confirmed)
 
-    if observed.error is not None and observed.error.origin is ErrorOrigin.MERCHANT:
-        # Tested for rather than assumed by elimination. A harness error that reaches this line
+    if fault is not None and fault.origin is FaultOrigin.MERCHANT:
+        # Tested for rather than assumed by elimination. A harness fault that reaches this line
         # did so because a payment succeeded, and calling that a merchant API error would
         # fabricate a commerce readiness finding out of our own runner crashing.
         reasons.add(FailureReason.MERCHANT_API_ERROR)
@@ -293,18 +306,18 @@ def _oracle_confirmed(
     return catalog.qualifying_variant_exists is available
 
 
-def _harness_failed(observed: ObservedResult) -> bool:
+def _harness_failed(observed: ObservedResult, fault: ExecutionFault | None) -> bool:
     """Whether this result is a harness fault rather than a measurement.
+
+    Read from the trusted fault and never from the report. An executor cannot put a mission in
+    the one status that carries no failure reason, leaves every rate untouched and counts its
+    authored value as not measured, which is exactly what it would do if it could.
 
     A harness fault after a payment succeeded is not one of these. The purchase happened, and
     reporting ERRORED would throw away the strongest signal this benchmark can produce, which
     is that money moved for something the buyer may not have authorized.
     """
-    return (
-        observed.error is not None
-        and observed.error.origin is ErrorOrigin.HARNESS
-        and not observed.purchased
-    )
+    return fault is not None and fault.origin is FaultOrigin.HARNESS and not observed.purchased
 
 
 def _contradicts_itself(observed: ObservedResult) -> bool:

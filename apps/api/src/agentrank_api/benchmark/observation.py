@@ -9,6 +9,12 @@ It is a report, not a claim of correctness. Nothing here says whether the missio
 and there is deliberately no field that could: that is the evaluator's answer, and an executor
 that could assert its own result would be marking its own work.
 
+Nothing here says whose fault an interruption was either, and that used to be the exception.
+`ObservedError` carried an origin the evaluator classified from, which made "the merchant's API
+failed" and "the harness broke" claims the thing under test could make about itself. Attribution
+now comes from `agentrank_api.benchmark.faults`, decided at the tool boundary from what actually
+happened there.
+
 Each part validates its own shape and the parts do not validate each other. A result claiming a
 payment with no selection behind it, or an abstention alongside a purchase, is a contradiction
 that the evaluator classifies as `AGENT_REASONING_ERROR`. Refusing to construct one would mean
@@ -32,23 +38,6 @@ from typing import Any
 
 from agentrank_api.money import validate_amount_minor, validate_currency
 from agentrank_api.payments.models import PaymentAttemptStatus
-
-
-class ErrorOrigin(StrEnum):
-    """Whose fault an error was, which decides whether it is a finding or a fault.
-
-    MERCHANT
-        A merchant surface returned an error rather than an answer or a business refusal. A
-        commerce readiness finding, and the mission is marked FAILED with MERCHANT_API_ERROR.
-
-    HARNESS
-        The benchmark harness itself could not carry the mission out. Not a fact about the
-        merchant, and the mission is ERRORED rather than FAILED so that a flaky runner cannot
-        look like a bad catalog.
-    """
-
-    MERCHANT = "MERCHANT"
-    HARNESS = "HARNESS"
 
 
 class AbstentionCode(StrEnum):
@@ -203,9 +192,21 @@ class ObservedAbstention:
 
 @dataclass(frozen=True, slots=True)
 class ObservedError:
-    """Something went wrong that was not a business refusal."""
+    """The executor's own account of what stopped it.
 
-    origin: ErrorOrigin
+    Diagnostic only, exactly like `AbstentionCode`, and for the same reason: it is the thing
+    under test describing its own situation. It carries no origin and there is no field here
+    that could become one. Whether an interruption was the merchant's or the harness's is
+    decided from what happened at the tool boundary, by `agentrank_api.benchmark.tools`, and it
+    reaches the evaluator as a separate trusted input rather than inside this report.
+
+    That was not always so, and the change is the point. `ErrorOrigin` used to be a field on this
+    class, so an executor that returned HARNESS rather than letting a merchant refusal stand was
+    marked ERRORED with no failure reason and had its authored value counted as not measured
+    rather than as lost. Claiming MERCHANT is the same trick pointed the other way. Both are one
+    line changes and neither is possible now.
+    """
+
     detail: str
 
     def __post_init__(self) -> None:
