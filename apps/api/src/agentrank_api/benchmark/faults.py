@@ -18,20 +18,34 @@ So the origin is decided by whatever holds the tool boundary, from what actually
 and the rule is deliberately the one an HTTP transport can also apply:
 
 ```text
-404 or 409, NotFoundError or ConflictError   a business answer. Not a fault at all
-401, AuthenticationError                     HARNESS. Our credential, our problem
-502, UpstreamError                           MERCHANT. Its dependency did not answer
-5xx, anything else raised inside a call      MERCHANT. The surface failed rather than answered
-transport error, timeout, unreadable body    MERCHANT. The surface did not answer
-worker died, protocol violation, our bug     HARNESS
+404 or 409 naming the merchant's own catalog     a business answer. Not a fault at all
+404 or 409 about state this caller created       HARNESS. Our mandate, our quote, our problem
+401, AuthenticationError                         HARNESS. Our credential, our problem
+502, UpstreamError                               MERCHANT. Its dependency did not answer
+5xx, anything else raised inside a call          MERCHANT. The surface failed rather than answered
+transport error, timeout, unreadable body        MERCHANT. The surface did not answer
+worker died, protocol violation, our bug         HARNESS
 ```
 
-The first line is what makes the rest workable. A merchant refusing to quote for a variant it
-does not sell is an answer and is measured as one, so a boundary that recorded every refusal as
-a fault would report a commerce finding for every ordinary "no".
+The first two lines are what make the rest workable, and the split between them is read off the
+merchant's own machine readable codes rather than off the status. A merchant refusing to quote
+for a variant it does not sell is an answer and is measured as one, so a boundary that recorded
+every refusal as a fault would report a commerce finding for every ordinary "no". A mandate this
+execution created moments ago having vanished is not an answer about anything, and calling it one
+publishes a reasoning failure against a buyer whose own harness broke.
+
+The sets below are the whole of that rule, as data. Anything not named in them is the caller's
+own state, which is the fail closed direction: a refusal nobody has classified is not evidence
+about a merchant.
 
 A future model saying "the merchant API failed" is text. It is not evidence that the merchant API
-failed, and nothing in this module can be reached by writing that sentence.
+failed, and there is no field on an `ObservedResult` for that sentence to be recorded in.
+
+Where the decision is made is not the same question as whether it can be tampered with, and the
+two are worth keeping apart. In process, the executor holds a surface that refers to the ledger
+these origins are read out of, so the guarantee is that it does not decide the origin rather than
+that it could not reach the record. Out of process it cannot reach either. That is why an
+untrusted executor runs in another process, and why this module says which of the two it is.
 """
 
 from dataclasses import dataclass
@@ -54,6 +68,32 @@ class FaultOrigin(StrEnum):
 
     MERCHANT = "MERCHANT"
     HARNESS = "HARNESS"
+
+
+# Which refusals are the merchant answering about its own catalog, and which are the caller
+# finding its own state wrong. Both are 404s and 409s, so the status alone cannot separate them,
+# and the separation matters: a merchant declining to quote for something it does not sell is a
+# measurement, and a mandate this execution created a second ago having vanished is not.
+#
+# Read off the merchant's own machine readable codes rather than off the executor's account, so
+# the rule is trusted evidence and works identically over HTTP, where the same codes arrive in
+# the error body. Anything not named here is the caller's own state, which is the fail closed
+# direction: a refusal nobody has classified is not evidence about a merchant.
+CATALOG_RESOURCES = frozenset({"product", "variant"})
+
+CATALOG_REFUSALS = frozenset(
+    {
+        "insufficient_inventory",
+        "variant_inactive",
+        "product_inactive",
+        "mixed_currencies",
+    }
+)
+
+# The one payment admission refusal that is the buyer's own authorization saying no, which is the
+# safety layer working and a finding rather than a fault. Every other admission refusal is about
+# a mandate, a quote or a hold this execution created moments ago.
+AUTHORIZATION_REFUSALS = frozenset({"payment_not_authorized"})
 
 
 @dataclass(frozen=True, slots=True)

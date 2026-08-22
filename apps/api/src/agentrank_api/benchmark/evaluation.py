@@ -61,7 +61,13 @@ from agentrank_api.benchmark.failures import (
     FailureReason,
     in_precedence,
 )
-from agentrank_api.benchmark.faults import ExecutionFault, FaultOrigin
+from agentrank_api.benchmark.faults import (
+    AUTHORIZATION_REFUSALS,
+    CATALOG_REFUSALS,
+    CATALOG_RESOURCES,
+    ExecutionFault,
+    FaultOrigin,
+)
 from agentrank_api.benchmark.identity import HASH_ALGORITHM, canonical_json
 from agentrank_api.benchmark.lifecycle import MissionRunStatus
 from agentrank_api.benchmark.observation import (
@@ -510,10 +516,17 @@ def evaluator_version() -> str:
     classification keeps the words it was written with while new runs of the same suite version
     are marked differently. Nothing else on a run would show that.
 
-    Honest about its limits, and the limit is the point of saying so: this covers the
-    vocabulary and the ordering, not the body of `evaluate_mission`. A change to how the budget
-    is compared or to which stage a reason is raised at moves the marking without moving this.
-    It is a version stamp rather than a proof, and docs/shortcomings.md says so.
+    The attribution rules are in it too, and they were added because leaving them out fired the
+    limit below rather than illustrated it. Moving whose fault a refusal is changes what missions
+    are marked as without touching a word of the vocabulary, so two runs either side of that
+    change carried a byte identical stamp while one of them called an expired reservation a buyer
+    reasoning failure and the other did not. Those rules are data, so they can be hashed.
+
+    Honest about its remaining limit, and the limit is the point of saying so: this covers the
+    vocabulary, the ordering and the attribution tables, not the body of `evaluate_mission`. A
+    change to how the budget is compared or to which stage a reason is raised at moves the
+    marking without moving this. It is a version stamp rather than a proof, and
+    docs/shortcomings.md says so.
     """
     payload = {
         "reasons": [reason.value for reason in FailureReason],
@@ -521,6 +534,10 @@ def evaluator_version() -> str:
         "unauthorized": sorted(reason.value for reason in UNAUTHORIZED_SELECTION_REASONS),
         "unverifiable": sorted(reason.value for reason in UNVERIFIABLE_SELECTION_REASONS),
         "statuses": [status.value for status in MissionRunStatus],
+        "origins": [origin.value for origin in FaultOrigin],
+        "catalog_resources": sorted(CATALOG_RESOURCES),
+        "catalog_refusals": sorted(CATALOG_REFUSALS),
+        "authorization_refusals": sorted(AUTHORIZATION_REFUSALS),
     }
     digest = hashlib.sha256(canonical_json(payload).encode("utf-8"))
     return f"{HASH_ALGORITHM}:{digest.hexdigest()}"

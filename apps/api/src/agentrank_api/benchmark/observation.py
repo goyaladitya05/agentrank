@@ -203,8 +203,12 @@ class ObservedError:
     That was not always so, and the change is the point. `ErrorOrigin` used to be a field on this
     class, so an executor that returned HARNESS rather than letting a merchant refusal stand was
     marked ERRORED with no failure reason and had its authored value counted as not measured
-    rather than as lost. Claiming MERCHANT is the same trick pointed the other way. Both are one
-    line changes and neither is possible now.
+    rather than as lost. Claiming MERCHANT is the same trick pointed the other way.
+
+    What is closed is that there is no longer a field to write either claim in. What that is not
+    is a boundary on its own: an in process executor holds the surface that refers to the ledger
+    and can reach it, which is a convention rather than a guarantee and is why an untrusted
+    executor runs in another process. See docs/shortcomings.md.
     """
 
     detail: str

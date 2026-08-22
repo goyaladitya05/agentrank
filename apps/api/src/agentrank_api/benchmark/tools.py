@@ -5,10 +5,15 @@ the one place where what actually happened is observable by somebody other than 
 this module is what stands there: a decorator that answers exactly what the surface answered,
 records what came back, and decides an origin when a call failed.
 
-Trusted means it runs on the runner's side of whatever boundary the executor is behind. In
-process it is a wrapper the operator command line builds, which is trusted because the executor
-beside it is. Out of process the same job belongs to whatever supervises the worker, and the
-worker can reach neither the ledger nor this module.
+Trusted means it runs on the runner's side of whatever boundary the executor is behind, and in
+process that is a statement about who wrote the executor rather than about what it could reach.
+The surface an executor holds refers to the ledger, so an in process one can clear it with one
+attribute access; no arrangement of private names in Python changes that. What this does
+guarantee, on both paths, is that the executor does not decide the origin.
+
+The boundary that does not rest on that is a process. An out of process executor is watched by
+the server side record in `agentrank_api.benchmark.endpoint`, which nothing it can reach refers
+to, and it has no route to this module at all.
 
 Three outcomes and the middle one is the load bearing distinction:
 
@@ -19,9 +24,13 @@ FAILED     the merchant surface did not answer, or the harness could not ask
 ```
 
 Collapsing REFUSED into FAILED would report a commerce readiness finding every time a merchant
-declined to quote for something it does not sell, which is most of what a benchmark measures. It
-is the same line an HTTP transport draws between a 4xx that names a reason and a 5xx, which is
-why an out of process buyer can apply it without any of this code.
+declined to quote for something it does not sell, which is most of what a benchmark measures.
+Collapsing the other way is the mistake that was made first: a 404 for a mandate this execution
+created moments ago is not an answer about a merchant, and recording it as one published a
+reasoning failure against a buyer whose own harness had broken. Which refusals are the merchant's
+own catalog answering is written down as data in `agentrank_api.benchmark.faults`, read off the
+merchant's machine readable codes, and identical over HTTP where the same codes arrive in the
+error body.
 
 `ExecutionWitness` is what the runner asks. It is deliberately narrow: whether a fault occurred
 and whether a payment was ever attempted, both from evidence, and nothing about what was bought.
@@ -37,7 +46,13 @@ from enum import StrEnum
 from typing import Protocol
 
 from agentrank_api.benchmark.buyer import BuyerCommerceSurface
-from agentrank_api.benchmark.faults import ExecutionFault, FaultOrigin
+from agentrank_api.benchmark.faults import (
+    AUTHORIZATION_REFUSALS,
+    CATALOG_REFUSALS,
+    CATALOG_RESOURCES,
+    ExecutionFault,
+    FaultOrigin,
+)
 from agentrank_api.checkout.schemas import (
     CheckoutView,
     CreateCheckoutRequest,
@@ -131,9 +146,17 @@ class ExecutionWitness(Protocol):
 class ToolLedger:
     """Every buyer call one mission made, recorded where the executor cannot reach it.
 
-    Held by the trusted side and handed to the runner as the witness. An executor is given the
-    surface that writes to this and never the ledger itself, so there is no method it can call
-    to add a call that did not happen or to remove one that did.
+    Held by the trusted side and handed to the runner as the witness. In process that is a
+    convention rather than a boundary, and the difference is worth stating plainly: the surface
+    the executor holds refers to this, so an in process executor can reach it with one attribute
+    access and clear it. An independent review found exactly that, and Python offers no
+    arrangement of private names that would change it.
+
+    What makes it a boundary is where the executor is. An out of process one is watched by the
+    server side record in `agentrank_api.benchmark.endpoint`, which nothing it can reach refers
+    to at all. This class is for the trusted in process path, and what it guarantees is that the
+    executor does not decide the origin, not that it could not tamper with the record. See
+    docs/shortcomings.md.
 
     The fault reported is the first FAILED call rather than the last. An executor stops at its
     first refusal, so the first failure is the one that ended the mission, and reporting a later
@@ -204,40 +227,52 @@ class MeasuredBuyerSurface:
         return self._inner.merchant_id
 
     async def search_products(self, request: ProductSearchRequest) -> ProductSearchResponse:
+        _given(BuyerOperation.SEARCH_PRODUCTS, request, ProductSearchRequest)
         with self._watching(BuyerOperation.SEARCH_PRODUCTS):
             return await self._inner.search_products(request)
 
     async def get_product(self, product_id: uuid.UUID) -> ProductDetail:
+        _given(BuyerOperation.GET_PRODUCT, product_id, uuid.UUID)
         with self._watching(BuyerOperation.GET_PRODUCT):
             return await self._inner.get_product(product_id)
 
     async def authorize_spending(self, request: CreateMandateRequest) -> MandateView:
+        _given(BuyerOperation.AUTHORIZE_SPENDING, request, CreateMandateRequest)
         with self._watching(BuyerOperation.AUTHORIZE_SPENDING):
             return await self._inner.authorize_spending(request)
 
     async def state_requirements(
         self, mandate_id: uuid.UUID, request: CreateIntentConstraintsRequest
     ) -> IntentConstraintSetView:
+        _given(BuyerOperation.STATE_REQUIREMENTS, mandate_id, uuid.UUID)
+        _given(BuyerOperation.STATE_REQUIREMENTS, request, CreateIntentConstraintsRequest)
         with self._watching(BuyerOperation.STATE_REQUIREMENTS):
             return await self._inner.state_requirements(mandate_id, request)
 
     async def create_checkout(self, request: CreateCheckoutRequest) -> CheckoutView:
+        _given(BuyerOperation.CREATE_CHECKOUT, request, CreateCheckoutRequest)
         with self._watching(BuyerOperation.CREATE_CHECKOUT):
             return await self._inner.create_checkout(request)
 
     async def get_checkout(self, checkout_id: uuid.UUID) -> CheckoutView:
+        _given(BuyerOperation.GET_CHECKOUT, checkout_id, uuid.UUID)
         with self._watching(BuyerOperation.GET_CHECKOUT):
             return await self._inner.get_checkout(checkout_id)
 
     async def prepare_checkout(self, checkout_id: uuid.UUID) -> ExecutionPreparationView:
+        _given(BuyerOperation.PREPARE_CHECKOUT, checkout_id, uuid.UUID)
         with self._watching(BuyerOperation.PREPARE_CHECKOUT):
             return await self._inner.prepare_checkout(checkout_id)
 
     async def complete_checkout(
         self, checkout_id: uuid.UUID, request: CreatePaymentRequest
     ) -> PaymentView:
+        _given(BuyerOperation.COMPLETE_CHECKOUT, checkout_id, uuid.UUID)
+        _given(BuyerOperation.COMPLETE_CHECKOUT, request, CreatePaymentRequest)
         with self._watching(BuyerOperation.COMPLETE_CHECKOUT):
-            return await self._inner.complete_checkout(checkout_id, request)
+            paid = await self._inner.complete_checkout(checkout_id, request)
+        self._ledger.record(_admission(paid))
+        return paid
 
     @contextmanager
     def _watching(self, operation: BuyerOperation) -> Iterator[None]:
@@ -288,11 +323,92 @@ class MeasuredBuyerSurface:
             self._ledger.record(ToolCall(operation=operation, outcome=ToolOutcome.ANSWERED))
 
 
-def _refusal(operation: BuyerOperation, refused: NotFoundError | ConflictError) -> ToolCall:
-    """One business answer, with the machine readable code the merchant gave for it."""
-    detail = (
-        refused.reason
-        if isinstance(refused, ConflictError)
-        else f"{refused.resource} was not found"
+class BuyerArgumentError(TypeError):
+    """A caller handed this boundary something that is not the argument the operation takes.
+
+    Its own class, and raised outside the watched scope, which is the point rather than a
+    nicety. The surface's own code runs the argument: `MerchantBuyerSurface.search_products`
+    calls `request.to_criteria(...)` on whatever it is given. An executor passing an object
+    whose method raises could therefore choose which exception was observed inside the boundary,
+    and with it which origin was attributed, which is the whole thing this benchmark had just
+    moved out of its reach. Found by an independent review.
+
+    So the type is checked before anything is watched. What comes back is neither an answer nor
+    a fault: it is a caller that cannot call, and it propagates.
+    """
+
+    def __init__(self, operation: BuyerOperation, expected: type, given: object) -> None:
+        super().__init__(
+            f"{operation.value} takes {expected.__name__} and was given {type(given).__name__}"
+        )
+        self.operation = operation
+
+
+def _given(operation: BuyerOperation, value: object, expected: type) -> None:
+    """Refuse an argument that is not what the operation takes, before anything is recorded.
+
+    An exact isinstance check, so a subclass is accepted and a duck typed stand in is not. That
+    asymmetry is deliberate: a subclass of a Pydantic model has been through the model's own
+    validation, and an object that merely has the right method names has not been through
+    anything and can run code of its own inside the boundary.
+    """
+    if not isinstance(value, expected):
+        raise BuyerArgumentError(operation, expected, value)
+
+
+def _admission(paid: PaymentView) -> ToolCall:
+    """What a payment answer means when no attempt was admitted.
+
+    A payment the authorization gates denied is the safety layer working and is a finding: it is
+    recorded as an answer and the evaluator marks it `MANDATE_DENIED` from the authorization the
+    executor reports. Every other admission refusal is about a mandate, a quote or a hold this
+    execution created moments ago, so it says the caller's own state is wrong.
+
+    Read off the merchant's own answer by trusted code rather than out of the executor's report,
+    which is what makes it attribution rather than a self report. Before this existed, an
+    expired reservation on a slow machine was published as a buyer reasoning failure and as lost
+    demand against the merchant.
+    """
+    if paid.admitted or paid.refusal is None:
+        return ToolCall(operation=BuyerOperation.COMPLETE_CHECKOUT, outcome=ToolOutcome.ANSWERED)
+    if paid.refusal.value in AUTHORIZATION_REFUSALS:
+        return ToolCall(
+            operation=BuyerOperation.COMPLETE_CHECKOUT,
+            outcome=ToolOutcome.REFUSED,
+            detail=paid.refusal.value,
+        )
+    return ToolCall(
+        operation=BuyerOperation.COMPLETE_CHECKOUT,
+        outcome=ToolOutcome.FAILED,
+        detail=paid.refusal.value,
+        origin=FaultOrigin.HARNESS,
     )
-    return ToolCall(operation=operation, outcome=ToolOutcome.REFUSED, detail=detail)
+
+
+def _refusal(operation: BuyerOperation, refused: NotFoundError | ConflictError) -> ToolCall:
+    """A refusal, as either the merchant's answer or this caller's own state being wrong.
+
+    Both arrive as a 404 or a 409, so the status cannot separate them and the merchant's own
+    machine readable code is what does. A variant the merchant does not sell is an answer and is
+    measured as one. A mandate this execution created moments ago having vanished is not an
+    answer about anything, and recording it as one publishes a reasoning failure against a buyer
+    whose harness broke, which is what happened before this split existed.
+
+    Anything unclassified is the caller's own state. That is the fail closed direction: a refusal
+    nobody has placed in `CATALOG_REFUSALS` is not evidence about a merchant.
+    """
+    if isinstance(refused, ConflictError):
+        answered = refused.reason in CATALOG_REFUSALS
+        detail = refused.reason
+    else:
+        answered = refused.resource in CATALOG_RESOURCES
+        detail = f"{refused.resource} was not found"
+
+    if answered:
+        return ToolCall(operation=operation, outcome=ToolOutcome.REFUSED, detail=detail)
+    return ToolCall(
+        operation=operation,
+        outcome=ToolOutcome.FAILED,
+        detail=detail,
+        origin=FaultOrigin.HARNESS,
+    )

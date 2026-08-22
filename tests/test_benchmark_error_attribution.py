@@ -19,10 +19,12 @@ import uuid
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from agentrank_api.benchmark import evaluation
 from agentrank_api.benchmark.buyer import MerchantBuyerSurface
 from agentrank_api.benchmark.definitions import (
     AgentMissionBrief,
@@ -32,9 +34,14 @@ from agentrank_api.benchmark.definitions import (
     MissionOracle,
 )
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
-from agentrank_api.benchmark.evaluation import evaluate_mission
+from agentrank_api.benchmark.evaluation import evaluate_mission, evaluator_version
 from agentrank_api.benchmark.failures import FailureReason
-from agentrank_api.benchmark.faults import ExecutionFault, FaultOrigin
+from agentrank_api.benchmark.faults import (
+    CATALOG_REFUSALS,
+    CATALOG_RESOURCES,
+    ExecutionFault,
+    FaultOrigin,
+)
 from agentrank_api.benchmark.fixtures import BenchmarkFixture
 from agentrank_api.benchmark.lifecycle import MissionRunStatus
 from agentrank_api.benchmark.observation import ObservedError, ObservedResult
@@ -42,6 +49,7 @@ from agentrank_api.benchmark.reference_executor import ReferenceMissionExecutor
 from agentrank_api.benchmark.runner import BenchmarkRunService
 from agentrank_api.benchmark.suites import BenchmarkSuiteService
 from agentrank_api.benchmark.tools import (
+    BuyerArgumentError,
     BuyerOperation,
     MeasuredBuyerSurface,
     ToolCall,
@@ -52,6 +60,7 @@ from agentrank_api.commerce.catalog_fixture import SeedProduct, SeedVariant
 from agentrank_api.constraints.rules import ConstraintOperator
 from agentrank_api.errors import AuthenticationError, ConflictError, NotFoundError, UpstreamError
 from agentrank_api.mandates.intent import AllowedCategory, MaxTotalAmount, RequiredAttribute
+from agentrank_api.payments.admission import AdmissionRefusal
 from agentrank_api.payments.fake import FakePaymentProvider
 
 pytestmark = pytest.mark.anyio
@@ -458,3 +467,181 @@ def test_an_executor_cannot_name_the_thing_that_attributes_its_faults(module: Mo
         "agentrank_api.benchmark.tools",
     }
     assert spelled & forbidden == set()
+
+
+# What the executor cannot make the boundary say.
+
+
+async def test_an_executor_cannot_choose_which_exception_the_boundary_observes(
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """The forged origin, found by an independent review and closed here.
+
+    The surface's own code runs the argument: `MerchantBuyerSurface.search_products` calls
+    `request.to_criteria(...)` on whatever it is handed. An executor passing an object whose
+    method raises `AuthenticationError` therefore chose which origin was attributed, and HARNESS
+    is the flattering one: ERRORED carries no failure reason and moves the mission's value out of
+    lost demand.
+
+    The argument is type checked before anything is watched, so the refusal is a caller that
+    cannot call rather than a fault about anybody.
+    """
+    merchant_id = await prepared(session)
+    ledger = ToolLedger()
+    surface = MeasuredBuyerSurface(
+        MerchantBuyerSurface(factory, merchant_id=merchant_id, provider=FakePaymentProvider()),
+        ledger,
+    )
+
+    class Trap:
+        limit = 10
+
+        def to_criteria(self, merchant: uuid.UUID) -> object:
+            raise AuthenticationError
+
+    with pytest.raises(BuyerArgumentError):
+        await surface.search_products(Trap())  # type: ignore[arg-type]
+
+    assert ledger.calls == ()
+    assert ledger.fault() is None
+
+
+async def test_a_hallucinated_identifier_is_not_a_merchant_fault_either(
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """The same hole through the other door.
+
+    A string where an identifier belongs reached SQLAlchemy and came back as an exception
+    nothing modelled, which the boundary attributed to the merchant. That fabricates a commerce
+    readiness finding out of a caller that cannot call.
+    """
+    merchant_id = await prepared(session)
+    ledger = ToolLedger()
+    surface = MeasuredBuyerSurface(
+        MerchantBuyerSurface(factory, merchant_id=merchant_id, provider=FakePaymentProvider()),
+        ledger,
+    )
+
+    with pytest.raises(BuyerArgumentError):
+        await surface.get_product("not-a-uuid")  # type: ignore[arg-type]
+
+    assert ledger.fault() is None
+
+
+# Which refusals are answers.
+
+
+def test_a_catalog_refusal_is_an_answer_and_anything_else_is_this_callers_own_state() -> None:
+    """The split, as data rather than as a status code.
+
+    Both arrive as a 404 or a 409, so the status cannot separate them. A variant the merchant
+    does not sell is a measurement; a mandate this execution created moments ago having vanished
+    is the harness in a state it should not be in, and marking that as a buyer reasoning failure
+    is what happened before the split existed.
+    """
+    assert "variant" in CATALOG_RESOURCES
+    assert "product" in CATALOG_RESOURCES
+    assert "mandate" not in CATALOG_RESOURCES
+    assert "checkout" not in CATALOG_RESOURCES
+    assert "insufficient_inventory" in CATALOG_REFUSALS
+    assert "mandate_already_consumed" not in CATALOG_REFUSALS
+
+
+async def test_a_missing_mandate_is_attributed_to_the_harness_rather_than_measured(
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """A mandate this execution created a second ago cannot be a fact about the merchant."""
+
+    class MandateVanished(MerchantBuyerSurface):
+        async def create_checkout(self, request: Any) -> Any:
+            raise NotFoundError("mandate", str(uuid.uuid7()))
+
+    ledger, executor, merchant_id = await watched(session, factory, MandateVanished)
+
+    await executor(mission_brief(), merchant_id=merchant_id)
+
+    fault = ledger.fault()
+    assert fault is not None
+    assert fault.origin is FaultOrigin.HARNESS
+
+
+async def test_an_admission_refusal_that_is_not_a_denial_is_the_harnesss(
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """Read off the merchant's own answer, by trusted code, and not out of the report.
+
+    An expired reservation is wall clock dependent, so before this the same suite on a slow
+    machine published one more buyer reasoning failure and up to a mission's whole authored
+    value as demand the merchant lost. Nothing about that was a fact about the merchant.
+    """
+    merchant_id = await prepared(session)
+    ledger = ToolLedger()
+
+    class Consumed(MerchantBuyerSurface):
+        async def complete_checkout(self, checkout_id: uuid.UUID, request: Any) -> Any:
+            paid = await super().complete_checkout(checkout_id, request)
+            return paid.model_copy(
+                update={
+                    "admitted": False,
+                    "created": False,
+                    "refusal": AdmissionRefusal.MANDATE_ALREADY_CONSUMED,
+                    "attempt": None,
+                }
+            )
+
+    surface = MeasuredBuyerSurface(
+        Consumed(factory, merchant_id=merchant_id, provider=FakePaymentProvider()), ledger
+    )
+    await ReferenceMissionExecutor(surface)(mission_brief(), merchant_id=merchant_id)
+
+    fault = ledger.fault()
+    assert fault is not None
+    assert fault.origin is FaultOrigin.HARNESS
+    assert fault.detail == AdmissionRefusal.MANDATE_ALREADY_CONSUMED.value
+
+
+async def test_an_authorization_denial_stays_a_finding_rather_than_a_fault(
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """The one admission refusal that is the safety layer working.
+
+    A benchmark that recorded this as a harness fault would stop measuring the thing it most
+    exists to measure, which is what happens when a buyer is refused.
+    """
+    merchant_id = await prepared(session)
+    ledger = ToolLedger()
+
+    class Denied(MerchantBuyerSurface):
+        async def complete_checkout(self, checkout_id: uuid.UUID, request: Any) -> Any:
+            paid = await super().complete_checkout(checkout_id, request)
+            return paid.model_copy(
+                update={
+                    "admitted": False,
+                    "created": False,
+                    "refusal": AdmissionRefusal.NOT_AUTHORIZED,
+                    "attempt": None,
+                }
+            )
+
+    surface = MeasuredBuyerSurface(
+        Denied(factory, merchant_id=merchant_id, provider=FakePaymentProvider()), ledger
+    )
+    await ReferenceMissionExecutor(surface)(mission_brief(), merchant_id=merchant_id)
+
+    assert ledger.fault() is None
+
+
+def test_the_evaluator_stamp_moves_when_the_attribution_rules_do() -> None:
+    """A marking change with an unchanged stamp is two runs compared as though they were one.
+
+    That is not hypothetical: moving whose fault a refusal is changed what missions were marked
+    as without touching a word of the failure vocabulary, and the stamp did not move.
+    """
+    before = evaluator_version()
+
+    # Patched where the digest reads it rather than where it is declared, because the stamp is
+    # what has to move and a `from` import binds a second name.
+    with patch.object(evaluation, "CATALOG_REFUSALS", frozenset({"something-else"})):
+        after = evaluator_version()
+
+    assert before != after
