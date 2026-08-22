@@ -478,6 +478,16 @@ class BenchmarkRun(Base):
         CheckConstraint(
             "executor_version IS NULL OR executor_version > 0", name="executor_version_positive"
         ),
+        # A revision without a kind names nothing, and a kind without a revision is the ordinary
+        # case: an executor may have no derivable one, and a run may predate the column.
+        CheckConstraint(
+            "executor_revision IS NULL OR executor_kind IS NOT NULL",
+            name="executor_revision_needs_a_kind",
+        ),
+        CheckConstraint(
+            f"executor_revision IS NULL OR executor_revision ~ '{HASH_PATTERN}'",
+            name="executor_revision_format",
+        ),
         # A run that has not started has no start instant, and one that has finished has both.
         CheckConstraint("(status = 'PENDING') = (started_at IS NULL)", name="started_at_matches"),
         CheckConstraint(
@@ -555,6 +565,11 @@ class BenchmarkRun(Base):
     # column for one would be a guess at the shape of an agent that has not been built.
     executor_kind: Mapped[str | None] = mapped_column(String(MAX_KEY_LENGTH), nullable=True)
     executor_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # What the declaration cannot do. A version is a promise a person keeps, and this moves
+    # whether or not anybody remembers to, so a run produced by edited code is distinguishable
+    # from one produced before the edit. It says two runs came from different code and never
+    # that the behavior changed, which is why the declared version stays beside it.
+    executor_revision: Mapped[str | None] = mapped_column(String(HASH_LENGTH), nullable=True)
     # No server default, for the same reason as everywhere else in this schema: an insert that
     # does not state a status is a bug.
     status: Mapped[BenchmarkRunStatus] = mapped_column(BENCHMARK_RUN_STATUS, nullable=False)

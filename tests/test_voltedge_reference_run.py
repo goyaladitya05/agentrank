@@ -35,8 +35,12 @@ from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
 from agentrank_api.benchmark.evaluation import evaluator_version
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
 from agentrank_api.benchmark.observation import AbstentionCode
-from agentrank_api.benchmark.reference_executor import ReferenceMissionExecutor
+from agentrank_api.benchmark.reference_executor import (
+    REFERENCE_EXECUTOR,
+    ReferenceMissionExecutor,
+)
 from agentrank_api.benchmark.runner import BenchmarkRunService
+from agentrank_api.benchmark.tools import MeasuredBuyerSurface, ToolLedger
 from agentrank_api.benchmark.voltedge import (
     CURRENCY,
     FIXTURE,
@@ -254,12 +258,19 @@ async def executed(session: AsyncSession, factory: async_sessionmaker[AsyncSessi
     prepared, _ = await seed_voltedge(session)
     merchant_id = prepared.environment.merchant_id
     provider = FakePaymentProvider()
-    surface = MerchantBuyerSurface(factory, merchant_id=merchant_id, provider=provider)
+    # The measured surface and the ledger, because that is what the operator command builds. A
+    # pin produced without the boundary that decides attribution would leave the whole of it
+    # untested by the one test written to catch a runner and an evaluator wrong together.
+    ledger = ToolLedger()
+    surface = MeasuredBuyerSurface(
+        MerchantBuyerSurface(factory, merchant_id=merchant_id, provider=provider), ledger
+    )
     finished = await BenchmarkRunService(session).run_suite(
         ReferenceMissionExecutor(surface),
         suite_key=SUITE_KEY,
         suite_version=SUITE_VERSION,
         fixture=FIXTURE,
+        witness=ledger,
         representation_label="baseline",
     )
     return Reference(merchant_id=merchant_id, run_id=finished.id, provider=provider)
@@ -636,3 +647,38 @@ async def test_the_run_is_against_the_registered_voltedge_world(
     assert loaded.executor_kind == "reference"
     assert loaded.executor_version == 1
     assert loaded.representation_label == "baseline"
+
+
+def test_the_marking_rules_this_result_was_produced_under_are_pinned() -> None:
+    """A literal, so a change to how missions are marked turns this red and forces a decision.
+
+    Every other pin in this file is written out by hand for the same reason. Comparing the run's
+    stamp against `evaluator_version()` proves the run recorded what the function returned and
+    nothing about whether that function still returns what it did when these fourteen answers
+    were derived.
+
+    A change to the failure vocabulary, the precedence order, either safety set or the
+    attribution tables moves this. That is the point: none of them can move without somebody
+    saying whether the fourteen answers below still hold.
+    """
+    assert evaluator_version() == (
+        "sha256:11172beb797f89eddd5418e949043900124a54c93a357e81fcbd900a8298c95c"
+    )
+
+
+async def test_the_run_records_the_revision_of_the_code_that_produced_it(
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """The digest beside the declared version, so a silent edit is detectable afterwards.
+
+    `reference-v1` is a promise a person keeps. This moves whether or not anybody remembered to,
+    which is what makes two runs of one suite produced by different code distinguishable.
+    """
+    reference = await executed(session, factory)
+    loaded = await BenchmarkRunService(session).load(
+        reference.run_id, merchant_id=reference.merchant_id
+    )
+
+    assert loaded.executor_kind == "reference"
+    assert loaded.executor_version == 1
+    assert loaded.executor_revision == REFERENCE_EXECUTOR.revision

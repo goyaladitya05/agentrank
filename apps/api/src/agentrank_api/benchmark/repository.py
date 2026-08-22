@@ -261,6 +261,7 @@ class BenchmarkRunRepository:
             environment_id=None if environment is None else environment.id,
             executor_kind=None if executor is None else executor.kind,
             executor_version=None if executor is None else executor.version,
+            executor_revision=None if executor is None else executor.revision,
             representation_label=representation_label,
             catalog_hash=catalog_hash,
             evaluator_version=evaluator_version,

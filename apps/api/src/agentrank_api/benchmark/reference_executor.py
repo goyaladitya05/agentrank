@@ -38,6 +38,7 @@ and a soft preference silently promoted to a hard rule is exactly the mistake th
 exists to prevent.
 """
 
+import sys
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -46,7 +47,7 @@ from typing import Any
 
 from agentrank_api.benchmark.buyer import BuyerCommerceSurface
 from agentrank_api.benchmark.definitions import AgentMissionBrief
-from agentrank_api.benchmark.execution import ExecutorIdentity
+from agentrank_api.benchmark.execution import ExecutorIdentity, implementation_revision
 from agentrank_api.benchmark.observation import (
     AbstentionCode,
     CheckoutRefusal,
@@ -92,7 +93,19 @@ from agentrank_api.mandates.schemas import (
 )
 from agentrank_api.payments.schemas import AdmissionRefusal, CreatePaymentRequest
 
-REFERENCE_EXECUTOR = ExecutorIdentity(kind="reference", version=1)
+
+def _revision() -> str:
+    """This module's own source, digested, so an edit to it is visible on every later run.
+
+    Resolved through `sys.modules` rather than by importing this module into itself, which is
+    what lets it be computed at import time. It covers the selection rule, the candidate
+    assessment and the abstention rule, which are all here; it does not cover the shared
+    comparison vocabulary they call into. See docs/shortcomings.md.
+    """
+    return implementation_revision(sys.modules[__name__])
+
+
+REFERENCE_EXECUTOR = ExecutorIdentity(kind="reference", version=1, revision=_revision())
 
 # How long the buyer authorizes spending for. Long enough that quoting, holding stock and paying
 # cannot lapse mid mission on a slow machine, short enough that a mission which stops leaves

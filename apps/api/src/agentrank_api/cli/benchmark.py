@@ -421,6 +421,7 @@ def _run_json(
         "suite": suite,
         "environment": environment,
         "executor": loaded.executor_label,
+        "executor_revision": loaded.executor_revision,
         "catalog_hash": loaded.catalog_hash,
         "evaluator_version": loaded.evaluator_version,
         "representation_label": loaded.representation_label,
@@ -487,6 +488,10 @@ def _render(
     """
     print(f"run         {loaded.id}", file=out)
     print(f"executor    {loaded.executor_label or MISSING}   {DISCLAIMER}", file=out)
+    # The digest beside the declared version, because a version is a promise a person keeps and
+    # this moves whether or not anybody remembered to. It says two runs came from different code
+    # and never that the behavior changed.
+    print(f"revision    {loaded.executor_revision or MISSING}", file=out)
     print(f"status      {loaded.status.value}", file=out)
     print(f"suite       {suite}", file=out)
     print(f"world       {environment or MISSING}", file=out)

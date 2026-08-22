@@ -14,6 +14,7 @@ kernel, so a test that passes is evidence about the system rather than about a m
 import ast
 import importlib
 import inspect
+import sys
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -28,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from agentrank_api.benchmark.buyer import MerchantBuyerSurface
 from agentrank_api.benchmark.definitions import AgentMissionBrief
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
+from agentrank_api.benchmark.execution import ExecutorIdentity, implementation_revision
 from agentrank_api.benchmark.fixtures import BenchmarkFixture
 from agentrank_api.benchmark.observation import (
     AbstentionCode,
@@ -318,6 +320,44 @@ def test_the_executor_is_called_with_a_brief_and_a_merchant_and_nothing_else() -
 
     assert list(signature.parameters) == ["self", "brief", "merchant_id"]
     assert signature.parameters["brief"].annotation is AgentMissionBrief
+
+
+def test_an_executor_records_a_revision_that_moves_on_its_own() -> None:
+    """What the declared version cannot do.
+
+    A version is a promise a person keeps, and the failure it cannot catch is the one nobody
+    meant: edit how a candidate is selected, leave the number alone, and every later run stamps
+    `reference-v1` while buying something different. The digest is computed from source, so it
+    moves whether or not anybody remembers to.
+    """
+    assert REFERENCE_EXECUTOR.revision is not None
+    assert REFERENCE_EXECUTOR.revision.startswith("sha256:")
+
+    edited = implementation_revision(sys.modules["agentrank_api.benchmark.definitions"])
+
+    assert edited != REFERENCE_EXECUTOR.revision
+
+
+def test_a_revision_covers_the_module_that_decides_the_selection() -> None:
+    """Asserted against the source rather than against the constant, so the digest is checkable.
+
+    The point of the test is that a reader can reproduce the value. A digest nobody can recompute
+    is a digest nobody can check, which is the same failure as a version nobody bumps.
+    """
+    recomputed = implementation_revision(sys.modules["agentrank_api.benchmark.reference_executor"])
+
+    assert recomputed == REFERENCE_EXECUTOR.revision
+
+
+def test_a_revision_is_refused_unless_it_is_a_labelled_digest() -> None:
+    """A free text field is a field somebody writes a branch name into."""
+    with pytest.raises(ValueError, match="executor revision"):
+        ExecutorIdentity(kind="reference", version=1, revision="whatever")
+
+
+def test_an_executor_may_have_no_revision_at_all() -> None:
+    """Null means nobody recorded one, which is what every other nullable pin means."""
+    assert ExecutorIdentity(kind="replay", version=1).revision is None
 
 
 def test_the_executor_declares_a_kind_and_a_version() -> None:

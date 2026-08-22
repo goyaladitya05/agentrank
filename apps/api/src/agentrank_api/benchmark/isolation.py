@@ -58,7 +58,7 @@ import uuid
 
 from agentrank_api.benchmark.definitions import AgentMissionBrief
 from agentrank_api.benchmark.endpoint import RequestLedger
-from agentrank_api.benchmark.execution import ExecutorIdentity
+from agentrank_api.benchmark.execution import ExecutorIdentity, implementation_revision
 from agentrank_api.benchmark.faults import ExecutionFault, FaultOrigin
 from agentrank_api.benchmark.observation import ObservedResult
 from agentrank_api.benchmark.wire import (
@@ -71,10 +71,26 @@ from agentrank_api.benchmark.worker import worker_environment
 
 WORKER_MODULE = "agentrank_api.benchmark.worker"
 
+
 # Which strategy in the worker corresponds to which recorded identity. A run says what did the
 # shopping, and a worker running one buyer while the run recorded another would make every
 # historical comparison wrong with nothing on either to show it.
-ISOLATED_REFERENCE = ExecutorIdentity(kind="reference-isolated", version=1)
+def _revision() -> str:
+    """Everything that decides what the isolated buyer does, digested together.
+
+    Three modules rather than one. The scripted buyer decides what to select, the HTTP surface
+    decides what it can see and how a refusal reaches it, and the worker decides what the
+    process does with either. A run produced by an edit to any of them is a run produced by
+    different code, and none of the three would move a declared version on its own.
+    """
+    return implementation_revision(
+        sys.modules["agentrank_api.benchmark.reference_executor"],
+        sys.modules["agentrank_api.benchmark.http_buyer"],
+        sys.modules["agentrank_api.benchmark.worker"],
+    )
+
+
+ISOLATED_REFERENCE = ExecutorIdentity(kind="reference-isolated", version=1, revision=_revision())
 
 # How long one mission may take end to end. Generous enough that a real payment through the real
 # kernel on a loaded machine finishes, short enough that a worker which has stopped answering is
