@@ -20,14 +20,19 @@ rather than evidence about what an autonomous agent can do.
 """
 
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentrank_api.benchmark.buyer import MerchantBuyerSurface
-from agentrank_api.benchmark.definitions import ExpectedOutcome
+from agentrank_api.benchmark.catalog import catalog_content_hash
+from agentrank_api.benchmark.definitions import AgentMissionBrief, ExpectedOutcome
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
+from agentrank_api.benchmark.evaluation import evaluator_version
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
 from agentrank_api.benchmark.observation import AbstentionCode
 from agentrank_api.benchmark.reference_executor import ReferenceMissionExecutor
@@ -42,8 +47,12 @@ from agentrank_api.benchmark.voltedge import (
     SUITE_VERSION,
     seed_voltedge,
 )
+from agentrank_api.checkout.models import CheckoutSession, CheckoutStatus
 from agentrank_api.commerce.models import Variant
+from agentrank_api.constraints.rules import ConstraintOperator
+from agentrank_api.mandates.intent import AllowedCategory, RequiredAttribute
 from agentrank_api.payments.fake import FakePaymentProvider
+from agentrank_api.payments.models import PaymentAttempt, PaymentAttemptStatus
 
 pytestmark = pytest.mark.anyio
 
@@ -224,17 +233,23 @@ EXPECTED_CAPTURED_DEMAND = 2939000
 
 @dataclass(frozen=True, slots=True)
 class Reference:
-    """One complete reference run, and everything a test needs to read it back."""
+    """One complete reference run, and everything a test needs to read it back.
+
+    The provider comes back too, because how many operations it believes it performed is the
+    only account of the money that does not come from this application's own rows.
+    """
 
     merchant_id: uuid.UUID
     run_id: uuid.UUID
+    provider: FakePaymentProvider
 
 
 async def executed(session: AsyncSession) -> Reference:
     """One complete reference run of `voltedge-core@1` against the world it was authored for."""
     prepared, _ = await seed_voltedge(session)
     merchant_id = prepared.environment.merchant_id
-    surface = MerchantBuyerSurface(session, merchant_id=merchant_id, provider=FakePaymentProvider())
+    provider = FakePaymentProvider()
+    surface = MerchantBuyerSurface(session, merchant_id=merchant_id, provider=provider)
     finished = await BenchmarkRunService(session).run_suite(
         ReferenceMissionExecutor(surface),
         suite_key=SUITE_KEY,
@@ -242,25 +257,100 @@ async def executed(session: AsyncSession) -> Reference:
         fixture=FIXTURE,
         representation_label="baseline",
     )
-    return Reference(merchant_id=merchant_id, run_id=finished.id)
+    return Reference(merchant_id=merchant_id, run_id=finished.id, provider=provider)
 
 
-def priced() -> dict[str, tuple[int, str, int, bool]]:
-    """Every variant in the fixture as (price, currency, stock, active), keyed by SKU.
+@dataclass(frozen=True, slots=True)
+class Offered:
+    """One fixture variant, flattened. Read off the authored literals and nothing else."""
 
-    Read straight off the authored definitions. Nothing in the benchmark's own predicates is
-    involved, because the point of this file is to check those.
+    sku: str
+    category: str | None
+    attributes: Mapping[str, Any]
+    price_amount_minor: int
+    currency: str
+    inventory_quantity: int
+    is_active: bool
+
+
+def offered() -> list[Offered]:
+    """Every variant the fixture describes, keyed by nothing and ordered as authored.
+
+    Straight off `PRODUCTS`. Nothing in the benchmark's own predicates is involved, because the
+    point of this file is to check those.
     """
-    return {
-        variant.sku: (
-            variant.price_amount_minor,
-            variant.currency,
-            variant.inventory_quantity,
-            variant.is_active and product.is_active,
+    return [
+        Offered(
+            sku=variant.sku,
+            category=product.category,
+            attributes=variant.attributes,
+            price_amount_minor=variant.price_amount_minor,
+            currency=variant.currency,
+            inventory_quantity=variant.inventory_quantity,
+            is_active=variant.is_active and product.is_active,
         )
         for product in PRODUCTS
         for variant in product.variants
-    }
+    ]
+
+
+def qualifies(brief: AgentMissionBrief, entry: Offered) -> bool:
+    """Whether this variant satisfies this mission, decided by this file's own reading.
+
+    A second implementation on purpose, and the only reason this file is worth anything. Using
+    `satisfies` or `assess` here would be asking two pieces of one reasoning whether they agree,
+    and a benchmark that is consistently wrong in the same direction is exactly what that cannot
+    catch. It is written against the two operators the VoltEdge missions actually use, and a test
+    below refuses any mission that states a third, so a new operator cannot slip past by being
+    silently unhandled.
+
+    Text is compared case insensitively after trimming, which is what the buyer's own vocabulary
+    documents. Everything else is exact, absence is never a pass, and a value of the wrong kind
+    is never a pass either.
+    """
+    if not entry.is_active:
+        return False
+    if entry.currency != brief.currency:
+        return False
+    if entry.inventory_quantity < brief.quantity:
+        return False
+    if entry.price_amount_minor * brief.quantity > brief.budget.amount_minor:
+        return False
+
+    allowed = [
+        constraint.category.strip().casefold()
+        for constraint in brief.hard_constraints
+        if isinstance(constraint, AllowedCategory)
+    ]
+    if allowed:
+        if entry.category is None:
+            return False
+        if entry.category.strip().casefold() not in allowed:
+            return False
+
+    for constraint in brief.hard_constraints:
+        if not isinstance(constraint, RequiredAttribute):
+            continue
+        if constraint.name not in entry.attributes:
+            return False
+        actual = entry.attributes[constraint.name]
+        wanted = constraint.value
+        if constraint.operator is ConstraintOperator.EQ:
+            if isinstance(wanted, str):
+                if not isinstance(actual, str):
+                    return False
+                if actual.strip().casefold() != wanted.strip().casefold():
+                    return False
+            elif actual != wanted:
+                return False
+        elif constraint.operator is ConstraintOperator.GTE:
+            if isinstance(actual, bool) or not isinstance(actual, int | float):
+                return False
+            if not isinstance(wanted, int | float) or actual < wanted:
+                return False
+        else:
+            raise AssertionError(f"this file cannot check {constraint.operator}")
+    return True
 
 
 # The expectation, checked against the fixture rather than against the runner.
@@ -272,8 +362,31 @@ def test_the_expected_result_covers_every_mission_exactly_once() -> None:
     assert len(EXPECTED) == len(MISSIONS)
 
 
+def test_this_file_can_check_every_constraint_the_suite_states() -> None:
+    """`qualifies` handles two operators. A mission stating a third would pass unchecked.
+
+    Asserted rather than assumed, because the failure would be silent in the direction that
+    matters: an unhandled operator would raise, and a mission whose constraint kind this file
+    does not know about would simply be ignored.
+    """
+    operators = {
+        constraint.operator
+        for defined in MISSIONS
+        for constraint in defined.brief.hard_constraints
+        if isinstance(constraint, RequiredAttribute)
+    }
+    kinds = {
+        type(constraint).__name__
+        for defined in MISSIONS
+        for constraint in defined.brief.hard_constraints
+    }
+
+    assert operators <= {ConstraintOperator.EQ, ConstraintOperator.GTE}
+    assert kinds <= {"AllowedCategory", "RequiredAttribute", "MaxQuantity"}
+
+
 def test_the_expected_counts_agree_with_the_table() -> None:
-    """Written out separately above, so an edit has to be made in two places."""
+    """Written out separately above, so an edit to one entry has to be an edit to two places."""
     succeeded = [entry for entry in EXPECTED.values() if entry.status is SUCCEEDED]
     abstained = [entry for entry in EXPECTED.values() if entry.status is ABSTAINED]
 
@@ -282,35 +395,42 @@ def test_the_expected_counts_agree_with_the_table() -> None:
     assert sum(entry.total_amount_minor or 0 for entry in succeeded) == EXPECTED_CAPTURED_DEMAND
 
 
-def test_every_expected_purchase_is_arithmetically_possible_in_the_fixture() -> None:
-    """The expectation checked against the catalog, with arithmetic this file does itself.
+def test_each_expected_purchase_is_the_cheapest_thing_that_satisfies_its_mission() -> None:
+    """The expectation checked against the catalog, by this file's own reading of both.
 
-    Not through `satisfies`, not through `assess` and not through the executor. If all three of
-    those drifted together this still holds, which is the only reason to write an expectation
-    down separately at all.
+    Sufficient rather than merely necessary, which is the correction an audit forced. Checking
+    that the named variant is affordable, stocked and priced in the right currency lets a white
+    charger stand in for a mission that asked for a black one. This checks that it satisfies
+    every stated requirement, and that nothing cheaper does, which together name exactly one
+    variant.
     """
-    catalog = priced()
+    catalog = offered()
 
     for defined in MISSIONS:
         entry = EXPECTED[defined.key]
+        quantity = defined.brief.quantity
+        qualifying = [item for item in catalog if qualifies(defined.brief, item)]
+
         if entry.sku is None:
             assert entry.status is ABSTAINED, defined.key
+            assert qualifying == [], f"{defined.key}: {[item.sku for item in qualifying]}"
             continue
 
-        price, currency, stock, active = catalog[entry.sku]
-        quantity = defined.brief.quantity
-        assert active, entry.sku
-        assert stock >= quantity, entry.sku
-        assert currency == defined.brief.currency, entry.sku
-        assert price * quantity == entry.total_amount_minor, defined.key
-        assert entry.total_amount_minor <= defined.brief.budget.amount_minor, defined.key
+        assert entry.status is SUCCEEDED, defined.key
+        chosen = next(item for item in catalog if item.sku == entry.sku)
+        assert chosen in qualifying, f"{defined.key}: {entry.why}"
+        assert chosen.price_amount_minor * quantity == entry.total_amount_minor, defined.key
+        cheapest = min(item.price_amount_minor * quantity for item in qualifying)
+        assert entry.total_amount_minor == cheapest, f"{defined.key}: {entry.why}"
 
 
 def test_the_expected_purchases_are_the_missions_the_oracle_says_are_available() -> None:
     """The pin and the suite's own ground truth have to agree about which is which.
 
-    They are two independent statements: the oracle was authored with the suite, and the table
-    above was derived from the catalog. Disagreement means one of them is wrong.
+    Not two independent statements, and the docstring used to claim they were. The oracle is kept
+    honest by a test that recomputes it with `satisfies`, which is oracle side code, so this chain
+    closes on the thing this file exists to stand apart from. What it is worth is a tripwire:
+    editing the table above forces an edit to `voltedge.py`, which nobody does by accident.
     """
     available = {
         defined.key
@@ -323,7 +443,10 @@ def test_the_expected_purchases_are_the_missions_the_oracle_says_are_available()
 
 
 def test_the_expected_totals_are_what_the_suite_says_each_sale_is_worth() -> None:
-    """Simulated demand is the cheapest qualifying line total, which is what the executor pays."""
+    """Simulated demand is the cheapest qualifying line total, which is what the executor pays.
+
+    The same tripwire as above and not an independent check, for the same reason.
+    """
     for defined in MISSIONS:
         entry = EXPECTED[defined.key]
         expected_value = entry.total_amount_minor or 0
@@ -395,8 +518,10 @@ async def test_every_purchase_reached_a_real_payment_and_a_real_quote(
 ) -> None:
     """A success here is money that moved through the payment kernel, not a report of one.
 
-    The run service records a payment reference only when the attempt really is SUCCEEDED for
-    this merchant, so eight references is eight settled payments.
+    Asserted on the payment rows and on the provider's own counter rather than on the presence
+    of an identifier. The run service records a payment reference only when the attempt really
+    is SUCCEEDED for this merchant, and this reads the attempts back anyway, because a reference
+    that exists and a payment that settled are two claims and only one of them is about money.
     """
     reference = await executed(session)
     loaded = await BenchmarkRunService(session).load(
@@ -410,12 +535,51 @@ async def test_every_purchase_reached_a_real_payment_and_a_real_quote(
     assert all(result.payment_attempt_id is not None for result in purchases)
     assert all(result.checkout_id is not None for result in purchases)
 
+    attempts = list((await session.execute(select(PaymentAttempt))).scalars())
+    assert [attempt.status for attempt in attempts] == [PaymentAttemptStatus.SUCCEEDED] * 8
+    # One provider operation per purchase, counted by the provider rather than by us.
+    assert reference.provider.charges == EXPECTED_SUCCEEDED
+
     declined = [
         result for result in loaded.mission_runs if result.status is MissionRunStatus.ABSTAINED
     ]
     # Declining costs the merchant nothing. No quote, no hold, no payment.
     assert all(result.checkout_id is None for result in declined)
     assert all(result.payment_attempt_id is None for result in declined)
+
+
+async def test_every_purchase_was_charged_the_amount_the_pin_says(
+    session: AsyncSession,
+) -> None:
+    """The money, compared against the hand written table rather than against itself.
+
+    Nothing else in this file reads an amount that was actually charged. Without it a quote that
+    totalled a unit price instead of a line total would leave the whole pin green, because both
+    the two unit missions still succeed and simulated demand is authored rather than measured.
+    """
+    reference = await executed(session)
+    loaded = await BenchmarkRunService(session).load(
+        reference.run_id, merchant_id=reference.merchant_id
+    )
+
+    charged: dict[str, tuple[int, int]] = {}
+    for result in loaded.mission_runs:
+        if result.status is not MissionRunStatus.SUCCEEDED:
+            continue
+        assert result.checkout_id is not None and result.payment_attempt_id is not None
+        quote = await session.get(CheckoutSession, result.checkout_id)
+        attempt = await session.get(PaymentAttempt, result.payment_attempt_id)
+        assert quote is not None and attempt is not None
+        assert quote.status is CheckoutStatus.PAID, result.mission.mission_key
+        assert quote.currency == CURRENCY and attempt.currency == CURRENCY
+        charged[result.mission.mission_key] = (quote.total_amount_minor, attempt.amount_minor)
+
+    for key, (quoted, paid) in charged.items():
+        assert quoted == EXPECTED[key].total_amount_minor, f"{key}: {EXPECTED[key].why}"
+        # What was authorized and what was charged are the same number because they came from
+        # the same row, and that is the property worth restating on real data.
+        assert paid == quoted, key
+    assert sum(paid for _, paid in charged.values()) == EXPECTED_CAPTURED_DEMAND
 
 
 async def test_the_executor_declines_each_control_mission_for_the_expected_reason(
@@ -452,10 +616,14 @@ async def test_the_run_is_against_the_registered_voltedge_world(session: AsyncSe
         reference.run_id, merchant_id=reference.merchant_id
     )
 
-    assert loaded.environment_id is not None
-    assert loaded.catalog_hash is not None
-    assert loaded.evaluator_version is not None
+    registered = await BenchmarkEnvironmentService(session).require_registered(FIXTURE)
+    assert loaded.environment_id == registered.id
+    assert registered.merchant_slug == MERCHANT_SLUG
+    assert registered.fixture_hash == FIXTURE.content_hash
+    assert loaded.catalog_hash == catalog_content_hash(
+        await BenchmarkRunService(session).catalog(reference.merchant_id)
+    )
+    assert loaded.evaluator_version == evaluator_version()
     assert loaded.executor_kind == "reference"
     assert loaded.executor_version == 1
     assert loaded.representation_label == "baseline"
-    assert FIXTURE.merchant_slug == MERCHANT_SLUG

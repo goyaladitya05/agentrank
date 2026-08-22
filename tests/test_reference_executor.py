@@ -12,10 +12,12 @@ kernel, so a test that passes is evidence about the system rather than about a m
 """
 
 import ast
+import importlib
 import inspect
 import uuid
 from dataclasses import replace
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import pytest
@@ -23,7 +25,6 @@ from benchmark_support import brief
 from sqlalchemy import select as sql_select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from agentrank_api.benchmark import reference_executor
 from agentrank_api.benchmark.buyer import MerchantBuyerSurface
 from agentrank_api.benchmark.definitions import AgentMissionBrief
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
@@ -39,6 +40,7 @@ from agentrank_api.benchmark.reference_executor import (
     Candidate,
     ReferenceMissionExecutor,
     Rejection,
+    _in_catalog_order,
     assess,
     idempotency_key,
     select,
@@ -46,6 +48,7 @@ from agentrank_api.benchmark.reference_executor import (
 from agentrank_api.checkout.models import CheckoutSession, CheckoutStatus
 from agentrank_api.commerce.catalog_fixture import SeedProduct, SeedVariant
 from agentrank_api.commerce.repository import CatalogRepository
+from agentrank_api.commerce.schemas import MerchantSummary, ProductSearchResult
 from agentrank_api.constraints.rules import ConstraintOperator
 from agentrank_api.errors import ConflictError, NotFoundError
 from agentrank_api.inventory.models import InventoryReservation, ReservationStatus
@@ -165,6 +168,23 @@ def candidate(
 # What the executor is structurally allowed to reach.
 
 
+def executor_modules() -> list[ModuleType]:
+    """Every module in the benchmark package that implements an executor.
+
+    Discovered rather than listed, because a list is a thing somebody forgets to add to and the
+    module these checks exist for is the one that has not been written yet. The naming convention
+    is the contract: an executor lives in a module whose name ends in `_executor`.
+    """
+    package = importlib.import_module("agentrank_api.benchmark")
+    root = Path(package.__file__ or "").parent
+    found = [
+        importlib.import_module(f"agentrank_api.benchmark.{path.stem}")
+        for path in sorted(root.glob("*_executor.py"))
+    ]
+    assert found, "no executor module was discovered, so these checks would pass vacuously"
+    return found
+
+
 def _imported_modules(module: object) -> set[str]:
     """Every module this module's own source imports, at the top level.
 
@@ -182,33 +202,47 @@ def _imported_modules(module: object) -> set[str]:
     return found
 
 
-def test_the_executor_imports_nothing_that_knows_an_oracle_exists() -> None:
+# What an executor may import from the benchmark package. An allowlist rather than a denylist,
+# because a denylist is blind to whatever is added next and the thing these checks exist for is
+# the executor nobody has written yet.
+PERMITTED_BENCHMARK_IMPORTS = {
+    "agentrank_api.benchmark.definitions",
+    "agentrank_api.benchmark.observation",
+    "agentrank_api.benchmark.execution",
+    "agentrank_api.benchmark.buyer",
+    "agentrank_api.benchmark.fixtures",
+}
+
+
+@pytest.mark.parametrize("module", executor_modules(), ids=lambda module: module.__name__)
+def test_an_executor_imports_only_the_buyer_side_of_the_benchmark(module: ModuleType) -> None:
     """The property the whole benchmark rests on, asserted against the source.
 
     An executor that imported the evaluator, the catalog facts or the run service would have
     `evaluate_mission`, `satisfies` and every mission definition one attribute access away, and
     the separation would rest on nobody reaching for them.
+
+    An allowlist, so a benchmark module added later is refused until somebody places it, and
+    parametrized over every executor module rather than over the one that exists today.
     """
-    imported = _imported_modules(reference_executor)
-
-    forbidden = {
-        "agentrank_api.benchmark.evaluation",
-        "agentrank_api.benchmark.catalog",
-        "agentrank_api.benchmark.runner",
-        "agentrank_api.benchmark.models",
-        "agentrank_api.benchmark.repository",
-        "agentrank_api.benchmark.metrics",
-        "agentrank_api.benchmark.suites",
-        "agentrank_api.benchmark.voltedge",
-        "agentrank_api.benchmark.failures",
-        "agentrank_api.benchmark.lifecycle",
+    benchmark = {
+        name for name in _imported_modules(module) if name.startswith("agentrank_api.benchmark")
     }
-    assert imported & forbidden == set()
+
+    assert benchmark <= PERMITTED_BENCHMARK_IMPORTS
 
 
-def test_the_executor_imports_nothing_that_can_reach_the_database() -> None:
-    """It is handed a buyer surface, not a session. Nothing here can open one."""
-    imported = _imported_modules(reference_executor)
+@pytest.mark.parametrize("module", executor_modules(), ids=lambda module: module.__name__)
+def test_an_executor_names_nothing_that_could_open_a_session(module: ModuleType) -> None:
+    """It is typed against a buyer surface and imports nothing that could open a session itself.
+
+    Deliberately not a claim that a session is unreachable at runtime. It is: the surface holds
+    application services and those hold the session, so anything with the surface can walk to one
+    through two private attributes. Python has no way to prevent that, and pretending otherwise
+    would be worse than saying so. What this asserts is the narrower and checkable half, and the
+    honest limit is written down in docs/shortcomings.md.
+    """
+    imported = _imported_modules(module)
 
     assert not any(name.startswith("sqlalchemy") for name in imported)
     assert not any(name.endswith(".repository") for name in imported)
@@ -218,9 +252,11 @@ def test_the_executor_imports_nothing_that_can_reach_the_database() -> None:
 def _spelled_names(module: object) -> set[str]:
     """Every name this module spells: identifiers, attributes, imports and string literals.
 
-    Prose is excluded, because a docstring explaining what an oracle is has no reference to one.
-    A lazy import inside a function, an attribute access and a name looked up by string are all
-    included, which is what this is for.
+    A string constant enters as one whole value rather than word by word, which is what keeps a
+    docstring explaining what an oracle is from colliding with the name `oracle`. It is exact
+    equality and not a substring search, so `getattr(x, "orac" + "le")` would evade it. That is
+    the limit of a source check and the reason the import allowlist above is the primary
+    mechanism rather than this.
     """
     source = Path(inspect.getfile(module)).read_text(encoding="utf-8")  # type: ignore[arg-type]
     found: set[str] = set()
@@ -243,14 +279,15 @@ def _spelled_names(module: object) -> set[str]:
     return found
 
 
-def test_no_oracle_name_is_spelled_in_the_executor_at_all() -> None:
+@pytest.mark.parametrize("module", executor_modules(), ids=lambda module: module.__name__)
+def test_no_oracle_name_is_spelled_in_an_executor_at_all(module: ModuleType) -> None:
     """The import check stops a module being reached. This stops a name being spelled.
 
     A lazy import inside a function, an attribute access on something that arrived another way,
     and a name looked up from a string are the three ways the import check alone could be got
     around, and all three put the name in here.
     """
-    spelled = _spelled_names(reference_executor)
+    spelled = _spelled_names(module)
 
     forbidden = {
         "MissionOracle",
@@ -357,6 +394,28 @@ def test_selection_compares_totals_rather_than_unit_prices() -> None:
     assert select(options, quantity=3).sku == "RS-2"
 
 
+def test_the_catalog_is_opened_in_an_order_this_executor_chose() -> None:
+    """What a buyer opens first must not change because a merchant renamed a product.
+
+    The merchant's search already orders by title, which is prose it controls. Sorting by the
+    merchant's own external identifier costs nothing and removes the dependency entirely.
+    """
+    first = ProductSearchResult(
+        id=uuid.uuid7(),
+        external_id="RS-Z",
+        title="Aardvark",
+        description=None,
+        category="chargers",
+        is_active=True,
+        merchant=MerchantSummary(id=uuid.uuid7(), slug="reference-shop", name="Reference Shop"),
+        eligible_variants=[],
+    )
+    second = first.model_copy(update={"external_id": "RS-A", "title": "Zebra"})
+
+    assert [hit.external_id for hit in _in_catalog_order([first, second])] == ["RS-A", "RS-Z"]
+    assert [hit.external_id for hit in _in_catalog_order([second, first])] == ["RS-A", "RS-Z"]
+
+
 def test_selection_ignores_preferences() -> None:
     """A preference is advisory prose. Promoting one to a tie break invents a requirement."""
     stated = brief(preferences=(Preference("prefer the expensive one"),))
@@ -366,12 +425,16 @@ def test_selection_ignores_preferences() -> None:
 
 
 def test_an_idempotency_key_is_derived_from_the_quote_and_nothing_else() -> None:
-    """A retry against one quote resolves to one attempt rather than writing a second."""
+    """A retry against one quote resolves to one attempt rather than writing a second.
+
+    Pinned as the literal string rather than as agreeing with itself. A key that agrees with
+    itself within one process is what a process identifier or a module level counter also does,
+    and either would write a second attempt when the retry came from somewhere else.
+    """
     checkout_id = uuid.uuid7()
 
-    assert idempotency_key(checkout_id) == idempotency_key(checkout_id)
+    assert idempotency_key(checkout_id) == f"ar-benchmark-{checkout_id.hex}"
     assert idempotency_key(checkout_id) != idempotency_key(uuid.uuid7())
-    assert idempotency_key(checkout_id).startswith("ar-benchmark-")
 
 
 # Real purchases.
@@ -438,7 +501,12 @@ async def test_the_same_world_and_the_same_brief_choose_the_same_variant(
 
     assert first.selection is not None and second.selection is not None
     assert first.selection.variant_id == second.selection.variant_id
-    assert first.selection.unit_price_amount_minor == second.selection.unit_price_amount_minor
+    # And it is the variant the tie break names, not merely the same one twice. Two readings
+    # agreeing in one process against one query plan is what an executor that took whatever the
+    # search returned first would also produce.
+    chosen = await CatalogRepository(session).get_variant_by_sku(merchant_id, "RS-A")
+    assert chosen is not None
+    assert first.selection.variant_id == chosen.id
 
 
 async def test_the_executor_buys_the_cheaper_of_two_acceptable_variants(

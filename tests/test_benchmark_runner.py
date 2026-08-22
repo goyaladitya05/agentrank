@@ -455,6 +455,20 @@ async def test_an_executor_with_no_result_for_a_mission_stops_the_run(
         )
 
 
+def test_the_world_and_the_shop_helper_describe_the_same_catalog() -> None:
+    """`build_shop` writes the rows and `WORLD` restores them, so the two have to agree.
+
+    Stated rather than assumed. If either helper's naming moved, preparation would deactivate
+    the variant `build_shop` created and every test below would quietly become a test about
+    withdrawn variants without failing.
+    """
+    skus = {variant.sku for product in WORLD.products for variant in product.variants}
+
+    assert skus == {"TEST-MERCHANT-BLACK"}
+    assert {product.external_id for product in WORLD.products} == {"test-merchant-1"}
+    assert WORLD.merchant_slug == SLUG
+
+
 async def test_the_executor_is_handed_briefs_and_never_an_oracle(
     session: AsyncSession,
 ) -> None:
@@ -492,7 +506,14 @@ async def test_the_executor_is_handed_briefs_and_never_an_oracle(
 
     assert len(seen) == 1
     assert isinstance(seen[0], AgentMissionBrief)
-    fields = set(AgentMissionBrief.__dataclass_fields__)
-    assert "expected_outcome" not in fields
-    assert "simulated_value_amount_minor" not in fields
-    assert not hasattr(seen[0], "oracle")
+    # Set equality rather than negative membership. A field added later would slip past a list of
+    # names nobody thought to extend, and the one field that must never appear here is the one
+    # nobody has invented yet.
+    assert set(AgentMissionBrief.__dataclass_fields__) == {
+        "key",
+        "objective",
+        "budget",
+        "quantity",
+        "hard_constraints",
+        "preferences",
+    }

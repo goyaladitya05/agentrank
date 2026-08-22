@@ -14,9 +14,10 @@ from dataclasses import replace
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.benchmark.buyer import MerchantBuyerSurface
+from agentrank_api.benchmark.catalog import catalog_content_hash
 from agentrank_api.benchmark.definitions import (
     AgentMissionBrief,
     BenchmarkMissionDefinition,
@@ -25,6 +26,7 @@ from agentrank_api.benchmark.definitions import (
     MissionOracle,
 )
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
+from agentrank_api.benchmark.evaluation import evaluator_version
 from agentrank_api.benchmark.execution import ExecutorIdentity
 from agentrank_api.benchmark.fixtures import BenchmarkFixture
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
@@ -197,6 +199,33 @@ async def test_the_order_missions_run_in_does_not_change_what_they_mean(
     assert all(status is MissionRunStatus.SUCCEEDED for status in outcomes(forwards).values())
 
 
+async def test_the_world_is_prepared_before_the_run_and_not_only_before_each_mission(
+    session: AsyncSession,
+) -> None:
+    """The catalog pin has to describe the intended initial state rather than the leftovers.
+
+    Named rather than protected incidentally. Without the preparation at the top of the run, the
+    pin would be taken against whatever a previous run left behind, and two runs of one suite
+    against one world would carry different pins while measuring the same thing.
+    """
+    merchant_id = await registered(session)
+    await BenchmarkSuiteService(session).publish(suite_of("one"))
+    intended = catalog_content_hash(
+        await BenchmarkRunService(session).catalog(
+            (await BenchmarkEnvironmentService(session).prepare(WORLD)).environment.merchant_id
+        )
+    )
+    # Leave the shelf visibly not as the fixture describes it, without going through a mission.
+    found = await CatalogRepository(session).get_variant_by_sku(merchant_id, "OS-BLK")
+    assert found is not None
+    found.inventory_quantity = STOCK - 1
+    await session.commit()
+
+    finished = await run(session, merchant_id)
+
+    assert finished.catalog_hash == intended
+
+
 # Run isolation.
 
 
@@ -212,7 +241,6 @@ async def test_a_second_run_does_not_inherit_the_first_ones_stock(
 
     assert outcomes(first) == outcomes(second)
     assert first.catalog_hash == second.catalog_hash
-    assert first.id != second.id
 
 
 async def test_a_repeated_run_produces_the_same_semantic_result(
@@ -234,9 +262,6 @@ async def test_a_repeated_run_produces_the_same_semantic_result(
 
     assert outcomes(first) == outcomes(second)
     assert first_metrics == second_metrics
-    assert first.evaluator_version == second.evaluator_version
-    assert first.executor_kind == second.executor_kind
-    assert first.executor_version == second.executor_version
 
 
 async def test_the_world_is_the_fixtures_again_when_a_run_finishes(
@@ -323,13 +348,20 @@ async def test_a_run_records_every_pin_it_has(session: AsyncSession) -> None:
     merchant_id = await registered(session)
     await BenchmarkSuiteService(session).publish(suite_of("one"))
 
+    environments = BenchmarkEnvironmentService(session)
+    environment = await environments.prepare(WORLD)
+    published = await BenchmarkSuiteService(session).get(SUITE_KEY, 1)
+    # The digest of the world as the fixture describes it, taken before anything buys from it.
+    # The run pins where it began, not where it ended, which is why this is read here.
+    intended = catalog_content_hash(await BenchmarkRunService(session).catalog(merchant_id))
+
     finished = await run(session, merchant_id)
 
-    assert finished.suite_id is not None
-    assert finished.environment_id is not None
-    assert finished.catalog_hash is not None
-    assert finished.evaluator_version is not None
-    assert finished.executor_label is not None
+    assert finished.suite_id == published.id
+    assert finished.environment_id == environment.environment.id
+    assert finished.catalog_hash == intended
+    assert finished.evaluator_version == evaluator_version()
+    assert finished.executor_label == REFERENCE_EXECUTOR.label
 
 
 async def test_a_run_with_no_executor_identity_says_so_rather_than_guessing(
@@ -357,7 +389,7 @@ def test_an_executor_identity_is_a_slug_and_a_positive_version() -> None:
 
 
 async def test_a_mission_is_running_before_the_executor_is_handed_anything(
-    session: AsyncSession,
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
 ) -> None:
     """The transition a crash is read from. PENDING never started; RUNNING may have paid.
 
@@ -373,9 +405,13 @@ async def test_a_mission_is_running_before_the_executor_is_handed_anything(
         async def __call__(
             self, brief: AgentMissionBrief, *, merchant_id: uuid.UUID
         ) -> ObservedResult:
-            run_row = (await session.execute(select(BenchmarkRun))).scalars().one()
-            loaded = await service.load(run_row.id, merchant_id=merchant_id)
-            seen.extend(result.status for result in loaded.mission_runs)
+            # A second session on its own connection, which is what "a separate process would
+            # see" actually means. Reading through the runner's own session would be satisfied
+            # by a flush, and a flush is exactly what a crash discards.
+            async with factory() as other:
+                run_row = (await other.execute(select(BenchmarkRun))).scalars().one()
+                loaded = await BenchmarkRunService(other).load(run_row.id, merchant_id=merchant_id)
+                seen.extend(result.status for result in loaded.mission_runs)
             return await super().__call__(brief, merchant_id=merchant_id)
 
     surface = MerchantBuyerSurface(session, merchant_id=merchant_id, provider=FakePaymentProvider())
