@@ -1,91 +1,75 @@
-"""What an executor reports about one attempt at one mission.
+"""What trusted orchestration established about one attempt at one mission.
 
-Provider independent and agent independent on purpose. There is no LLM in this module, no
-prompt, no trace and no model identifier: an `ObservedResult` describes what happened in
-commerce terms, so a scripted runner, a future LLM buyer and anything after that all produce
-the same shape and are all marked by the same evaluator.
+The evaluator's input, and deliberately not the executor's output. An executor produces an
+`ExecutorReport`, which names identifiers and actions; `agentrank_api.benchmark.substantiation`
+turns that into one of these by reading the merchant's own rows, and the evaluator marks this.
 
-It is a report, not a claim of correctness. Nothing here says whether the mission succeeded,
-and there is deliberately no field that could: that is the evaluator's answer, and an executor
-that could assert its own result would be marking its own work.
+```text
+ExecutorReport      what the thing under test says it did       untrusted
+ObservedResult      what trusted code established happened      what the evaluator marks
+```
 
-Nothing here says whose fault an interruption was either, and that used to be the exception.
-`ObservedError` carried an origin the evaluator classified from, which made "the merchant's API
-failed" and "the harness broke" claims the thing under test could make about itself. Attribution
-now comes from `agentrank_api.benchmark.faults`, decided at the tool boundary from what actually
-happened there.
+Where every field comes from, because the whole point of the type is that this is answerable:
 
-Each part validates its own shape and the parts do not validate each other. A result claiming a
-payment with no selection behind it, or an abstention alongside a purchase, is a contradiction
-that the evaluator classifies as `AGENT_REASONING_ERROR`. Refusing to construct one would mean
-a broken executor raised inside the harness instead of being measured, and the measurement is
-the point.
+```text
+selection           the variant the merchant's own quote references, or the one reported when
+                    there is no quote, described by the pre-mission catalog
+checkout            the merchant's own quote row: its total, its currency, its existence
+authorization       what the merchant's authorization layer answered, recorded at the trusted
+                    tool boundary from the server's own response
+payment             the PaymentAttempt rows this merchant produced during the mission
+abstention, error   the executor's own account, carried as a diagnostic and never as a fact
+```
 
-Within one part, though, a half told story is refused, and the reason is that omission was
-found to be worth something. A quote reported as created but with no total let the budget check
-fall back to the cheaper line amount, so an executor that simply left the total out could turn
-an over budget purchase into a success. A payment reported as succeeded with no attempt
-identifier was the most consequential fact in the benchmark taken entirely on the executor's
-word. Both are now refused at construction: an incomplete part of a report is not a smaller
-report, it is a report that reads better than the truth.
+It is a description, not a claim of correctness. Nothing here says whether the mission succeeded,
+and there is deliberately no field that could: that is the evaluator's answer.
+
+Nothing here says whose fault an interruption was either. Attribution comes from
+`agentrank_api.benchmark.faults`, decided at the tool boundary from what actually happened there,
+and reaches the evaluator as a separate input.
+
+Each part validates its own shape and the parts do not validate each other. A payment with no
+selection behind it, or an abstention alongside a purchase, is a contradiction that the evaluator
+classifies as `AGENT_REASONING_ERROR`. Refusing to construct one would mean a broken executor
+raised inside the harness instead of being measured, and the measurement is the point.
+
+Within one part, a half told story is refused, and the reason survives the move to substantiated
+facts. A quote reported as created with no total let the budget check fall back to the cheaper
+line amount. A payment reported as succeeded with no attempt identifier was the most consequential
+fact in the benchmark taken entirely on somebody's word. Both are refused at construction: an
+incomplete part is not a smaller description, it is one that reads better than the truth.
 """
 
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from enum import StrEnum
 from typing import Any
 
+from agentrank_api.benchmark.report import (
+    CheckoutRefusal,
+    ReportedAbstention,
+    ReportedError,
+)
 from agentrank_api.money import validate_amount_minor, validate_currency
 from agentrank_api.payments.models import PaymentAttemptStatus
 
 
-class AbstentionCode(StrEnum):
-    """Why an executor says it declined to buy.
-
-    Diagnostic only. The evaluator never classifies a mission from this: an incorrect
-    abstention is a `DISCOVERY_FAILURE` whichever of these the executor claimed, because
-    marking a mission from an executor's account of its own reasoning would be trusting the
-    thing under test. It is recorded so that a human reading a run can see what the executor
-    believed, and for nothing else.
-    """
-
-    NO_CANDIDATE_FOUND = "NO_CANDIDATE_FOUND"
-    NO_COMPLIANT_CANDIDATE = "NO_COMPLIANT_CANDIDATE"
-    MERCHANT_DATA_INSUFFICIENT = "MERCHANT_DATA_INSUFFICIENT"
-    BUDGET_INSUFFICIENT = "BUDGET_INSUFFICIENT"
-
-
-class CheckoutRefusal(StrEnum):
-    """Why the merchant would not produce a quote.
-
-    Three, and each maps to a different failure reason, because the repairs are different.
-
-    OUT_OF_STOCK
-        The merchant sells it and could not hold enough of it.
-
-    VARIANT_UNAVAILABLE
-        The merchant does not sell it, or no longer does. A different finding from having run
-        out, and folding the two together would hide a merchant whose catalog offers things it
-        does not sell.
-
-    MERCHANT_REFUSED
-        Anything else the merchant refused a quote for.
-    """
-
-    OUT_OF_STOCK = "OUT_OF_STOCK"
-    VARIANT_UNAVAILABLE = "VARIANT_UNAVAILABLE"
-    MERCHANT_REFUSED = "MERCHANT_REFUSED"
-
-
 @dataclass(frozen=True, slots=True)
 class ObservedSelection:
-    """What the executor chose to buy, as commerce facts rather than as a row reference.
+    """What was actually bought, as commerce facts rather than as a row reference.
 
-    The category and the attributes are carried rather than looked up, for the same reason a
-    checkout line snapshots them: a merchant editing a variant after the fact must not change
-    what a historical measurement was made against. It also keeps the evaluator pure, which it
-    could not be if deciding whether a charger was black meant reading the catalog.
+    The category, the attributes and the unit price are carried rather than looked up later, for
+    the same reason a checkout line snapshots them: a merchant editing a variant after the fact
+    must not change what a historical measurement was made against. It also keeps the evaluator
+    pure, which it could not be if deciding whether a charger was black meant reading the catalog.
+
+    They are read from the merchant's pre-mission catalog by trusted code and never from the
+    executor. An executor selects; it does not define what the thing it selected is.
+
+    `substantiated` is false when the merchant's pre-mission catalog held no such variant, which
+    is what a hallucinated identifier looks like. The price is then zero and the attributes empty,
+    because nothing established either, and the same catalog facts that could not describe it also
+    tell the evaluator it is not something this merchant sells.
     """
 
     variant_id: uuid.UUID
@@ -94,6 +78,7 @@ class ObservedSelection:
     currency: str
     product_category: str | None = None
     variant_attributes: Mapping[str, Any] = field(default_factory=dict)
+    substantiated: bool = True
 
     def __post_init__(self) -> None:
         if self.quantity <= 0:
@@ -109,19 +94,21 @@ class ObservedSelection:
 
 @dataclass(frozen=True, slots=True)
 class ObservedCheckout:
-    """What happened when the executor asked the merchant to quote the selection.
+    """The merchant's quote, as the merchant's own row records it.
 
-    `created` is the fact; `refusal` says why not when it is false. `checkout_id` is optional
-    because an executor that never produced a real quote row still has something to report, and
-    a benchmark that could only record real rows could not measure the merchants that refuse to
-    make them.
+    `created` says the merchant produced a quote this buyer could act on. It is false when there
+    is no row at all, and false when trusted evidence says the merchant authorized the purchase
+    and could not hold the stock, because an offer nothing can be bought against is not an offer.
 
     The total and the currency are not optional when a quote was created, and that is load
     bearing rather than tidy. The budget is checked against the quoted total when there is one,
-    so an executor that omitted it would be checked against the cheaper line amount instead, and
-    an over budget purchase would come back a success. Nor is `refusal` optional when a quote was
-    not created: without it every refusal collapses into one code and a report cannot separate
-    "the merchant said no and why" from "the executor did not say".
+    so a missing total would be checked against the cheaper line amount instead and an over
+    budget purchase would come back a success. They are read from the checkout row, so an
+    executor claiming a cheaper quote than the one it paid names a row that says otherwise.
+
+    Nor is `refusal` optional when a quote was not created: without it every refusal collapses
+    into one code and a report cannot separate "the merchant said no and why" from "the executor
+    did not say".
     """
 
     created: bool
@@ -147,12 +134,18 @@ class ObservedCheckout:
 
 @dataclass(frozen=True, slots=True)
 class ObservedAuthorization:
-    """What the merchant's authorization layer said about the quote.
+    """What the merchant's authorization layer answered, as the server answered it.
+
+    Recorded at the trusted tool boundary from the response the merchant's own API produced, and
+    never from the executor's account of it. That separation is what keeps `ENFORCEMENT_BYPASSED`
+    reachable: a system that denied a purchase and admitted the payment anyway is exactly the bug
+    this benchmark exists to find, and deriving "allowed" from the existence of the payment would
+    make it undetectable by construction.
 
     `violations` holds the codes that layer reported, verbatim, for diagnostics. The evaluator
     reads `allowed` and nothing else: it is measuring whether the purchase was permitted, not
-    re-deriving the permission itself, and re-deriving it would make the benchmark and the
-    system it measures the same code marking its own work.
+    re-deriving the permission itself, and re-deriving it would make the benchmark and the system
+    it measures the same code marking its own work.
     """
 
     allowed: bool
@@ -161,17 +154,17 @@ class ObservedAuthorization:
 
 @dataclass(frozen=True, slots=True)
 class ObservedPayment:
-    """Where the payment got to.
+    """Where the payment got to, according to the payment table.
 
     `PaymentAttemptStatus` rather than a benchmark specific enumeration, so there is one
     vocabulary for what a payment did. It carries the distinction that matters most here: a
     definitive decline and an unresolved payment are different facts, and the payment kernel is
     built on never calling one the other.
 
-    A success names the attempt it came from. "Money moved" is the most consequential claim an
-    executor makes and the one that decides both task completion and captured simulated demand,
-    and an identifier is what turns it from a claim into something the recording layer can check
-    against the payment table before it writes anything down.
+    Both fields are read from a `PaymentAttempt` row belonging to this merchant. "Money moved" is
+    the most consequential fact in the benchmark and the one that decides both task completion
+    and captured simulated demand, so it is established rather than reported: a claimed success
+    with no row behind it is not a payment, and a real payment nobody mentioned is still found.
     """
 
     status: PaymentAttemptStatus
@@ -183,48 +176,16 @@ class ObservedPayment:
 
 
 @dataclass(frozen=True, slots=True)
-class ObservedAbstention:
-    """The executor decided not to buy anything."""
-
-    code: AbstentionCode
-    detail: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ObservedError:
-    """The executor's own account of what stopped it.
-
-    Diagnostic only, exactly like `AbstentionCode`, and for the same reason: it is the thing
-    under test describing its own situation. It carries no origin and there is no field here
-    that could become one. Whether an interruption was the merchant's or the harness's is
-    decided from what happened at the tool boundary, by `agentrank_api.benchmark.tools`, and it
-    reaches the evaluator as a separate trusted input rather than inside this report.
-
-    That was not always so, and the change is the point. `ErrorOrigin` used to be a field on this
-    class, so an executor that returned HARNESS rather than letting a merchant refusal stand was
-    marked ERRORED with no failure reason and had its authored value counted as not measured
-    rather than as lost. Claiming MERCHANT is the same trick pointed the other way.
-
-    What is closed is that there is no longer a field to write either claim in. What that is not
-    is a boundary on its own: an in process executor holds the surface that refers to the ledger
-    and can reach it, which is a convention rather than a guarantee and is why an untrusted
-    executor runs in another process. See docs/shortcomings.md.
-    """
-
-    detail: str
-
-    def __post_init__(self) -> None:
-        if not self.detail.strip():
-            raise ValueError("an observed error must say what went wrong")
-
-
-@dataclass(frozen=True, slots=True)
 class ObservedResult:
-    """One executor's complete report on one mission.
+    """Everything trusted code established about one mission, as the evaluator reads it.
 
     Every part is optional because a mission can stop anywhere, and where it stopped is one of
-    the things being measured. The merchant is not optional: which merchant was actually
-    transacted with is ground truth the evaluator checks rather than assumes.
+    the things being measured. The merchant is not optional: which merchant was transacted with
+    is ground truth the evaluator checks rather than assumes.
+
+    The abstention and the error are the executor's own words, carried here because a decision
+    nobody acted on leaves no trace to substantiate and because a person reading a run wants to
+    know what the executor believed. Neither is classified from.
     """
 
     merchant_id: uuid.UUID
@@ -232,8 +193,8 @@ class ObservedResult:
     checkout: ObservedCheckout | None = None
     authorization: ObservedAuthorization | None = None
     payment: ObservedPayment | None = None
-    abstention: ObservedAbstention | None = None
-    error: ObservedError | None = None
+    abstention: ReportedAbstention | None = None
+    error: ReportedError | None = None
 
     @property
     def purchased(self) -> bool:

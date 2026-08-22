@@ -10,7 +10,9 @@ import pytest
 from benchmark_support import BLACK, BUDGET, CHARGERS, CURRENCY, brief
 
 from agentrank_api.benchmark.catalog import CatalogEntry, catalog_content_hash, facts_for, satisfies
-from agentrank_api.benchmark.observation import ObservedSelection
+from agentrank_api.benchmark.observation import (
+    ObservedSelection,
+)
 from agentrank_api.constraints.rules import ConstraintOperator
 from agentrank_api.mandates.intent import MaxQuantity, RequiredAttribute
 

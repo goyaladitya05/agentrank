@@ -28,10 +28,12 @@ is terminal because the authentication read has the condition in its SQL.
 """
 
 import asyncio
+import json
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from http import HTTPStatus
 from types import TracebackType
 from typing import Self
 
@@ -40,6 +42,13 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from agentrank_api.auth.service import MerchantCredentialService
 from agentrank_api.auth.tokens import TokenMarker
+from agentrank_api.benchmark.evidence import (
+    CommerceEvidence,
+    after_payment,
+    after_preparation,
+    payment_from_body,
+    preparation_from_body,
+)
 from agentrank_api.config import Settings
 from agentrank_api.main import create_app
 from agentrank_api.payments.provider import PaymentProvider
@@ -60,6 +69,16 @@ STARTUP_POLL = 0.02
 # Which request path means a payment was dispatched. Matched on the suffix rather than parsed,
 # because the only thing that matters is that the payment route was reached at all.
 PAYMENT_PATH_SUFFIX = "/payments"
+
+# The one other answer worth reading, and the reason is that it leaves no row. A preparation that
+# was authorized and could not hold the stock writes nothing, and neither does an authorization
+# denial, so both are read here or not at all.
+PREPARATION_PATH_SUFFIX = "/prepare-execution"
+
+# How much of a response body this is willing to hold while it is being read. Both bodies are a
+# few hundred bytes; the bound exists so that a benchmark's own bookkeeping cannot be made to
+# hold something large by anything the buyer asks for.
+MAX_RECORDED_BODY = 256 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,20 +102,57 @@ class RequestLedger:
     and a worker that lies says whatever it likes, so neither can be the source of what happened.
     The server answered the requests, and the server is ours.
 
-    Two questions, the same two an in process `ToolLedger` answers, and for the same reasons. A
-    5xx means the merchant surface failed rather than answered. A request to the payment route
+    Three questions, the same three an in process `ToolLedger` answers, and for the same reasons.
+    A 5xx means the merchant surface failed rather than answered. A request to the payment route
     means money may have moved, whatever came back and whether or not the caller survived to
-    report it.
+    report it. And two answers leave no row behind, so they are read from the responses this
+    server itself wrote: what the authorization layer decided, and whether an allowed preparation
+    could hold the stock.
+
+    The bodies are parsed back through the models the routes declared rather than picked apart by
+    key, so a field renamed on a view is a failure here rather than a silently absent fact. A body
+    that will not parse records nothing, which is the fail closed direction: it is not evidence
+    about an authorization.
     """
 
     def __init__(self) -> None:
         self._served: list[ServedRequest] = []
+        self._evidence = CommerceEvidence()
 
     def begin(self) -> None:
         self._served = []
+        self._evidence = CommerceEvidence()
 
     def record(self, served: ServedRequest) -> None:
         self._served.append(served)
+
+    def observe(self, served: ServedRequest, body: bytes) -> None:
+        """Read the two merchant answers that no row records out of a response this server wrote.
+
+        Only the two routes that produce them, and only when the server actually answered. A 4xx
+        or a 5xx carries an error document rather than a decision, and reading a decision out of
+        one would be inventing an answer nobody gave.
+        """
+        if served.status != HTTPStatus.OK:
+            return
+        try:
+            payload = json.loads(body)
+        except UnicodeDecodeError, json.JSONDecodeError:
+            return
+
+        if served.path.endswith(PREPARATION_PATH_SUFFIX):
+            prepared = preparation_from_body(payload)
+            if prepared is not None:
+                self._evidence = after_preparation(self._evidence, prepared)
+            return
+
+        paid = payment_from_body(payload)
+        if paid is not None:
+            self._evidence = after_payment(self._evidence, paid)
+
+    def evidence(self) -> CommerceEvidence:
+        """The merchant answers this mission produced that no row records."""
+        return self._evidence
 
     @property
     def served(self) -> tuple[ServedRequest, ...]:
@@ -124,6 +180,16 @@ class _Recording:
     exists only for the endpoint a benchmark starts and never for a deployment. The status is
     read off the response start message, and the record is written in a `finally` so that a
     request the application failed to answer at all is still one that happened.
+
+    Two routes have their response body kept as well as their status, and only those two. A
+    preparation and a payment request are where the merchant states an authorization decision,
+    and an authorization decision that denies writes no row anywhere, deliberately: a refusal
+    with a side effect would be a worse refusal. Keeping the body this server just wrote is the
+    only way that answer survives the request, and it is trusted for the obvious reason that the
+    server wrote it. Nothing an executor sends is read here.
+
+    The body is bounded and forwarded untouched. A buyer sees exactly the bytes it would have
+    seen; what differs is that the trusted side kept a copy of two of them.
     """
 
     def __init__(self, app: ASGIApp, ledger: RequestLedger) -> None:
@@ -136,24 +202,39 @@ class _Recording:
             return
 
         answered = {"status": 0}
+        keeping = _answers_a_decision(scope)
+        body = bytearray()
 
         async def watching(message: Message) -> None:
             if message["type"] == "http.response.start":
                 answered["status"] = int(message["status"])
+            elif keeping and message["type"] == "http.response.body":
+                chunk = message.get("body", b"")
+                if len(body) + len(chunk) <= MAX_RECORDED_BODY:
+                    body.extend(chunk)
             await send(message)
 
         try:
             await self._app(scope, receive, watching)
         finally:
-            self._ledger.record(
-                ServedRequest(
-                    method=str(scope.get("method", "")),
-                    path=str(scope.get("path", "")),
-                    # Nothing answered at all is a failure of the surface, which is what a
-                    # zero here means and what the 5xx test below then reads it as.
-                    status=answered["status"] or 500,
-                )
+            served = ServedRequest(
+                method=str(scope.get("method", "")),
+                path=str(scope.get("path", "")),
+                # Nothing answered at all is a failure of the surface, which is what a
+                # zero here means and what the 5xx test below then reads it as.
+                status=answered["status"] or 500,
             )
+            self._ledger.record(served)
+            if keeping:
+                self._ledger.observe(served, bytes(body))
+
+
+def _answers_a_decision(scope: Scope) -> bool:
+    """Whether this request is one of the two whose answer carries an authorization decision."""
+    if str(scope.get("method", "")) != "POST":
+        return False
+    path = str(scope.get("path", ""))
+    return path.endswith(PREPARATION_PATH_SUFFIX) or path.endswith(PAYMENT_PATH_SUFFIX)
 
 
 class LocalCommerceEndpoint:

@@ -11,20 +11,21 @@ build from, and it holds no session, no repository and no run. There is no bench
 API it can reach, so there is no request it can make that touches a suite, a run or another
 mission's result.
 
-What that does not do, and an earlier version of this docstring wrongly said it did, is put the
-authored suites out of reach. They are Python in the package this worker runs from, so code
-running here can import `agentrank_api.benchmark.voltedge` and read every mission's expected
-outcome, indexed by the mission key it was just handed. An independent test audit proved it by
-doing it, in exactly this environment and this working directory. `PYTHONPATH` has been taken off
-the allowlist since, which removes one route and not the one that matters.
+The authored suites are out of reach as well, which took a packaging change rather than a rule.
+They were Python in the package this worker runs from, so code running here could
+`import agentrank_api.benchmark.voltedge` and read every mission's expected outcome, indexed by
+the mission key it was just handed, and an independent test audit proved it by doing it in exactly
+this environment and this working directory. They now live in `benchmarks/<world>/` at the top of
+the repository, which is outside the distribution this package is built into, so there is no
+module to import, no package data to open and nothing in the working directory to read.
+`PYTHONPATH` came off the allowlist at the same time, which removes a checkout on the path as a
+second route.
 
-The boundary is therefore honest about two different things. A database credential, a session and
-every other run's results are absent from this process. The authored ground truth is not, and
-closing that means the suites living somewhere the runtime package does not, which is written
-down in docs/shortcomings.md as the first thing Phase 2C has to do. It is worth being precise
-about who this is a boundary against in the meantime: the code here is this repository's, and the
-untrusted thing behind it is a model that is handed a brief and a tool schema and never a Python
-interpreter.
+It is worth being precise about who this is a boundary against. The code here is this
+repository's, and the untrusted thing behind it is a model that is handed a brief and a tool
+schema and never a Python interpreter. This is not operating system sandboxing and does not claim
+to be: the repository is still a readable directory on the same filesystem in a developer
+checkout. See docs/security.md.
 
 That is checked rather than assumed, twice and in two different ways.
 `require_isolated_environment` refuses any variable that is not on a short allowlist, which is
@@ -36,10 +37,13 @@ a worker started in a checkout picks up the developer's `POSTGRES_PASSWORD` from
 empty environment. The runner starts a worker in an empty directory of its own, and this refuses
 to run if that ever stops being true.
 
-The report is an `ObservedResult` and nothing else. There is no field for a status, no field for
-a failure reason and no field for an error origin, so this process cannot mark its own mission
-and cannot say whose fault an interruption was. If the mission cannot be carried out at all, this
-exits non zero and says nothing, and the trusted side attributes that from the exit code.
+The report is an `ExecutorReport` and nothing else: identifiers and actions. There is no field
+for a status, no field for a failure reason, no field for an error origin, and no field for a
+price, a quoted total, an authorization decision or a payment status. So this process cannot mark
+its own mission, cannot say whose fault an interruption was, and cannot state a commerce fact:
+what the identifiers it names came to is established on the trusted side from the merchant's own
+rows. If the mission cannot be carried out at all, this exits non zero and says nothing, and the
+trusted side attributes that from the exit code.
 
 Standard output carries the report and nothing else. Anything this process wants to say to a
 human goes to standard error, because a line of diagnostic prose on stdout is a protocol
@@ -54,8 +58,8 @@ from collections.abc import Mapping
 from typing import TextIO
 
 from agentrank_api.benchmark.http_buyer import HttpBuyerCommerceSurface, authenticated_client
-from agentrank_api.benchmark.observation import ObservedResult
 from agentrank_api.benchmark.reference_executor import ReferenceMissionExecutor
+from agentrank_api.benchmark.report import ExecutorReport
 from agentrank_api.benchmark.wire import (
     REFERENCE_STRATEGY,
     MissionRequest,
@@ -152,7 +156,7 @@ def worker_environment(parent: Mapping[str, str]) -> dict[str, str]:
     return {name: value for name, value in parent.items() if name in PERMITTED_ENVIRONMENT}
 
 
-async def execute(request: MissionRequest) -> ObservedResult:
+async def execute(request: MissionRequest) -> ExecutorReport:
     """Carry out one mission over the merchant's own commerce API.
 
     The strategy is named by the request and refused if it is not one this build has, because a

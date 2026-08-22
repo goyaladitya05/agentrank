@@ -25,15 +25,17 @@ from agentrank_api.benchmark.failures import (
 from agentrank_api.benchmark.faults import ExecutionFault, FaultOrigin
 from agentrank_api.benchmark.lifecycle import MissionRunStatus
 from agentrank_api.benchmark.observation import (
-    AbstentionCode,
-    CheckoutRefusal,
-    ObservedAbstention,
     ObservedAuthorization,
     ObservedCheckout,
-    ObservedError,
     ObservedPayment,
     ObservedResult,
     ObservedSelection,
+)
+from agentrank_api.benchmark.report import (
+    AbstentionCode,
+    CheckoutRefusal,
+    ReportedAbstention,
+    ReportedError,
 )
 from agentrank_api.constraints.rules import ConstraintOperator
 from agentrank_api.mandates.intent import AllowedCategory, MaxQuantity, RequiredAttribute
@@ -315,7 +317,7 @@ def test_declining_when_nothing_acceptable_exists_is_correct() -> None:
     defined = mission(outcome=ExpectedOutcome.NO_ACCEPTABLE_PURCHASE)
     observed = ObservedResult(
         merchant_id=MERCHANT,
-        abstention=ObservedAbstention(code=AbstentionCode.NO_COMPLIANT_CANDIDATE),
+        abstention=ReportedAbstention(code=AbstentionCode.NO_COMPLIANT_CANDIDATE),
     )
 
     result = evaluate_mission(defined, observed, merchant_id=MERCHANT)
@@ -326,7 +328,7 @@ def test_declining_when_nothing_acceptable_exists_is_correct() -> None:
 def test_declining_when_something_acceptable_exists_is_a_discovery_failure() -> None:
     observed = ObservedResult(
         merchant_id=MERCHANT,
-        abstention=ObservedAbstention(code=AbstentionCode.NO_CANDIDATE_FOUND),
+        abstention=ReportedAbstention(code=AbstentionCode.NO_CANDIDATE_FOUND),
     )
 
     result = mark(observed)
@@ -341,7 +343,7 @@ def test_the_stated_abstention_reason_never_changes_the_classification(
 ) -> None:
     """Marking a mission from the executor's account of its own reasoning is not measurement."""
     observed = ObservedResult(
-        merchant_id=MERCHANT, abstention=ObservedAbstention(code=code, detail="a whole essay")
+        merchant_id=MERCHANT, abstention=ReportedAbstention(code=code, detail="a whole essay")
     )
 
     assert mark(observed).failure_reasons == (FailureReason.DISCOVERY_FAILURE,)
@@ -519,12 +521,12 @@ def test_a_merchant_fault_is_a_finding_about_the_merchant() -> None:
 def test_the_executors_own_account_of_an_error_classifies_nothing() -> None:
     """The one place this benchmark used to let the thing under test mark its own mission.
 
-    An `ObservedError` naming a catastrophe is prose. With no trusted fault beside it the
+    An `ReportedError` naming a catastrophe is prose. With no trusted fault beside it the
     mission is marked on what was actually observed, which here is an executor that selected
     nothing, and ERRORED is not reachable by writing a sentence.
     """
     observed = ObservedResult(
-        merchant_id=MERCHANT, error=ObservedError(detail="the merchant API failed")
+        merchant_id=MERCHANT, error=ReportedError(detail="the merchant API failed")
     )
 
     result = mark(observed)
@@ -556,7 +558,7 @@ def test_a_result_that_both_declined_and_bought_is_an_executor_fault() -> None:
         checkout=purchase.checkout,
         authorization=purchase.authorization,
         payment=purchase.payment,
-        abstention=ObservedAbstention(code=AbstentionCode.NO_CANDIDATE_FOUND),
+        abstention=ReportedAbstention(code=AbstentionCode.NO_CANDIDATE_FOUND),
     )
 
     result = mark(observed)
@@ -627,7 +629,7 @@ def test_declining_and_selecting_at_once_is_an_executor_fault() -> None:
     observed = ObservedResult(
         merchant_id=MERCHANT,
         selection=selection(),
-        abstention=ObservedAbstention(code=AbstentionCode.NO_CANDIDATE_FOUND),
+        abstention=ReportedAbstention(code=AbstentionCode.NO_CANDIDATE_FOUND),
     )
 
     result = mark(observed)
@@ -824,7 +826,7 @@ def test_a_stale_oracle_is_reported_and_changes_nothing_else() -> None:
     """
     observed = ObservedResult(
         merchant_id=MERCHANT,
-        abstention=ObservedAbstention(code=AbstentionCode.NO_COMPLIANT_CANDIDATE),
+        abstention=ReportedAbstention(code=AbstentionCode.NO_COMPLIANT_CANDIDATE),
     )
 
     result = evaluate_mission(
@@ -843,7 +845,7 @@ def test_a_control_mission_confirms_when_nothing_qualifies() -> None:
     defined = mission(outcome=ExpectedOutcome.NO_ACCEPTABLE_PURCHASE)
     observed = ObservedResult(
         merchant_id=MERCHANT,
-        abstention=ObservedAbstention(code=AbstentionCode.NO_COMPLIANT_CANDIDATE),
+        abstention=ReportedAbstention(code=AbstentionCode.NO_COMPLIANT_CANDIDATE),
     )
 
     result = evaluate_mission(

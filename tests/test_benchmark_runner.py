@@ -4,8 +4,9 @@ import uuid
 
 import pytest
 from benchmark_support import BLACK, CURRENCY, VALUE, fixture, mission, suite
-from commerce_support import PRICE, admit, build_shop, quote
-from sqlalchemy.ext.asyncio import AsyncSession
+from commerce_support import PRICE, Shop, admit, build_shop, quote
+from executor_support import Buy, Decline, scripted
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.benchmark.catalog import CatalogEntry, catalog_content_hash
 from agentrank_api.benchmark.definitions import AgentMissionBrief, ExpectedOutcome
@@ -14,19 +15,19 @@ from agentrank_api.benchmark.evaluation import evaluator_version
 from agentrank_api.benchmark.execution import ExecutorIdentity
 from agentrank_api.benchmark.failures import FailureReason
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
-from agentrank_api.benchmark.observation import (
+from agentrank_api.benchmark.report import (
     AbstentionCode,
-    ObservedAbstention,
-    ObservedAuthorization,
-    ObservedCheckout,
-    ObservedPayment,
-    ObservedResult,
-    ObservedSelection,
+    CheckoutRefusal,
+    ExecutorReport,
+    ReportedAbstention,
+    ReportedCheckout,
+    ReportedPayment,
+    ReportedSelection,
 )
-from agentrank_api.benchmark.runner import BenchmarkRunService, executor_from
+from agentrank_api.benchmark.runner import BenchmarkRunService
 from agentrank_api.benchmark.suites import BenchmarkSuiteService
 from agentrank_api.errors import ConflictError, NotFoundError
-from agentrank_api.payments.models import OutcomeSource, PaymentAttemptStatus
+from agentrank_api.payments.models import OutcomeSource
 from agentrank_api.payments.repository import PaymentAttemptRepository
 
 pytestmark = pytest.mark.anyio
@@ -52,40 +53,47 @@ async def registered(session: AsyncSession) -> None:
     await BenchmarkEnvironmentService(session).register(WORLD)
 
 
-def selection(variant_id: uuid.UUID, *, quantity: int = 1, price: int = PRICE) -> ObservedSelection:
-    return ObservedSelection(
-        variant_id=variant_id,
-        quantity=quantity,
-        unit_price_amount_minor=price,
-        currency=CURRENCY,
-        product_category="chargers",
-        variant_attributes={"color": "black"},
-    )
-
-
 def purchase(
     variant_id: uuid.UUID,
     merchant_id: uuid.UUID,
     *,
     checkout_id: uuid.UUID | None = None,
     attempt_id: uuid.UUID | None = None,
-    price: int = PRICE,
-) -> ObservedResult:
-    chosen = selection(variant_id, price=price)
-    return ObservedResult(
+    quantity: int = 1,
+) -> ExecutorReport:
+    """What an executor says it did: a variant, a quote and a payment, all by identifier.
+
+    There is no price here, no total, no authorization and no payment status, because the report
+    model has nowhere to put one. A report naming identifiers nothing produced is exactly what a
+    test wants when it is asserting that a claim is not a fact.
+    """
+    return ExecutorReport(
         merchant_id=merchant_id,
-        selection=chosen,
-        checkout=ObservedCheckout(
-            created=True,
-            checkout_id=checkout_id,
-            total_amount_minor=chosen.line_amount_minor,
-            currency=CURRENCY,
-        ),
-        authorization=ObservedAuthorization(allowed=True),
-        payment=ObservedPayment(
-            status=PaymentAttemptStatus.SUCCEEDED, attempt_id=attempt_id or uuid.uuid7()
-        ),
+        selection=ReportedSelection(variant_id=variant_id, quantity=quantity),
+        checkout=(None if checkout_id is None else ReportedCheckout(checkout_id=checkout_id)),
+        payment=None if attempt_id is None else ReportedPayment(attempt_id=attempt_id),
     )
+
+
+async def bought(
+    session: AsyncSession, built: Shop, *, key: str, quantity: int = 1
+) -> tuple[uuid.UUID, uuid.UUID]:
+    """A real quote and a real successful payment, through the services that own both.
+
+    Settled through the real payment repository, so the rows a report points at are ones the
+    payment kernel would recognise rather than ones a test wrote by hand. Substantiation reads
+    these, which is why a test that wants a mission to have succeeded has to actually buy
+    something.
+    """
+    checkout_id = await quote(session, built, quantity=quantity)
+    attempt = await admit(session, built, checkout_id, key=key)
+    payments = PaymentAttemptRepository(session)
+    await payments.mark_in_flight(attempt)
+    await payments.mark_succeeded(
+        attempt, provider_reference=f"ref-{key}", source=OutcomeSource.EXECUTION
+    )
+    await session.commit()
+    return checkout_id, attempt.id
 
 
 async def published(session: AsyncSession, *missions: object) -> None:
@@ -193,16 +201,7 @@ async def test_an_unpublished_suite_cannot_be_run(session: AsyncSession) -> None
 async def test_a_compliant_purchase_is_recorded_as_a_success(session: AsyncSession) -> None:
     built = await build_shop(session, SLUG)
     await published(session, mission("one", budget_minor=PRICE, constraints=(BLACK,)))
-    checkout_id = await quote(session, built)
-    attempt = await admit(session, built, checkout_id, key="bench-run-01")
-    # Settled through the real payment repository, so the row this test points at is one the
-    # payment kernel would recognise rather than one the test wrote by hand.
-    payments = PaymentAttemptRepository(session)
-    await payments.mark_in_flight(attempt)
-    await payments.mark_succeeded(
-        attempt, provider_reference="bench-ref-01", source=OutcomeSource.EXECUTION
-    )
-    await session.commit()
+    checkout_id, attempt_id = await bought(session, built, key="bench-run-01")
 
     service = BenchmarkRunService(session)
     run = await service.start_run(suite_key="test-suite", suite_version=1, merchant_slug=SLUG)
@@ -210,7 +209,7 @@ async def test_a_compliant_purchase_is_recorded_as_a_success(session: AsyncSessi
         run.id,
         "one",
         purchase(
-            built.variant_id, built.merchant_id, checkout_id=checkout_id, attempt_id=attempt.id
+            built.variant_id, built.merchant_id, checkout_id=checkout_id, attempt_id=attempt_id
         ),
         merchant_id=built.merchant_id,
     )
@@ -220,7 +219,7 @@ async def test_a_compliant_purchase_is_recorded_as_a_success(session: AsyncSessi
     assert result.selected_variant_id == built.variant_id
     assert result.selected_quantity == 1
     assert result.checkout_id == checkout_id
-    assert result.payment_attempt_id == attempt.id
+    assert result.payment_attempt_id == attempt_id
     # The catalog offers a qualifying variant, which is what the mission's oracle claimed.
     assert result.oracle_confirmed is True
 
@@ -237,9 +236,9 @@ async def test_a_stale_oracle_is_recorded_without_changing_the_result(
     result = await service.record_result(
         run.id,
         "one",
-        ObservedResult(
+        ExecutorReport(
             merchant_id=built.merchant_id,
-            abstention=ObservedAbstention(code=AbstentionCode.NO_COMPLIANT_CANDIDATE),
+            abstention=ReportedAbstention(code=AbstentionCode.NO_COMPLIANT_CANDIDATE),
         ),
         merchant_id=built.merchant_id,
     )
@@ -254,7 +253,13 @@ async def test_a_stale_oracle_is_recorded_without_changing_the_result(
 async def test_a_variant_the_merchant_does_not_sell_is_caught_by_the_catalog(
     session: AsyncSession,
 ) -> None:
-    """Reachable without waiting for the merchant to volunteer a particular refusal."""
+    """Reachable without waiting for the merchant to volunteer a particular refusal.
+
+    The selection is a variant the merchant's pre-mission catalog does not hold, which is what a
+    hallucinated identifier looks like. Nothing describing it is taken from the report: it has no
+    price and no attributes because nothing established either, and the finding comes from the
+    catalog.
+    """
     built = await build_shop(session, SLUG)
     await published(session, mission("one", budget_minor=PRICE, constraints=(BLACK,)))
 
@@ -263,12 +268,18 @@ async def test_a_variant_the_merchant_does_not_sell_is_caught_by_the_catalog(
     result = await service.record_result(
         run.id,
         "one",
-        purchase(uuid.uuid7(), built.merchant_id),
+        ExecutorReport(
+            merchant_id=built.merchant_id,
+            selection=ReportedSelection(variant_id=uuid.uuid7(), quantity=1),
+            checkout=ReportedCheckout(refusal=CheckoutRefusal.MERCHANT_REFUSED),
+        ),
         merchant_id=built.merchant_id,
     )
 
     assert result.primary_failure_reason is FailureReason.INVALID_VARIANT
-    assert result.unsafe_completion
+    # An attempt was made on something the merchant does not sell, which is outside what the
+    # buyer authorized whatever the executor said about it.
+    assert result.unsafe_attempt
     # Nothing was recorded for a variant this merchant does not have.
     assert result.selected_variant_id is None
 
@@ -338,10 +349,16 @@ async def test_a_run_with_unexecuted_missions_cannot_be_completed(
         mission("one", budget_minor=PRICE, constraints=(BLACK,)),
         mission("two", budget_minor=PRICE, constraints=(BLACK,)),
     )
+    checkout_id, attempt_id = await bought(session, built, key="bench-run-03")
     service = BenchmarkRunService(session)
     run = await service.start_run(suite_key="test-suite", suite_version=1, merchant_slug=SLUG)
     await service.record_result(
-        run.id, "one", purchase(built.variant_id, built.merchant_id), merchant_id=built.merchant_id
+        run.id,
+        "one",
+        purchase(
+            built.variant_id, built.merchant_id, checkout_id=checkout_id, attempt_id=attempt_id
+        ),
+        merchant_id=built.merchant_id,
     )
 
     with pytest.raises(ConflictError, match="missions that never executed"):
@@ -357,10 +374,16 @@ async def test_a_run_that_stopped_early_is_aborted_and_keeps_what_it_recorded(
         mission("one", budget_minor=PRICE, constraints=(BLACK,)),
         mission("two", budget_minor=PRICE, constraints=(BLACK,)),
     )
+    checkout_id, attempt_id = await bought(session, built, key="bench-run-04")
     service = BenchmarkRunService(session)
     run = await service.start_run(suite_key="test-suite", suite_version=1, merchant_slug=SLUG)
     await service.record_result(
-        run.id, "one", purchase(built.variant_id, built.merchant_id), merchant_id=built.merchant_id
+        run.id,
+        "one",
+        purchase(
+            built.variant_id, built.merchant_id, checkout_id=checkout_id, attempt_id=attempt_id
+        ),
+        merchant_id=built.merchant_id,
     )
 
     aborted = await service.abort_run(run.id, merchant_id=built.merchant_id)
@@ -392,8 +415,16 @@ async def test_a_finished_run_records_nothing_further(session: AsyncSession) -> 
 # End to end, through the executor seam.
 
 
-async def test_a_whole_suite_runs_in_order_and_reports(session: AsyncSession) -> None:
-    """The deterministic runner, end to end, with no LLM anywhere in it."""
+async def test_a_whole_suite_runs_in_order_and_reports(
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """The deterministic runner, end to end, with no LLM anywhere in it.
+
+    The buyer really buys. It has to: what a mission came to is established from the merchant's
+    own rows, so a mission that reports a purchase nobody made is a mission that did not succeed.
+    The over budget one authorizes itself to spend twice what the mission allows and takes two
+    units, which is a real payment for more money than the buyer was given.
+    """
     built = await build_shop(session, SLUG)
     await published(
         session,
@@ -408,21 +439,22 @@ async def test_a_whole_suite_runs_in_order_and_reports(session: AsyncSession) ->
     )
     await registered(session)
     service = BenchmarkRunService(session)
+    buyer, ledger = scripted(
+        factory,
+        built.merchant_id,
+        {
+            "buy-one": Buy(built.variant_id),
+            "over-budget": Buy(built.variant_id, quantity=2, mandate_amount_minor=PRICE * 2),
+            "nothing-fits": Decline(),
+        },
+    )
 
     run = await service.run_suite(
-        executor_from(
-            {
-                "buy-one": purchase(built.variant_id, built.merchant_id),
-                "over-budget": purchase(built.variant_id, built.merchant_id, price=PRICE * 10),
-                "nothing-fits": ObservedResult(
-                    merchant_id=built.merchant_id,
-                    abstention=ObservedAbstention(code=AbstentionCode.NO_COMPLIANT_CANDIDATE),
-                ),
-            }
-        ),
+        buyer,
         suite_key="test-suite",
         suite_version=1,
         fixture=WORLD,
+        witness=ledger,
         representation_label="baseline",
     )
     metrics = await service.metrics(run.id, merchant_id=built.merchant_id)
@@ -442,7 +474,7 @@ async def test_a_whole_suite_runs_in_order_and_reports(session: AsyncSession) ->
 
 
 async def test_an_executor_with_no_result_for_a_mission_stops_the_run(
-    session: AsyncSession,
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
 ) -> None:
     """A silently skipped mission is a run with a smaller denominator than the suite it claims."""
     built = await build_shop(session, SLUG)
@@ -454,9 +486,11 @@ async def test_an_executor_with_no_result_for_a_mission_stops_the_run(
 
     await registered(session)
 
+    buyer, _ = scripted(factory, built.merchant_id, {"one": Decline()})
+
     with pytest.raises(KeyError, match="two"):
         await BenchmarkRunService(session).run_suite(
-            executor_from({"one": purchase(built.variant_id, built.merchant_id)}),
+            buyer,
             suite_key="test-suite",
             suite_version=1,
             fixture=WORLD,
@@ -498,12 +532,12 @@ async def test_the_executor_is_handed_briefs_and_never_an_oracle(
 
         async def __call__(
             self, brief: AgentMissionBrief, *, merchant_id: uuid.UUID
-        ) -> ObservedResult:
+        ) -> ExecutorReport:
             del merchant_id
             seen.append(brief)
-            return ObservedResult(
+            return ExecutorReport(
                 merchant_id=built.merchant_id,
-                abstention=ObservedAbstention(code=AbstentionCode.NO_COMPLIANT_CANDIDATE),
+                abstention=ReportedAbstention(code=AbstentionCode.NO_COMPLIANT_CANDIDATE),
             )
 
     await registered(session)

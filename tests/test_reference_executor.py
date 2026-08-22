@@ -29,14 +29,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from agentrank_api.benchmark.buyer import MerchantBuyerSurface
 from agentrank_api.benchmark.definitions import AgentMissionBrief
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
+from agentrank_api.benchmark.evidence import CommerceEvidence
 from agentrank_api.benchmark.execution import ExecutorIdentity, implementation_revision
 from agentrank_api.benchmark.fixtures import BenchmarkFixture
-from agentrank_api.benchmark.observation import (
-    AbstentionCode,
-    CheckoutRefusal,
-    ObservedError,
-    ObservedResult,
-)
+from agentrank_api.benchmark.observation import ObservedResult
 from agentrank_api.benchmark.reference_executor import (
     REFERENCE_EXECUTOR,
     Candidate,
@@ -47,6 +43,15 @@ from agentrank_api.benchmark.reference_executor import (
     idempotency_key,
     select,
 )
+from agentrank_api.benchmark.report import (
+    AbstentionCode,
+    CheckoutRefusal,
+    ExecutorReport,
+    ReportedError,
+)
+from agentrank_api.benchmark.runner import BenchmarkRunService
+from agentrank_api.benchmark.substantiation import CommerceSubstantiation
+from agentrank_api.benchmark.tools import MeasuredBuyerSurface, ToolLedger
 from agentrank_api.checkout.models import CheckoutSession, CheckoutStatus
 from agentrank_api.commerce.catalog_fixture import SeedProduct, SeedVariant
 from agentrank_api.commerce.repository import CatalogRepository
@@ -62,6 +67,7 @@ from agentrank_api.mandates.intent import (
 )
 from agentrank_api.payments.fake import FakeOutcome, FakePaymentProvider
 from agentrank_api.payments.models import PaymentAttempt, PaymentAttemptStatus
+from agentrank_api.payments.repository import PaymentAttemptRepository
 
 pytestmark = pytest.mark.anyio
 
@@ -121,23 +127,77 @@ async def prepared(session: AsyncSession, fixture: BenchmarkFixture) -> uuid.UUI
     return outcome.environment.merchant_id
 
 
+class CarriedOut:
+    """The reference executor behind the trusted boundary a run puts it behind.
+
+    Calling it runs the executor and then substantiates what it reported, so what these tests
+    assert on is what trusted code established rather than what the executor said. That is the
+    point rather than a convenience: a price, a quoted total, an authorization decision and a
+    payment status are all read from the merchant's own state now, and a test that asserted them
+    off the executor's report would be asserting the thing this phase removed.
+
+    The executor's own words are kept on `report` for the tests that are about what it says.
+    """
+
+    def __init__(
+        self,
+        sessions: async_sessionmaker[AsyncSession],
+        merchant_id: uuid.UUID,
+        *,
+        provider: FakePaymentProvider | None = None,
+    ) -> None:
+        self._sessions = sessions
+        self._merchant_id = merchant_id
+        self._ledger = ToolLedger()
+        self._surface = MeasuredBuyerSurface(
+            MerchantBuyerSurface(
+                sessions, merchant_id=merchant_id, provider=provider or FakePaymentProvider()
+            ),
+            self._ledger,
+        )
+        self.report: ExecutorReport | None = None
+
+    @property
+    def evidence(self) -> CommerceEvidence:
+        """What the trusted boundary saw the merchant answer during the last mission."""
+        return self._ledger.evidence()
+
+    async def __call__(
+        self, mission: AgentMissionBrief, *, merchant_id: uuid.UUID
+    ) -> ObservedResult:
+        async with self._sessions() as opened:
+            catalog = await BenchmarkRunService(opened).catalog(self._merchant_id)
+            since = await PaymentAttemptRepository(opened).clock()
+
+        self._ledger.begin()
+        report = await ReferenceMissionExecutor(self._surface)(mission, merchant_id=merchant_id)
+        self.report = report
+
+        async with self._sessions() as opened:
+            return await CommerceSubstantiation(opened).observe(
+                report,
+                merchant_id=self._merchant_id,
+                brief=mission,
+                catalog=catalog,
+                evidence=self._ledger.evidence(),
+                since=since,
+            )
+
+
 def executor(
     sessions: async_sessionmaker[AsyncSession],
     merchant_id: uuid.UUID,
     *,
     provider: FakePaymentProvider | None = None,
-) -> ReferenceMissionExecutor:
-    """The reference executor over a buyer surface with its own sessions.
+) -> CarriedOut:
+    """The reference executor over a buyer surface with its own sessions, and the trusted read.
 
     A factory rather than this test's session, because that is what the surface takes: every
     buyer operation opens and closes one, exactly as an HTTP route does. It also means the work
     below genuinely commits on another connection, so an assertion made on this test's session
     is reading what the database holds rather than what one transaction is holding open.
     """
-    surface = MerchantBuyerSurface(
-        sessions, merchant_id=merchant_id, provider=provider or FakePaymentProvider()
-    )
-    return ReferenceMissionExecutor(surface)
+    return CarriedOut(sessions, merchant_id, provider=provider)
 
 
 async def stock_of(session: AsyncSession, merchant_id: uuid.UUID, sku: str) -> int:
@@ -219,7 +279,11 @@ def _imported_modules(module: object) -> set[str]:
 # the executor nobody has written yet.
 PERMITTED_BENCHMARK_IMPORTS = {
     "agentrank_api.benchmark.definitions",
-    "agentrank_api.benchmark.observation",
+    # `report`, and deliberately not `observation`. What an executor may produce is a report of
+    # identifiers and actions; an observation is what trusted code establishes from one, and an
+    # executor with that type in its namespace would be an executor holding the shape of the
+    # answer.
+    "agentrank_api.benchmark.report",
     "agentrank_api.benchmark.execution",
     "agentrank_api.benchmark.buyer",
     "agentrank_api.benchmark.fixtures",
@@ -827,7 +891,7 @@ async def test_a_quote_the_merchant_will_not_make_is_recorded_as_a_refusal(
     )
 
     assert observed.checkout is not None
-    assert not observed.checkout.created
+    assert observed.checkout.checkout_id is None
     assert observed.checkout.refusal is CheckoutRefusal.OUT_OF_STOCK
     assert observed.selection is not None
 
@@ -863,7 +927,7 @@ def test_an_observed_result_never_carries_a_classification() -> None:
     Asserted on the type rather than on one result, because a field added here later is the way
     that separation would be lost.
     """
-    assert set(ObservedError.__dataclass_fields__) == {"detail"}
+    assert set(ReportedError.__dataclass_fields__) == {"detail"}
     fields = set(ObservedResult.__dataclass_fields__)
 
     assert fields == {
@@ -880,33 +944,36 @@ def test_an_observed_result_never_carries_a_classification() -> None:
 # What an error does to a report that already had something in it.
 
 
-async def test_a_refusal_after_a_payment_keeps_the_payment_in_the_report(
+async def test_a_refusal_after_a_quote_keeps_the_quote_in_the_report(
     session: AsyncSession,
     factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """Money moving is the most consequential thing this executor observes.
+    """A report has to carry what already happened, not only what stopped it.
 
-    An error handler that threw the partial report away recorded a mission that had quoted, held
-    stock and paid as one that selected nothing. The run lost its link to the commerce it caused,
-    and the evaluator's rule that a harness fault after a successful payment is not an ERRORED
-    mission became unreachable, because no error result could ever carry a payment.
+    An error handler that threw the partial report away recorded a mission that had quoted and
+    held stock as one that selected nothing, which lost the run's link to the commerce it caused.
+    The quote survives the refusal, and substantiation then reads what that quote came to.
+
+    A payment cannot be lost this way at all any more, and the reason is worth stating: the
+    payment is found from the payment table rather than taken from the report, so an executor
+    that crashed after paying and reported nothing still has its purchase established. That is
+    asserted in tests/test_benchmark_substantiation.py.
     """
     merchant_id = await prepared(session, world())
 
-    class LosingTheReceipt(MerchantBuyerSurface):
-        async def get_checkout(self, checkout_id: uuid.UUID) -> Any:
-            raise ConflictError("checkout_unreadable", "the quote could not be read back")
+    class RefusingToPrepare(MerchantBuyerSurface):
+        async def prepare_checkout(self, checkout_id: uuid.UUID) -> Any:
+            raise ConflictError("checkout_unpreparable", "the quote could not be prepared")
 
-    surface = LosingTheReceipt(factory, merchant_id=merchant_id, provider=FakePaymentProvider())
-    observed = await ReferenceMissionExecutor(surface)(
+    surface = RefusingToPrepare(factory, merchant_id=merchant_id, provider=FakePaymentProvider())
+    report = await ReferenceMissionExecutor(surface)(
         brief(constraints=(CHARGERS, BLACK)), merchant_id=merchant_id
     )
 
-    assert observed.purchased
-    assert observed.payment is not None and observed.payment.attempt_id is not None
-    assert observed.selection is not None
-    assert observed.checkout is not None
-    assert observed.error is not None
+    assert report.selection is not None
+    assert report.checkout is not None and report.checkout.checkout_id is not None
+    assert report.payment is None
+    assert report.error is not None
 
 
 async def test_a_refusal_while_reading_the_catalog_stops_the_mission_before_any_selection(

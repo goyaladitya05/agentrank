@@ -32,10 +32,15 @@ own catalog answering is written down as data in `agentrank_api.benchmark.faults
 merchant's machine readable codes, and identical over HTTP where the same codes arrive in the
 error body.
 
-`ExecutionWitness` is what the runner asks. It is deliberately narrow: whether a fault occurred
-and whether a payment was ever attempted, both from evidence, and nothing about what was bought.
-Nothing an executor produces reaches it, and there is no method on it an executor could call to
-put something in.
+`ExecutionWitness` is what the runner asks. It is deliberately narrow: whether a fault occurred,
+whether a payment was ever attempted, and the two merchant answers that leave no row behind, which
+are what the authorization layer decided and whether an allowed preparation could hold the stock.
+All of it is read from what the surface returned. Nothing an executor produces reaches it, and
+there is no method on it an executor could call to put something in.
+
+What is deliberately not here is anything about what was bought. A quote, a price and a payment
+outcome are rows, and substantiation reads them from the database rather than from a record kept
+beside the mission.
 """
 
 import uuid
@@ -46,6 +51,11 @@ from enum import StrEnum
 from typing import Protocol
 
 from agentrank_api.benchmark.buyer import BuyerCommerceSurface
+from agentrank_api.benchmark.evidence import (
+    CommerceEvidence,
+    after_payment,
+    after_preparation,
+)
 from agentrank_api.benchmark.faults import (
     AUTHORIZATION_REFUSALS,
     CATALOG_REFUSALS,
@@ -127,11 +137,16 @@ class ToolCall:
 class ExecutionWitness(Protocol):
     """What the runner may ask about how one mission's execution actually went.
 
-    Two questions and no more, both answered from evidence gathered on the trusted side.
+    Three questions and no more, all answered from evidence gathered on the trusted side.
 
     `fault` is the interruption to attribute, or None when nothing failed. `payment_attempted`
     is what stops a crash being tidied away: a mission that reached the payment call may have
     moved money, and that is never a mission to record and carry on from.
+
+    `evidence` is the pair of merchant answers that leave no row behind: what the authorization
+    layer decided, and whether a preparation that was allowed could hold the stock. Substantiation
+    reads it beside the merchant's own rows. There is no method here an executor could call to put
+    something in, on any of the three.
     """
 
     def begin(self) -> None:
@@ -141,6 +156,8 @@ class ExecutionWitness(Protocol):
     def fault(self) -> ExecutionFault | None: ...
 
     def payment_attempted(self) -> bool: ...
+
+    def evidence(self) -> CommerceEvidence: ...
 
 
 class ToolLedger:
@@ -166,10 +183,12 @@ class ToolLedger:
     def __init__(self) -> None:
         self._calls: list[ToolCall] = []
         self._payment_attempted = False
+        self._evidence = CommerceEvidence()
 
     def begin(self) -> None:
         self._calls = []
         self._payment_attempted = False
+        self._evidence = CommerceEvidence()
 
     def record(self, call: ToolCall) -> None:
         self._calls.append(call)
@@ -182,6 +201,18 @@ class ToolLedger:
         that only knew about calls which came back would have no record that one was made.
         """
         self._payment_attempted = True
+
+    def note_preparation(self, preparation: ExecutionPreparationView) -> None:
+        """Remember what a preparation answered, from the answer rather than from the caller."""
+        self._evidence = after_preparation(self._evidence, preparation)
+
+    def note_payment(self, paid: PaymentView) -> None:
+        """Remember what the authorization layer said at the instant the money would move."""
+        self._evidence = after_payment(self._evidence, paid)
+
+    def evidence(self) -> CommerceEvidence:
+        """The merchant answers this mission produced that no row records."""
+        return self._evidence
 
     @property
     def calls(self) -> tuple[ToolCall, ...]:
@@ -262,7 +293,12 @@ class MeasuredBuyerSurface:
     async def prepare_checkout(self, checkout_id: uuid.UUID) -> ExecutionPreparationView:
         _given(BuyerOperation.PREPARE_CHECKOUT, checkout_id, uuid.UUID)
         with self._watching(BuyerOperation.PREPARE_CHECKOUT):
-            return await self._inner.prepare_checkout(checkout_id)
+            prepared = await self._inner.prepare_checkout(checkout_id)
+        # Recorded from what the service returned, outside the watched scope so that a recording
+        # failure is this boundary's bug rather than something attributed to the merchant. The
+        # answer is handed back untouched: an executor sees exactly what it would have seen.
+        self._ledger.note_preparation(prepared)
+        return prepared
 
     async def complete_checkout(
         self, checkout_id: uuid.UUID, request: CreatePaymentRequest
@@ -272,6 +308,7 @@ class MeasuredBuyerSurface:
         with self._watching(BuyerOperation.COMPLETE_CHECKOUT):
             paid = await self._inner.complete_checkout(checkout_id, request)
         self._ledger.record(_admission(paid))
+        self._ledger.note_payment(paid)
         return paid
 
     @contextmanager

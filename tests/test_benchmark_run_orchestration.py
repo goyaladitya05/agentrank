@@ -31,11 +31,11 @@ from agentrank_api.benchmark.execution import ExecutorIdentity
 from agentrank_api.benchmark.fixtures import BenchmarkFixture
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
 from agentrank_api.benchmark.models import BenchmarkRun
-from agentrank_api.benchmark.observation import ObservedResult
 from agentrank_api.benchmark.reference_executor import (
     REFERENCE_EXECUTOR,
     ReferenceMissionExecutor,
 )
+from agentrank_api.benchmark.report import ExecutorReport
 from agentrank_api.benchmark.runner import BenchmarkRunService
 from agentrank_api.benchmark.suites import BenchmarkSuiteService
 from agentrank_api.commerce.catalog_fixture import SeedProduct, SeedVariant
@@ -419,7 +419,7 @@ async def test_a_mission_is_running_before_the_executor_is_handed_anything(
     class Watching(ReferenceMissionExecutor):
         async def __call__(
             self, brief: AgentMissionBrief, *, merchant_id: uuid.UUID
-        ) -> ObservedResult:
+        ) -> ExecutorReport:
             # A second session on its own connection, which is what "a separate process would
             # see" actually means. Reading through the runner's own session would be satisfied
             # by a flush, and a flush is exactly what a crash discards.
@@ -451,7 +451,7 @@ async def test_an_executor_that_raises_stops_the_run_and_leaves_the_mission_runn
     class Failing(ReferenceMissionExecutor):
         async def __call__(
             self, brief: AgentMissionBrief, *, merchant_id: uuid.UUID
-        ) -> ObservedResult:
+        ) -> ExecutorReport:
             if brief.key == "two":
                 raise RuntimeError("the harness fell over")
             return await super().__call__(brief, merchant_id=merchant_id)

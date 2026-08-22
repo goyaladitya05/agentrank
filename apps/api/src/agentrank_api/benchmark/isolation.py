@@ -34,8 +34,9 @@ Attribution comes from three trusted places and none of them is the worker:
 
 ```text
 the process     it could not be started, it exited non zero, it timed out, it spoke nonsense
-the server      a 5xx it answered, and whether the payment route was ever reached
-the report      an ObservedResult, and only ever as the observation itself
+the server      a 5xx it answered, whether the payment route was reached, and what the
+                authorization layer answered where no row records it
+the report      an ExecutorReport: identifiers and actions, never facts
 ```
 
 A worker that dies is a HARNESS fault and the mission is ERRORED. That is not a way to be
@@ -58,9 +59,10 @@ import uuid
 
 from agentrank_api.benchmark.definitions import AgentMissionBrief
 from agentrank_api.benchmark.endpoint import RequestLedger
+from agentrank_api.benchmark.evidence import CommerceEvidence
 from agentrank_api.benchmark.execution import ExecutorIdentity, implementation_revision
 from agentrank_api.benchmark.faults import ExecutionFault, FaultOrigin
-from agentrank_api.benchmark.observation import ObservedResult
+from agentrank_api.benchmark.report import ExecutorReport
 from agentrank_api.benchmark.wire import (
     REFERENCE_STRATEGY,
     MissionRequest,
@@ -185,9 +187,18 @@ class IsolatedMissionExecutor:
     def payment_attempted(self) -> bool:
         return self._served.payment_attempted()
 
+    def evidence(self) -> CommerceEvidence:
+        """What the merchant answered where no row records it, read by the server that answered.
+
+        The worker is not asked and has nothing to say: an authorization decision and a
+        preparation that could not hold stock are read out of the response bodies this endpoint
+        itself wrote.
+        """
+        return self._served.evidence()
+
     # The executor half.
 
-    async def __call__(self, brief: AgentMissionBrief, *, merchant_id: uuid.UUID) -> ObservedResult:
+    async def __call__(self, brief: AgentMissionBrief, *, merchant_id: uuid.UUID) -> ExecutorReport:
         """Carry one mission out in a process that has no database, and read what came back.
 
         Anything that goes wrong with the process is recorded as a harness fault and an empty
@@ -213,9 +224,9 @@ class IsolatedMissionExecutor:
             self._fault = ExecutionFault(origin=FaultOrigin.HARNESS, detail=failed.detail)
             if self.payment_attempted():
                 raise PaymentUnaccountedError(brief.key, failed.detail) from failed
-            return ObservedResult(merchant_id=merchant_id)
+            return ExecutorReport(merchant_id=merchant_id)
 
-    async def _carry_out(self, request: MissionRequest) -> ObservedResult:
+    async def _carry_out(self, request: MissionRequest) -> ExecutorReport:
         # An empty directory of its own, and this is load bearing rather than tidy. `Settings`
         # reads a `.env` file from the working directory, so a worker started in a checkout
         # picks up the developer's `POSTGRES_PASSWORD` from disk however carefully its
@@ -223,7 +234,7 @@ class IsolatedMissionExecutor:
         with tempfile.TemporaryDirectory(prefix="agentrank-benchmark-") as sandbox:
             return await self._through(request, sandbox)
 
-    async def _through(self, request: MissionRequest, sandbox: str) -> ObservedResult:
+    async def _through(self, request: MissionRequest, sandbox: str) -> ExecutorReport:
         process = await self._spawn(sandbox)
         try:
             stdout, stderr = await asyncio.wait_for(

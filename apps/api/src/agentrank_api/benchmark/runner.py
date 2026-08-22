@@ -62,6 +62,7 @@ from agentrank_api.benchmark.evaluation import (
     evaluate_mission,
     evaluator_version,
 )
+from agentrank_api.benchmark.evidence import CommerceEvidence
 from agentrank_api.benchmark.execution import ExecutorIdentity, MissionExecutor
 from agentrank_api.benchmark.faults import ExecutionFault
 from agentrank_api.benchmark.fixtures import BenchmarkFixture
@@ -74,14 +75,21 @@ from agentrank_api.benchmark.models import (
     BenchmarkRun,
 )
 from agentrank_api.benchmark.observation import ObservedResult
+from agentrank_api.benchmark.report import ExecutorReport
 from agentrank_api.benchmark.repository import BenchmarkRunRepository, BenchmarkSuiteRepository
+from agentrank_api.benchmark.substantiation import CommerceSubstantiation
 from agentrank_api.benchmark.tools import ExecutionWitness
 from agentrank_api.checkout.models import CheckoutSession
 from agentrank_api.commerce.models import Product, Variant
 from agentrank_api.commerce.repository import MerchantRepository
 from agentrank_api.conflicts import translated_conflicts
 from agentrank_api.errors import ConflictError, NotFoundError
-from agentrank_api.payments.models import PaymentAttempt, PaymentAttemptStatus
+from agentrank_api.payments.models import (
+    TERMINAL_STATUSES,
+    PaymentAttempt,
+    PaymentAttemptStatus,
+)
+from agentrank_api.payments.repository import PaymentAttemptRepository
 
 RUN_RESOURCE = "benchmark_run"
 
@@ -113,6 +121,8 @@ class BenchmarkRunService:
         self._suites = BenchmarkSuiteRepository(session)
         self._runs = BenchmarkRunRepository(session)
         self._environments = BenchmarkEnvironmentService(session)
+        self._attempts = PaymentAttemptRepository(session)
+        self._substantiation = CommerceSubstantiation(session)
 
     async def start_run(
         self,
@@ -271,10 +281,22 @@ class BenchmarkRunService:
             )
             if witness is not None:
                 witness.begin()
-            observed = await executor(brief, merchant_id=merchant_id)
+            since = await self._attempts.clock()
+            # The read above opened a transaction that would otherwise stay open for as long as
+            # the executor takes, which for a model is a long time to hold one for nothing.
+            await self._session.commit()
+            report = await executor(brief, merchant_id=merchant_id)
             fault = None if witness is None else witness.fault()
+            observed = await self._substantiate(
+                report,
+                brief=brief,
+                merchant_id=merchant_id,
+                catalog=entries,
+                evidence=None if witness is None else witness.evidence(),
+                since=since,
+            )
             _require_payment_accounted(brief.key, observed, fault, witness)
-            result = await self.record_result(
+            result = await self._record(
                 run_id,
                 brief.key,
                 observed,
@@ -347,6 +369,74 @@ class BenchmarkRunService:
         return result_id
 
     async def record_result(
+        self,
+        run_id: uuid.UUID,
+        mission_key: str,
+        report: ExecutorReport,
+        *,
+        merchant_id: uuid.UUID,
+        catalog: Sequence[CatalogEntry] | None = None,
+        fault: ExecutionFault | None = None,
+        evidence: CommerceEvidence | None = None,
+        since: datetime | None = None,
+    ) -> BenchmarkMissionRun:
+        """Substantiate one executor's report against trusted state, then mark and write it.
+
+        This takes a report and not an observation, and that is the shape of the whole boundary
+        rather than a signature preference. There is no way through this service to record a
+        mission from facts somebody else assembled, so a caller cannot hand in a quoted total, a
+        payment status or an authorization decision that nothing established.
+
+        `since` bounds the payment sweep to this mission. `run_suite` reads the database's own
+        clock immediately before the executor runs and passes it, which is the honest bound. The
+        fallback used here is the mission run's own `started_at`, which is this application's
+        clock rather than the database's and is the weaker of the two.
+
+        `evidence` is what the trusted tool boundary saw the merchant answer. None means nobody
+        was watching, which is reported as no authorization rather than as an allowed one.
+        """
+        run = await self._loaded_run(run_id, merchant_id=merchant_id)
+        mission = await self._mission(run.suite_id, mission_key)
+        started = await self._runs.get_mission_run(run.id, mission.id, merchant_id=merchant_id)
+        entries = await self.catalog(merchant_id) if catalog is None else catalog
+        observed = await self._substantiate(
+            report,
+            brief=mission.to_brief(),
+            merchant_id=merchant_id,
+            catalog=entries,
+            evidence=evidence,
+            since=since if since is not None else _started_at(started),
+        )
+        return await self._record(
+            run_id,
+            mission_key,
+            observed,
+            merchant_id=merchant_id,
+            catalog=entries,
+            fault=fault,
+        )
+
+    async def _substantiate(
+        self,
+        report: ExecutorReport,
+        *,
+        brief: AgentMissionBrief,
+        merchant_id: uuid.UUID,
+        catalog: Sequence[CatalogEntry],
+        evidence: CommerceEvidence | None,
+        since: datetime | None,
+    ) -> ObservedResult:
+        """What trusted state says happened, from what the executor said it did."""
+        return await self._substantiation.observe(
+            report,
+            merchant_id=merchant_id,
+            brief=brief,
+            catalog=catalog,
+            evidence=evidence,
+            since=since,
+        )
+
+    async def _record(
         self,
         run_id: uuid.UUID,
         mission_key: str,
@@ -684,6 +774,11 @@ class BenchmarkRunService:
         return attempt.id
 
 
+def _started_at(result: BenchmarkMissionRun | None) -> datetime | None:
+    """When a mission run says it began, or None when there is no row to ask."""
+    return None if result is None else result.started_at
+
+
 def _require_payment_accounted(
     mission_key: str,
     observed: ObservedResult,
@@ -693,27 +788,33 @@ def _require_payment_accounted(
     """Refuse to record a mission that dispatched a payment and cannot say what became of it.
 
     Three facts have to hold together for this to fire: something failed, the payment call was
-    actually made, and the report carries no payment. The first two come from the witness and
-    the third is the executor's, which is safe in this direction: an executor that hid a payment
-    it made would be hiding it from the only check that stops the run.
+    actually made, and no settled payment can be found. All three come from trusted state now.
+    The payment is substantiated from the payment table rather than read out of the report, so a
+    mission that dispatched a payment which resolved is recorded with the outcome it reached, and
+    one whose payment is still ADMITTED, IN_FLIGHT or UNKNOWN stops the run exactly as one with
+    no payment at all does.
 
-    Recording it would be worse than stopping. ERRORED says the harness could not carry the
-    mission out and moves the mission's value out of lost demand, which is exactly the wrong
-    thing to say about a mission that may have bought something. Carrying on would let the next
-    preparation release a hold under a payment nobody has resolved.
+    Recording an unresolved payment would be worse than stopping. ERRORED says the harness could
+    not carry the mission out and moves the mission's value out of lost demand, which is the
+    wrong thing to say about a mission that may have bought something, and carrying on would let
+    the next preparation try to release a hold under a payment nobody has resolved.
 
     So the mission stays RUNNING, which is the one state that means "this started and what it
     did is unknown", and the run stops. That state is never replayed, which is the rule that
-    keeps a benchmark from buying the same thing twice. An operator resolves the payment through
-    `agentrank_api.cli payments` and closes the run with `benchmark abort`.
+    keeps a benchmark from buying the same thing twice. An operator closes the run with
+    `benchmark abort`, which releases the world claim, and resolves the payment through
+    `agentrank_api.cli payments`.
     """
-    if witness is None or fault is None or observed.payment is not None:
+    if witness is None or fault is None:
         return
     if not witness.payment_attempted():
         return
+    if observed.payment is not None and observed.payment.status in TERMINAL_STATUSES:
+        return
+    reached = "none" if observed.payment is None else observed.payment.status.value
     raise ConflictError(
         "payment_unaccounted",
-        f"mission {mission_key} dispatched a payment and reported none, after"
+        f"mission {mission_key} dispatched a payment that reached {reached}, after"
         f" {fault.detail}. Resolve the payment before closing this run",
         resource=RUN_RESOURCE,
         identifier=mission_key,
@@ -763,7 +864,7 @@ def _outcome(result: BenchmarkMissionRun) -> MissionOutcome:
 
 
 class ReplayExecutor:
-    """An executor that replays prepared observed results, keyed by mission.
+    """An executor that replays prepared reports, keyed by mission.
 
     It is not a buyer and does not pretend to be one: it carries out no commerce, makes no
     decision and reaches nothing external. What it is for is exercising the run machinery
@@ -780,18 +881,23 @@ class ReplayExecutor:
 
     identity = ExecutorIdentity(kind="replay", version=1)
 
-    def __init__(self, results: dict[str, ObservedResult]) -> None:
+    def __init__(self, results: dict[str, ExecutorReport]) -> None:
         self._results = results
 
-    async def __call__(self, brief: AgentMissionBrief, *, merchant_id: uuid.UUID) -> ObservedResult:
+    async def __call__(self, brief: AgentMissionBrief, *, merchant_id: uuid.UUID) -> ExecutorReport:
         del merchant_id
         if brief.key not in self._results:
             raise KeyError(f"no prepared result for mission {brief.key!r}")
         return self._results[brief.key]
 
 
-def executor_from(results: dict[str, ObservedResult]) -> ReplayExecutor:
-    """A replay executor over these prepared results."""
+def executor_from(results: dict[str, ExecutorReport]) -> ReplayExecutor:
+    """A replay executor over these prepared reports.
+
+    What it replays is a report and not an observation, which is the property worth stating: a
+    replayed run goes through the same substantiation a real one does, so a prepared report
+    claiming a payment nothing produced is marked exactly as an executor claiming one would be.
+    """
     return ReplayExecutor(results)
 
 

@@ -35,10 +35,12 @@ from agentrank_api.benchmark.definitions import AgentMissionBrief, ExpectedOutco
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
 from agentrank_api.benchmark.evaluation import evaluator_version
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
-from agentrank_api.benchmark.observation import AbstentionCode
 from agentrank_api.benchmark.reference_executor import (
     REFERENCE_EXECUTOR,
     ReferenceMissionExecutor,
+)
+from agentrank_api.benchmark.report import (
+    AbstentionCode,
 )
 from agentrank_api.benchmark.runner import BenchmarkRunService
 from agentrank_api.benchmark.tools import MeasuredBuyerSurface, ToolLedger

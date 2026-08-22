@@ -70,11 +70,8 @@ from agentrank_api.benchmark.faults import (
 )
 from agentrank_api.benchmark.identity import HASH_ALGORITHM, canonical_json
 from agentrank_api.benchmark.lifecycle import MissionRunStatus
-from agentrank_api.benchmark.observation import (
-    CheckoutRefusal,
-    ObservedResult,
-    ObservedSelection,
-)
+from agentrank_api.benchmark.observation import ObservedResult, ObservedSelection
+from agentrank_api.benchmark.report import CheckoutRefusal
 from agentrank_api.constraints.rules import (
     ConstraintOperator,
     compare,

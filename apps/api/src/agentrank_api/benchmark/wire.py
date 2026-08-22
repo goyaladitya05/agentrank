@@ -20,10 +20,14 @@ evaluator, no payment provider secret and nothing about what any earlier mission
 field here that could carry one, so an executor process cannot be handed the oracle by a caller
 that meant well and got the arguments wrong.
 
-What comes back is a `MissionReport`: an `ObservedResult` and nothing else. There is no field for
-a status, no field for a failure reason and no field for an error origin, so a worker cannot
-mark its own mission and cannot say whose fault an interruption was. Attribution is decided on
-the trusted side from the process exit, the transport and the tool boundary.
+What comes back is an `ExecutorReport` and nothing else: which variant it selected, which quote
+it created, which payment it dispatched, whether it declined, and what stopped it. There is no
+field for a status, no field for a failure reason, no field for an error origin, and since Phase
+2B-R2 no field for a price, a quoted total, an authorization decision or a payment status either.
+A worker cannot mark its own mission, cannot say whose fault an interruption was, and cannot
+state a commerce fact. What those identifiers came to is established on the trusted side from the
+merchant's own rows, and attribution is decided from the process exit, the transport and the tool
+boundary.
 
 The token travels inside the request document on stdin rather than in the environment or on the
 command line. Both of those are readable by any process the same user runs, and a benchmark that
@@ -40,18 +44,16 @@ from dataclasses import dataclass
 from typing import Any, Self
 
 from agentrank_api.benchmark.definitions import AgentMissionBrief
-from agentrank_api.benchmark.observation import (
+from agentrank_api.benchmark.report import (
     AbstentionCode,
     CheckoutRefusal,
-    ObservedAbstention,
-    ObservedAuthorization,
-    ObservedCheckout,
-    ObservedError,
-    ObservedPayment,
-    ObservedResult,
-    ObservedSelection,
+    ExecutorReport,
+    ReportedAbstention,
+    ReportedCheckout,
+    ReportedError,
+    ReportedPayment,
+    ReportedSelection,
 )
-from agentrank_api.payments.models import PaymentAttemptStatus
 
 PROTOCOL_VERSION = 1
 
@@ -124,149 +126,105 @@ class MissionRequest:
         return payload
 
 
-def report_payload(observed: ObservedResult) -> dict[str, Any]:
+def report_payload(report: ExecutorReport) -> dict[str, Any]:
     """One executor's report, as the only thing a worker is allowed to say."""
-    return {"protocol": PROTOCOL_VERSION, "observed": observed_payload(observed)}
+    return {"protocol": PROTOCOL_VERSION, "observed": executor_report_payload(report)}
 
 
-def report_from_payload(payload: Any) -> ObservedResult:
+def report_from_payload(payload: Any) -> ExecutorReport:
     """Read a worker's report, refusing anything that is not one."""
     document = _document(payload)
-    return observed_from_payload(_object(document, "observed"))
+    return executor_report_from_payload(_object(document, "observed"))
 
 
-def observed_payload(observed: ObservedResult) -> dict[str, Any]:
-    """An `ObservedResult` as plain JSON.
+def executor_report_payload(report: ExecutorReport) -> dict[str, Any]:
+    """An `ExecutorReport` as plain JSON.
 
-    Written out field by field rather than reflected over, so that a field added to the
-    observation model has to be placed here before it can cross the boundary. A serializer that
-    walked the dataclass would carry a new field silently, and the fields on that model are
-    exactly the ones a benchmark result is built from.
+    Written out field by field rather than reflected over, so that a field added to the report
+    model has to be placed here before it can cross the boundary. A serializer that walked the
+    dataclass would carry a new field silently, and what a worker may say is exactly the question
+    this boundary exists to answer.
     """
     return {
-        "merchant_id": str(observed.merchant_id),
-        "selection": None if observed.selection is None else _selection(observed.selection),
-        "checkout": None if observed.checkout is None else _checkout(observed.checkout),
-        "authorization": (
+        "merchant_id": str(report.merchant_id),
+        "selection": (
             None
-            if observed.authorization is None
+            if report.selection is None
             else {
-                "allowed": observed.authorization.allowed,
-                "violations": list(observed.authorization.violations),
+                "variant_id": str(report.selection.variant_id),
+                "quantity": report.selection.quantity,
+            }
+        ),
+        "checkout": (
+            None
+            if report.checkout is None
+            else {
+                "checkout_id": _optional_identifier(report.checkout.checkout_id),
+                "refusal": (
+                    None if report.checkout.refusal is None else report.checkout.refusal.value
+                ),
             }
         ),
         "payment": (
-            None
-            if observed.payment is None
-            else {
-                "status": observed.payment.status.value,
-                "attempt_id": _optional_identifier(observed.payment.attempt_id),
-            }
+            None if report.payment is None else {"attempt_id": str(report.payment.attempt_id)}
         ),
         "abstention": (
             None
-            if observed.abstention is None
+            if report.abstention is None
             else {
-                "code": observed.abstention.code.value,
-                "detail": observed.abstention.detail,
+                "code": report.abstention.code.value,
+                "detail": report.abstention.detail,
             }
         ),
-        "error": None if observed.error is None else {"detail": observed.error.detail},
+        "error": None if report.error is None else {"detail": report.error.detail},
     }
 
 
-def observed_from_payload(payload: Any) -> ObservedResult:
-    """Rebuild an `ObservedResult`, through the same constructors the executor used.
+def executor_report_from_payload(payload: Any) -> ExecutorReport:
+    """Rebuild an `ExecutorReport`, through the same constructors the executor used.
 
     Every part validates itself on the way in, exactly as it does in process, so a worker cannot
-    put a report across this boundary that it could not have constructed on its own side. A
-    payment claiming success with no attempt identifier is refused here for the same reason it is
-    refused there: that is the most consequential claim an executor makes.
+    put a report across this boundary that it could not have constructed on its own side.
     """
     document = _document(payload)
-    return ObservedResult(
+    return ExecutorReport(
         merchant_id=_identifier(document, "merchant_id"),
         selection=_read(document, "selection", _selection_from),
         checkout=_read(document, "checkout", _checkout_from),
-        authorization=_read(document, "authorization", _authorization_from),
         payment=_read(document, "payment", _payment_from),
         abstention=_read(document, "abstention", _abstention_from),
         error=_read(document, "error", _error_from),
     )
 
 
-def _selection(selection: ObservedSelection) -> dict[str, Any]:
-    return {
-        "variant_id": str(selection.variant_id),
-        "quantity": selection.quantity,
-        "unit_price_amount_minor": selection.unit_price_amount_minor,
-        "currency": selection.currency,
-        "product_category": selection.product_category,
-        "variant_attributes": dict(selection.variant_attributes),
-    }
-
-
-def _checkout(checkout: ObservedCheckout) -> dict[str, Any]:
-    return {
-        "created": checkout.created,
-        "checkout_id": _optional_identifier(checkout.checkout_id),
-        "total_amount_minor": checkout.total_amount_minor,
-        "currency": checkout.currency,
-        "refusal": None if checkout.refusal is None else checkout.refusal.value,
-    }
-
-
-def _selection_from(document: dict[str, Any]) -> ObservedSelection:
-    attributes = document.get("variant_attributes") or {}
-    if not isinstance(attributes, dict):
-        raise ProtocolError("variant_attributes must be an object")
-    return ObservedSelection(
+def _selection_from(document: dict[str, Any]) -> ReportedSelection:
+    return ReportedSelection(
         variant_id=_identifier(document, "variant_id"),
         quantity=_integer(document, "quantity"),
-        unit_price_amount_minor=_integer(document, "unit_price_amount_minor"),
-        currency=_text(document, "currency"),
-        product_category=_optional_text(document, "product_category"),
-        variant_attributes=attributes,
     )
 
 
-def _checkout_from(document: dict[str, Any]) -> ObservedCheckout:
+def _checkout_from(document: dict[str, Any]) -> ReportedCheckout:
     refusal = _optional_text(document, "refusal")
-    return ObservedCheckout(
-        created=_boolean(document, "created"),
+    return ReportedCheckout(
         checkout_id=_optional_id(document, "checkout_id"),
-        total_amount_minor=_optional_integer(document, "total_amount_minor"),
-        currency=_optional_text(document, "currency"),
         refusal=None if refusal is None else _member(CheckoutRefusal, refusal),
     )
 
 
-def _authorization_from(document: dict[str, Any]) -> ObservedAuthorization:
-    violations = document.get("violations") or []
-    if not isinstance(violations, list):
-        raise ProtocolError("violations must be an array")
-    return ObservedAuthorization(
-        allowed=_boolean(document, "allowed"),
-        violations=tuple(str(violation) for violation in violations),
-    )
+def _payment_from(document: dict[str, Any]) -> ReportedPayment:
+    return ReportedPayment(attempt_id=_identifier(document, "attempt_id"))
 
 
-def _payment_from(document: dict[str, Any]) -> ObservedPayment:
-    return ObservedPayment(
-        status=_member(PaymentAttemptStatus, _text(document, "status")),
-        attempt_id=_optional_id(document, "attempt_id"),
-    )
-
-
-def _abstention_from(document: dict[str, Any]) -> ObservedAbstention:
-    return ObservedAbstention(
+def _abstention_from(document: dict[str, Any]) -> ReportedAbstention:
+    return ReportedAbstention(
         code=_member(AbstentionCode, _text(document, "code")),
         detail=_optional_text(document, "detail"),
     )
 
 
-def _error_from(document: dict[str, Any]) -> ObservedError:
-    return ObservedError(detail=_text(document, "detail"))
+def _error_from(document: dict[str, Any]) -> ReportedError:
+    return ReportedError(detail=_text(document, "detail"))
 
 
 def _document(payload: Any) -> dict[str, Any]:

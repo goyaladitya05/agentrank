@@ -66,6 +66,7 @@ from agentrank_api.config import Settings
 from agentrank_api.constraints.rules import ConstraintOperator
 from agentrank_api.mandates.intent import AllowedCategory, MaxTotalAmount, RequiredAttribute
 from agentrank_api.payments.fake import FakePaymentProvider
+from agentrank_api.payments.models import PaymentAttempt, PaymentAttemptStatus
 
 pytestmark = pytest.mark.anyio
 
@@ -332,13 +333,19 @@ async def test_a_whole_mission_runs_in_another_process(
     executor = IsolatedMissionExecutor(base_url=endpoint.base_url, token=token, served=served)
 
     executor.begin()
-    observed = await executor(brief(), merchant_id=merchant_id)
+    report = await executor(brief(), merchant_id=merchant_id)
 
-    assert observed.purchased
-    assert observed.selection is not None
+    assert report.selection is not None
+    assert report.payment is not None
     assert executor.fault() is None
     assert executor.payment_attempted()
+    # What the worker said is a name. Whether money moved is the payment table's answer, and the
+    # authorization the merchant gave is the endpoint's own record of what it answered.
+    authorization = executor.evidence().authorization
+    assert authorization is not None and authorization.allowed
     session.expire_all()
+    attempt = await session.get(PaymentAttempt, report.payment.attempt_id)
+    assert attempt is not None and attempt.status is PaymentAttemptStatus.SUCCEEDED
     variant = await CatalogRepository(session).get_variant_by_sku(merchant_id, SKU)
     assert variant is not None and variant.inventory_quantity == 2
 

@@ -48,22 +48,20 @@ from typing import Any
 from agentrank_api.benchmark.buyer import BuyerCommerceSurface
 from agentrank_api.benchmark.definitions import AgentMissionBrief
 from agentrank_api.benchmark.execution import ExecutorIdentity, implementation_revision
-from agentrank_api.benchmark.observation import (
+from agentrank_api.benchmark.report import (
     AbstentionCode,
     CheckoutRefusal,
-    ObservedAbstention,
-    ObservedAuthorization,
-    ObservedCheckout,
-    ObservedError,
-    ObservedPayment,
-    ObservedResult,
-    ObservedSelection,
+    ExecutorReport,
+    ReportedAbstention,
+    ReportedCheckout,
+    ReportedError,
+    ReportedPayment,
+    ReportedSelection,
 )
 from agentrank_api.checkout.schemas import (
     CheckoutItemInput,
     CheckoutView,
     CreateCheckoutRequest,
-    ExecutionAuthorizationView,
 )
 from agentrank_api.commerce.schemas import (
     ProductSearchRequest,
@@ -213,6 +211,12 @@ class Attempt:
     the evaluator's rule about a harness fault after a successful payment became unreachable,
     because there was never a payment on an error result to reach it with.
 
+    Everything on it is an identifier or an action. There is no price here, no quoted total, no
+    authorization decision and no payment status, because `ExecutorReport` has nowhere to put
+    one: what those came to is established by trusted code from the merchant's own rows. This
+    executor is trusted and reports them anyway through the same narrow shape a model will, so
+    the boundary is exercised by the run that proves the benchmark works.
+
     There is no origin here and there deliberately cannot be. This executor does not decide
     whose fault an interruption was, and neither will the model that replaces it: that is
     settled at the tool boundary by `agentrank_api.benchmark.tools`, from what the merchant
@@ -221,25 +225,23 @@ class Attempt:
     """
 
     merchant_id: uuid.UUID
-    selection: ObservedSelection | None = None
-    checkout: ObservedCheckout | None = None
-    authorization: ObservedAuthorization | None = None
-    payment: ObservedPayment | None = None
+    selection: ReportedSelection | None = None
+    checkout: ReportedCheckout | None = None
+    payment: ReportedPayment | None = None
 
-    def reported(self, *, error: ObservedError | None = None) -> ObservedResult:
+    def reported(self, *, error: ReportedError | None = None) -> ExecutorReport:
         """Everything established so far, with an error beside it when there was one."""
-        return ObservedResult(
+        return ExecutorReport(
             merchant_id=self.merchant_id,
             selection=self.selection,
             checkout=self.checkout,
-            authorization=self.authorization,
             payment=self.payment,
             error=error,
         )
 
-    def failed(self, refused: AgentRankError) -> ObservedResult:
+    def failed(self, refused: AgentRankError) -> ExecutorReport:
         """Everything established so far, plus this executor's account of what stopped it."""
-        return self.reported(error=ObservedError(detail=_detail(refused)))
+        return self.reported(error=ReportedError(detail=_detail(refused)))
 
 
 def assess(brief: AgentMissionBrief, candidate: Candidate) -> Rejection | None:
@@ -335,7 +337,7 @@ class ReferenceMissionExecutor:
     def __init__(self, surface: BuyerCommerceSurface) -> None:
         self._surface = surface
 
-    async def __call__(self, brief: AgentMissionBrief, *, merchant_id: uuid.UUID) -> ObservedResult:
+    async def __call__(self, brief: AgentMissionBrief, *, merchant_id: uuid.UUID) -> ExecutorReport:
         """Carry out one mission and report what happened, never what it meant.
 
         The merchant is required to be the one this surface shops at, and a mismatch raises
@@ -365,73 +367,53 @@ class ReferenceMissionExecutor:
         except AgentRankError as refused:
             return attempt.failed(refused)
 
-    async def _execute(self, brief: AgentMissionBrief, attempt: Attempt) -> ObservedResult:
+    async def _execute(self, brief: AgentMissionBrief, attempt: Attempt) -> ExecutorReport:
         candidates, rejections = await self._candidates(brief)
         if not candidates:
-            return ObservedResult(
+            return ExecutorReport(
                 merchant_id=attempt.merchant_id,
-                abstention=ObservedAbstention(code=_abstention(rejections)),
+                abstention=ReportedAbstention(code=_abstention(rejections)),
             )
 
         chosen = select(candidates, quantity=brief.quantity)
-        attempt.selection = ObservedSelection(
-            variant_id=chosen.variant_id,
-            quantity=brief.quantity,
-            unit_price_amount_minor=chosen.unit_price_amount_minor,
-            currency=chosen.currency,
-            product_category=chosen.product_category,
-            variant_attributes=chosen.attributes,
-        )
+        attempt.selection = ReportedSelection(variant_id=chosen.variant_id, quantity=brief.quantity)
 
         mandate_id = await self._authorize(brief)
         quoted = await self._quote(brief, chosen, mandate_id=mandate_id)
         if quoted.checkout is None:
-            attempt.checkout = ObservedCheckout(created=False, refusal=quoted.refusal)
+            attempt.checkout = ReportedCheckout(refusal=quoted.refusal)
             return attempt.reported()
         checkout_id = quoted.checkout.id
+        attempt.checkout = ReportedCheckout(checkout_id=checkout_id)
 
         preparation = await self._surface.prepare_checkout(checkout_id)
         if not preparation.authorization.authorized:
             # The buyer's own authorization refused, and the merchant offered nothing but the
-            # quote. Reported as a created quote with a denial beside it, which is what makes
-            # this a mandate denial rather than a merchant that could not supply the item.
-            attempt.checkout = _quoted(quoted.checkout)
-            attempt.authorization = _authorization(preparation.authorization)
+            # quote. The quote is named and nothing is said about the denial, because what the
+            # authorization layer decided is recorded at the tool boundary from the answer this
+            # call just returned. An executor asserting its own denial would be asserting the
+            # one fact that decides whether enforcement held.
             return attempt.reported()
         if not preparation.ready:
-            # Authorized, and the merchant could not hold the stock. An offer nothing can be
-            # bought against is not an offer, so it is reported as a merchant refusal rather
-            # than as a quote the buyer simply failed to act on. The quote's own identifier and
-            # total travel with it, because the row exists and the run's record of what this
-            # mission produced should point at it.
-            attempt.checkout = ObservedCheckout(
-                created=False,
-                checkout_id=checkout_id,
-                total_amount_minor=quoted.checkout.total_amount_minor,
-                currency=quoted.checkout.currency,
-                refusal=CheckoutRefusal.OUT_OF_STOCK,
+            # Authorized, and the merchant could not hold the stock. Named as a refusal beside
+            # the quote it is about, and the trusted boundary records the same fact from the
+            # preparation's own answer, which is what decides it.
+            attempt.checkout = ReportedCheckout(
+                checkout_id=checkout_id, refusal=CheckoutRefusal.OUT_OF_STOCK
             )
             return attempt.reported()
 
-        attempt.checkout = _quoted(quoted.checkout)
         payment = await self._surface.complete_checkout(
             checkout_id, CreatePaymentRequest(idempotency_key=idempotency_key(checkout_id))
         )
-        # The authorization the payment was admitted under, not the one the earlier preparation
-        # decided. They are two transactions at two instants, and the one that governed the
-        # money is the one worth reporting.
-        attempt.authorization = _authorization(payment.authorization)
         settled = payment.attempt
         if settled is None:
             return self._refused_payment(payment.refusal, attempt)
 
-        # The payment is recorded before the quote is read back, and the order matters. Money
-        # moving is the most consequential thing this executor observes, and a refusal from the
-        # read below must not be able to take it out of the report.
-        attempt.payment = ObservedPayment(status=settled.status, attempt_id=settled.id)
-        # Read back rather than remembered. The quote is reported as the merchant records it
-        # after the payment, which is the authoritative account of what the buyer was charged.
-        attempt.checkout = _quoted(await self._surface.get_checkout(checkout_id))
+        # The attempt this executor dispatched, named rather than described. Whether it succeeded
+        # is read from the payment table by trusted code, and a payment this never mentioned is
+        # found there too.
+        attempt.payment = ReportedPayment(attempt_id=settled.id)
         return attempt.reported()
 
     async def _candidates(self, brief: AgentMissionBrief) -> tuple[list[Candidate], set[Rejection]]:
@@ -560,7 +542,7 @@ class ReferenceMissionExecutor:
 
     def _refused_payment(
         self, refusal: AdmissionRefusal | None, attempt: Attempt
-    ) -> ObservedResult:
+    ) -> ExecutorReport:
         """What to report when a payment was refused before any provider was involved.
 
         One refusal is a denial and the rest are this execution finding itself somewhere it
@@ -580,7 +562,7 @@ class ReferenceMissionExecutor:
         if refusal in AUTHORIZATION_REFUSALS:
             return attempt.reported()
         return attempt.reported(
-            error=ObservedError(
+            error=ReportedError(
                 detail=f"payment refused as {'unknown' if refusal is None else refusal.value}"
             )
         )
@@ -645,33 +627,6 @@ def _in_catalog_order(results: list[ProductSearchResult]) -> list[ProductSearchR
     deliberate rather than redundant.
     """
     return sorted(results, key=lambda hit: hit.external_id)
-
-
-def _quoted(checkout: CheckoutView) -> ObservedCheckout:
-    """One quote as the observation model records it."""
-    return ObservedCheckout(
-        created=True,
-        checkout_id=checkout.id,
-        total_amount_minor=checkout.total_amount_minor,
-        currency=checkout.currency,
-    )
-
-
-def _authorization(decision: ExecutionAuthorizationView) -> ObservedAuthorization:
-    """What both gates said, as one observation.
-
-    `allowed` is the composed answer and nothing else is read from it by the evaluator. The
-    violation codes from all three levels are carried for diagnostics, because a denial from the
-    money, a denial from the purchase and there being no semantic authorization at all are three
-    different problems and a report that could not tell them apart would be worth little.
-    """
-    violations = [violation.value for violation in decision.violations]
-    violations.extend(violation.value for violation in decision.financial_authorization.violations)
-    if decision.intent_authorization is not None:
-        violations.extend(
-            violation.code.value for violation in decision.intent_authorization.violations
-        )
-    return ObservedAuthorization(allowed=decision.authorized, violations=tuple(violations))
 
 
 def _constraint_input(constraint: HardConstraint) -> HardConstraintInput:

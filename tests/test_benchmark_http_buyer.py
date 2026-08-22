@@ -38,8 +38,10 @@ from agentrank_api.benchmark.http_buyer import (
     MerchantSurfaceError,
     authenticated_client,
 )
-from agentrank_api.benchmark.observation import AbstentionCode
 from agentrank_api.benchmark.reference_executor import ReferenceMissionExecutor
+from agentrank_api.benchmark.report import (
+    AbstentionCode,
+)
 from agentrank_api.benchmark.tools import MeasuredBuyerSurface, ToolLedger
 from agentrank_api.commerce.catalog_fixture import SeedProduct, SeedVariant
 from agentrank_api.commerce.repository import CatalogRepository, MerchantRepository
@@ -49,6 +51,7 @@ from agentrank_api.constraints.rules import ConstraintOperator
 from agentrank_api.errors import AuthenticationError, NotFoundError
 from agentrank_api.mandates.intent import AllowedCategory, MaxTotalAmount, RequiredAttribute
 from agentrank_api.payments.fake import FakePaymentProvider
+from agentrank_api.payments.models import PaymentAttempt, PaymentAttemptStatus
 
 pytestmark = pytest.mark.anyio
 
@@ -138,13 +141,17 @@ async def test_a_reference_mission_completes_entirely_over_http(
     client, surface = await buyer(session, endpoint, merchant_id)
 
     async with client:
-        observed = await ReferenceMissionExecutor(surface)(brief(), merchant_id=merchant_id)
+        report = await ReferenceMissionExecutor(surface)(brief(), merchant_id=merchant_id)
 
-    assert observed.purchased
-    assert observed.selection is not None
-    assert observed.checkout is not None and observed.checkout.created
-    assert observed.payment is not None and observed.payment.attempt_id is not None
+    assert report.selection is not None
+    assert report.checkout is not None and report.checkout.checkout_id is not None
+    assert report.payment is not None
     session.expire_all()
+    # The purchase is asserted on the merchant's own rows rather than on what the buyer said,
+    # which is the only thing that is evidence: the report names a payment and the payment table
+    # says whether money moved.
+    attempt = await session.get(PaymentAttempt, report.payment.attempt_id)
+    assert attempt is not None and attempt.status is PaymentAttemptStatus.SUCCEEDED
     variant = await CatalogRepository(session).get_variant_by_sku(merchant_id, SKU)
     assert variant is not None and variant.inventory_quantity == 2
 

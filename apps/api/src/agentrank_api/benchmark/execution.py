@@ -15,8 +15,14 @@ Two things live here.
 `MissionExecutor` is what carries a mission out. It receives an `AgentMissionBrief` and the
 merchant to shop, and nothing else: no suite, no run identifier, no oracle, no other mission and
 nothing about what any earlier mission did. A scripted reference executor, a fixture that
-replays prepared results and a future LLM buyer all satisfy it, and none of them can tell from
+replays prepared reports and a future LLM buyer all satisfy it, and none of them can tell from
 the signature which of the others it is standing beside.
+
+What it returns is an `ExecutorReport` rather than an evaluator input, and that is the trust
+boundary rather than a naming choice. An executor names identifiers and actions; trusted
+orchestration establishes what they came to from the merchant's own rows. There is no
+implementation of this protocol that can state a price, a quoted total, an authorization decision
+or a payment status, because the type it returns has nowhere to put one.
 
 `ExecutorIdentity` is what produced a result. A benchmark whose historical runs cannot say which
 strategy produced them is a benchmark that silently compares two different things: change how
@@ -40,7 +46,7 @@ from types import ModuleType
 from typing import Protocol
 
 from agentrank_api.benchmark.definitions import KEY_PATTERN, MAX_KEY_LENGTH, AgentMissionBrief
-from agentrank_api.benchmark.observation import ObservedResult
+from agentrank_api.benchmark.report import ExecutorReport
 
 _KEY = re.compile(KEY_PATTERN)
 
@@ -143,4 +149,4 @@ class MissionExecutor(Protocol):
 
     def __call__(
         self, brief: AgentMissionBrief, *, merchant_id: uuid.UUID
-    ) -> Awaitable[ObservedResult]: ...
+    ) -> Awaitable[ExecutorReport]: ...

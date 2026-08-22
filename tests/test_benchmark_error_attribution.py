@@ -44,8 +44,14 @@ from agentrank_api.benchmark.faults import (
 )
 from agentrank_api.benchmark.fixtures import BenchmarkFixture
 from agentrank_api.benchmark.lifecycle import MissionRunStatus
-from agentrank_api.benchmark.observation import ObservedError, ObservedResult
+from agentrank_api.benchmark.observation import (
+    ObservedResult,
+)
 from agentrank_api.benchmark.reference_executor import ReferenceMissionExecutor
+from agentrank_api.benchmark.report import (
+    ExecutorReport,
+    ReportedError,
+)
 from agentrank_api.benchmark.runner import BenchmarkRunService
 from agentrank_api.benchmark.suites import BenchmarkSuiteService
 from agentrank_api.benchmark.tools import (
@@ -276,7 +282,7 @@ def _failed(operation: BuyerOperation, origin: FaultOrigin, detail: str) -> Tool
 
 def test_an_observed_error_has_no_origin_to_set() -> None:
     """Structural rather than behavioural. There is no field to put a claim in."""
-    assert set(ObservedError.__dataclass_fields__) == {"detail"}
+    assert set(ReportedError.__dataclass_fields__) == {"detail"}
 
 
 def test_an_executors_account_of_a_catastrophe_classifies_nothing() -> None:
@@ -290,7 +296,7 @@ def test_an_executors_account_of_a_catastrophe_classifies_nothing() -> None:
         ),
     )
     observed = ObservedResult(
-        merchant_id=merchant, error=ObservedError(detail="the merchant API failed")
+        merchant_id=merchant, error=ReportedError(detail="the merchant API failed")
     )
 
     result = evaluate_mission(defined, observed, merchant_id=merchant)
@@ -406,7 +412,7 @@ async def test_a_harness_fault_errors_the_mission_rather_than_failing_it(
     recorded = await service.record_result(
         run.id,
         "one",
-        ObservedResult(merchant_id=merchant_id),
+        ExecutorReport(merchant_id=merchant_id),
         merchant_id=merchant_id,
         fault=ExecutionFault(origin=FaultOrigin.HARNESS, detail="the worker died"),
     )
