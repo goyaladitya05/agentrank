@@ -8,6 +8,11 @@ Everything here goes through the real validating constructors, so a definition a
 is a definition the application would accept.
 """
 
+from pathlib import Path
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from agentrank_api.benchmark.authored import publish_world, read_world
 from agentrank_api.benchmark.definitions import (
     AgentMissionBrief,
     BenchmarkMissionDefinition,
@@ -15,7 +20,9 @@ from agentrank_api.benchmark.definitions import (
     ExpectedOutcome,
     MissionOracle,
 )
+from agentrank_api.benchmark.environment import PreparedEnvironment
 from agentrank_api.benchmark.fixtures import BenchmarkFixture
+from agentrank_api.benchmark.models import BenchmarkSuite
 from agentrank_api.commerce.catalog_fixture import SeedProduct, SeedVariant
 from agentrank_api.constraints.rules import ConstraintOperator
 from agentrank_api.mandates.intent import (
@@ -155,3 +162,20 @@ def fixture(
             ),
         ),
     )
+
+
+# The authored VoltEdge world, read from the operator files rather than imported from the
+# package. Loaded once here so that every test asking about the reference benchmark asks about
+# the same documents an operator command would read, and so that the path appears in one place.
+#
+# The tests are trusted operator side code and are allowed to read this. A benchmark worker is
+# not, which is the whole reason the authored world lives outside the package it runs from. See
+# tests/test_benchmark_oracle_isolation.py for what a worker can actually reach.
+VOLTEDGE_DIRECTORY = Path(__file__).resolve().parent.parent / "benchmarks" / "voltedge"
+
+VOLTEDGE = read_world(VOLTEDGE_DIRECTORY)
+
+
+async def seed_voltedge(session: AsyncSession) -> tuple[PreparedEnvironment, BenchmarkSuite]:
+    """Register, prepare and publish the authored VoltEdge world."""
+    return await publish_world(session, VOLTEDGE)

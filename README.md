@@ -69,6 +69,12 @@ make benchmark ARGS="run --representation-label baseline"
 make benchmark ARGS="show <run-id>"
 ```
 
+The authored world lives in `benchmarks/voltedge/`: `catalog.json` is the shelf a run puts the
+merchant back to, and `suite.json` is the missions with their expected outcomes. They are files at
+the top of the repository rather than a module in the application package, because a mission's
+expected outcome is the answer key and the package is what a buyer process runs from. The commands
+take `--world`, defaulting to that directory.
+
 `seed` registers the VoltEdge world, restores its catalog and publishes the suite authored
 against it. `run` executes all fourteen missions with the deterministic reference executor,
 through the real checkout, authorization, inventory and payment path with a deterministic fake

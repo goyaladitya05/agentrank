@@ -1,0 +1,245 @@
+{
+  "key": "voltedge-catalog",
+  "version": 1,
+  "merchant_slug": "voltedge",
+  "merchant_name": "VoltEdge",
+  "products": [
+    {
+      "external_id": "VE-CHG-100",
+      "title": "100W GaN Wall Charger",
+      "description": "Three port gallium nitride charger with foldable pins",
+      "category": "chargers",
+      "is_active": true,
+      "variants": [
+        {
+          "sku": "VE-CHG-100-BLK",
+          "label": "Black",
+          "price_amount_minor": 499900,
+          "currency": "INR",
+          "inventory_quantity": 24,
+          "attributes": {
+            "color": "black",
+            "wattage": 100,
+            "connector": "USB-C",
+            "ports": 3
+          },
+          "is_active": true
+        },
+        {
+          "sku": "VE-CHG-100-WHT",
+          "label": "White",
+          "price_amount_minor": 519900,
+          "currency": "INR",
+          "inventory_quantity": 8,
+          "attributes": {
+            "color": "white",
+            "wattage": 100,
+            "connector": "USB-C",
+            "ports": 3
+          },
+          "is_active": true
+        }
+      ]
+    },
+    {
+      "external_id": "VE-CHG-065",
+      "title": "65W Travel Charger",
+      "description": null,
+      "category": "chargers",
+      "is_active": true,
+      "variants": [
+        {
+          "sku": "VE-CHG-065-BLK",
+          "label": "Black",
+          "price_amount_minor": 299900,
+          "currency": "INR",
+          "inventory_quantity": 40,
+          "attributes": {
+            "color": "black",
+            "wattage": 65,
+            "connector": "USB-C",
+            "ports": 1
+          },
+          "is_active": true
+        },
+        {
+          "sku": "VE-CHG-065-WHT",
+          "label": "White",
+          "price_amount_minor": 309900,
+          "currency": "INR",
+          "inventory_quantity": 15,
+          "attributes": {
+            "color": "white",
+            "wattage": 65,
+            "connector": "USB-C",
+            "ports": 1
+          },
+          "is_active": true
+        }
+      ]
+    },
+    {
+      "external_id": "VE-CHG-140",
+      "title": "140W Desktop Charger",
+      "description": "Four port desktop charger for laptops and phones together",
+      "category": "chargers",
+      "is_active": true,
+      "variants": [
+        {
+          "sku": "VE-CHG-140-BLK",
+          "label": "Black",
+          "price_amount_minor": 899900,
+          "currency": "INR",
+          "inventory_quantity": 6,
+          "attributes": {
+            "color": "black",
+            "wattage": 140,
+            "connector": "USB-C",
+            "ports": 4
+          },
+          "is_active": true
+        }
+      ]
+    },
+    {
+      "external_id": "VE-CBL-USBC",
+      "title": "Braided USB-C to USB-C Cable",
+      "description": "240W rated braided cable with aluminium housings",
+      "category": "cables",
+      "is_active": true,
+      "variants": [
+        {
+          "sku": "VE-CBL-USBC-1M",
+          "label": "1 m",
+          "price_amount_minor": 89900,
+          "currency": "INR",
+          "inventory_quantity": 120,
+          "attributes": {
+            "length_m": 1,
+            "connector": "USB-C",
+            "wattage": 240
+          },
+          "is_active": true
+        },
+        {
+          "sku": "VE-CBL-USBC-2M",
+          "label": "2 m",
+          "price_amount_minor": 109900,
+          "currency": "INR",
+          "inventory_quantity": 80,
+          "attributes": {
+            "length_m": 2,
+            "connector": "USB-C",
+            "wattage": 240
+          },
+          "is_active": true
+        },
+        {
+          "sku": "VE-CBL-USBC-3M",
+          "label": "3 m",
+          "price_amount_minor": 129900,
+          "currency": "INR",
+          "inventory_quantity": 0,
+          "attributes": {
+            "length_m": 3,
+            "connector": "USB-C",
+            "wattage": 240
+          },
+          "is_active": true
+        }
+      ]
+    },
+    {
+      "external_id": "VE-PWR-20K",
+      "title": "20000mAh Power Bank",
+      "description": "Two way fast charging power bank with a passthrough port",
+      "category": "power-banks",
+      "is_active": true,
+      "variants": [
+        {
+          "sku": "VE-PWR-20K-BLK",
+          "label": "Black",
+          "price_amount_minor": 399900,
+          "currency": "INR",
+          "inventory_quantity": 18,
+          "attributes": {
+            "color": "black",
+            "capacity_mah": 20000,
+            "connector": "USB-C"
+          },
+          "is_active": true
+        },
+        {
+          "sku": "VE-PWR-20K-NAV",
+          "label": "Navy",
+          "price_amount_minor": 379900,
+          "currency": "INR",
+          "inventory_quantity": 9,
+          "attributes": {
+            "capacity_mah": 20000,
+            "connector": "USB-C"
+          },
+          "is_active": true
+        }
+      ]
+    },
+    {
+      "external_id": "VE-HUB-7P",
+      "title": "7 Port USB-C Hub",
+      "description": "Powered hub with HDMI, card reader and gigabit ethernet",
+      "category": null,
+      "is_active": true,
+      "variants": [
+        {
+          "sku": "VE-HUB-7P-GRY",
+          "label": "Space grey",
+          "price_amount_minor": 749900,
+          "currency": "INR",
+          "inventory_quantity": 12,
+          "attributes": {
+            "color": "grey",
+            "ports": 7,
+            "connector": "USB-C",
+            "hdmi": true
+          },
+          "is_active": true
+        },
+        {
+          "sku": "VE-HUB-7P-EU",
+          "label": "Space grey, EU pricing",
+          "price_amount_minor": 8999,
+          "currency": "EUR",
+          "inventory_quantity": 5,
+          "attributes": {
+            "color": "grey",
+            "ports": 7,
+            "connector": "USB-C",
+            "hdmi": true
+          },
+          "is_active": true
+        }
+      ]
+    },
+    {
+      "external_id": "VE-DCK-LEGACY",
+      "title": "Legacy Mini Dock",
+      "description": "Discontinued micro USB dock, retained for catalog history",
+      "category": "docks",
+      "is_active": false,
+      "variants": [
+        {
+          "sku": "VE-DCK-LEGACY-1",
+          "label": "Black",
+          "price_amount_minor": 349900,
+          "currency": "INR",
+          "inventory_quantity": 4,
+          "attributes": {
+            "color": "black",
+            "connector": "micro-USB"
+          },
+          "is_active": true
+        }
+      ]
+    }
+  ]
+}

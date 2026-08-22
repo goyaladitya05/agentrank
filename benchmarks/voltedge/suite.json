@@ -1,0 +1,440 @@
+{
+  "key": "voltedge-core",
+  "version": 2,
+  "merchant_slug": "voltedge",
+  "name": "VoltEdge core commerce",
+  "missions": [
+    {
+      "brief": {
+        "key": "black-100w-charger",
+        "objective": "Buy one black wall charger that can deliver at least 100 watts.",
+        "quantity": 1,
+        "budget": {
+          "kind": "max_total_amount",
+          "amount_minor": 550000,
+          "currency": "INR"
+        },
+        "hard_constraints": [
+          {
+            "kind": "allowed_category",
+            "category": "chargers"
+          },
+          {
+            "kind": "required_attribute",
+            "name": "color",
+            "operator": "EQ",
+            "value": "black"
+          },
+          {
+            "kind": "required_attribute",
+            "name": "wattage",
+            "operator": "GTE",
+            "value": 100
+          }
+        ],
+        "preferences": [
+          "prefer more ports"
+        ]
+      },
+      "oracle": {
+        "expected_outcome": "PURCHASE_AVAILABLE",
+        "simulated_value_amount_minor": 499900
+      }
+    },
+    {
+      "brief": {
+        "key": "hub-from-accessories",
+        "objective": "Buy one hub with at least seven ports from the accessories range.",
+        "quantity": 1,
+        "budget": {
+          "kind": "max_total_amount",
+          "amount_minor": 800000,
+          "currency": "INR"
+        },
+        "hard_constraints": [
+          {
+            "kind": "allowed_category",
+            "category": "accessories"
+          },
+          {
+            "kind": "required_attribute",
+            "name": "ports",
+            "operator": "GTE",
+            "value": 7
+          }
+        ],
+        "preferences": []
+      },
+      "oracle": {
+        "expected_outcome": "NO_ACCEPTABLE_PURCHASE",
+        "simulated_value_amount_minor": 0
+      }
+    },
+    {
+      "brief": {
+        "key": "white-travel-charger",
+        "objective": "Buy one white travel charger of at least 65 watts.",
+        "quantity": 1,
+        "budget": {
+          "kind": "max_total_amount",
+          "amount_minor": 350000,
+          "currency": "INR"
+        },
+        "hard_constraints": [
+          {
+            "kind": "allowed_category",
+            "category": "chargers"
+          },
+          {
+            "kind": "required_attribute",
+            "name": "color",
+            "operator": "EQ",
+            "value": "white"
+          },
+          {
+            "kind": "required_attribute",
+            "name": "wattage",
+            "operator": "GTE",
+            "value": 65
+          }
+        ],
+        "preferences": []
+      },
+      "oracle": {
+        "expected_outcome": "PURCHASE_AVAILABLE",
+        "simulated_value_amount_minor": 309900
+      }
+    },
+    {
+      "brief": {
+        "key": "any-usb-c-cable",
+        "objective": "Buy one USB-C to USB-C cable. Any length is fine.",
+        "quantity": 1,
+        "budget": {
+          "kind": "max_total_amount",
+          "amount_minor": 150000,
+          "currency": "INR"
+        },
+        "hard_constraints": [
+          {
+            "kind": "allowed_category",
+            "category": "cables"
+          },
+          {
+            "kind": "required_attribute",
+            "name": "connector",
+            "operator": "EQ",
+            "value": "USB-C"
+          }
+        ],
+        "preferences": []
+      },
+      "oracle": {
+        "expected_outcome": "PURCHASE_AVAILABLE",
+        "simulated_value_amount_minor": 89900
+      }
+    },
+    {
+      "brief": {
+        "key": "three-metre-cable",
+        "objective": "Buy one USB-C cable that is exactly three metres long.",
+        "quantity": 1,
+        "budget": {
+          "kind": "max_total_amount",
+          "amount_minor": 150000,
+          "currency": "INR"
+        },
+        "hard_constraints": [
+          {
+            "kind": "allowed_category",
+            "category": "cables"
+          },
+          {
+            "kind": "required_attribute",
+            "name": "length_m",
+            "operator": "EQ",
+            "value": 3
+          }
+        ],
+        "preferences": []
+      },
+      "oracle": {
+        "expected_outcome": "NO_ACCEPTABLE_PURCHASE",
+        "simulated_value_amount_minor": 0
+      }
+    },
+    {
+      "brief": {
+        "key": "two-metre-cable",
+        "objective": "Buy one USB-C cable that is exactly two metres long.",
+        "quantity": 1,
+        "budget": {
+          "kind": "max_total_amount",
+          "amount_minor": 150000,
+          "currency": "INR"
+        },
+        "hard_constraints": [
+          {
+            "kind": "allowed_category",
+            "category": "cables"
+          },
+          {
+            "kind": "required_attribute",
+            "name": "length_m",
+            "operator": "EQ",
+            "value": 2
+          }
+        ],
+        "preferences": []
+      },
+      "oracle": {
+        "expected_outcome": "PURCHASE_AVAILABLE",
+        "simulated_value_amount_minor": 109900
+      }
+    },
+    {
+      "brief": {
+        "key": "charger-under-a-thousand",
+        "objective": "Buy any wall charger, spending no more than 1000 rupees.",
+        "quantity": 1,
+        "budget": {
+          "kind": "max_total_amount",
+          "amount_minor": 100000,
+          "currency": "INR"
+        },
+        "hard_constraints": [
+          {
+            "kind": "allowed_category",
+            "category": "chargers"
+          }
+        ],
+        "preferences": []
+      },
+      "oracle": {
+        "expected_outcome": "NO_ACCEPTABLE_PURCHASE",
+        "simulated_value_amount_minor": 0
+      }
+    },
+    {
+      "brief": {
+        "key": "two-travel-chargers",
+        "objective": "Buy two black travel chargers of at least 65 watts each.",
+        "quantity": 2,
+        "budget": {
+          "kind": "max_total_amount",
+          "amount_minor": 620000,
+          "currency": "INR"
+        },
+        "hard_constraints": [
+          {
+            "kind": "allowed_category",
+            "category": "chargers"
+          },
+          {
+            "kind": "required_attribute",
+            "name": "color",
+            "operator": "EQ",
+            "value": "black"
+          },
+          {
+            "kind": "required_attribute",
+            "name": "wattage",
+            "operator": "GTE",
+            "value": 65
+          }
+        ],
+        "preferences": []
+      },
+      "oracle": {
+        "expected_outcome": "PURCHASE_AVAILABLE",
+        "simulated_value_amount_minor": 599800
+      }
+    },
+    {
+      "brief": {
+        "key": "a-pair-of-cables",
+        "objective": "Buy two USB-C cables, and do not buy more than two.",
+        "quantity": 2,
+        "budget": {
+          "kind": "max_total_amount",
+          "amount_minor": 200000,
+          "currency": "INR"
+        },
+        "hard_constraints": [
+          {
+            "kind": "allowed_category",
+            "category": "cables"
+          },
+          {
+            "kind": "required_attribute",
+            "name": "connector",
+            "operator": "EQ",
+            "value": "USB-C"
+          },
+          {
+            "kind": "max_quantity",
+            "quantity": 2
+          }
+        ],
+        "preferences": []
+      },
+      "oracle": {
+        "expected_outcome": "PURCHASE_AVAILABLE",
+        "simulated_value_amount_minor": 179800
+      }
+    },
+    {
+      "brief": {
+        "key": "navy-power-bank",
+        "objective": "Buy one navy power bank of at least 20000 mAh.",
+        "quantity": 1,
+        "budget": {
+          "kind": "max_total_amount",
+          "amount_minor": 450000,
+          "currency": "INR"
+        },
+        "hard_constraints": [
+          {
+            "kind": "allowed_category",
+            "category": "power-banks"
+          },
+          {
+            "kind": "required_attribute",
+            "name": "color",
+            "operator": "EQ",
+            "value": "navy"
+          },
+          {
+            "kind": "required_attribute",
+            "name": "capacity_mah",
+            "operator": "GTE",
+            "value": 20000
+          }
+        ],
+        "preferences": []
+      },
+      "oracle": {
+        "expected_outcome": "NO_ACCEPTABLE_PURCHASE",
+        "simulated_value_amount_minor": 0
+      }
+    },
+    {
+      "brief": {
+        "key": "black-power-bank",
+        "objective": "Buy one black power bank of at least 20000 mAh.",
+        "quantity": 1,
+        "budget": {
+          "kind": "max_total_amount",
+          "amount_minor": 450000,
+          "currency": "INR"
+        },
+        "hard_constraints": [
+          {
+            "kind": "allowed_category",
+            "category": "power-banks"
+          },
+          {
+            "kind": "required_attribute",
+            "name": "color",
+            "operator": "EQ",
+            "value": "black"
+          },
+          {
+            "kind": "required_attribute",
+            "name": "capacity_mah",
+            "operator": "GTE",
+            "value": 20000
+          }
+        ],
+        "preferences": []
+      },
+      "oracle": {
+        "expected_outcome": "PURCHASE_AVAILABLE",
+        "simulated_value_amount_minor": 399900
+      }
+    },
+    {
+      "brief": {
+        "key": "desktop-charger-on-a-budget",
+        "objective": "Buy one charger that can deliver at least 140 watts.",
+        "quantity": 1,
+        "budget": {
+          "kind": "max_total_amount",
+          "amount_minor": 600000,
+          "currency": "INR"
+        },
+        "hard_constraints": [
+          {
+            "kind": "allowed_category",
+            "category": "chargers"
+          },
+          {
+            "kind": "required_attribute",
+            "name": "wattage",
+            "operator": "GTE",
+            "value": 140
+          }
+        ],
+        "preferences": []
+      },
+      "oracle": {
+        "expected_outcome": "NO_ACCEPTABLE_PURCHASE",
+        "simulated_value_amount_minor": 0
+      }
+    },
+    {
+      "brief": {
+        "key": "seven-port-hub",
+        "objective": "Buy one USB-C hub with at least seven ports.",
+        "quantity": 1,
+        "budget": {
+          "kind": "max_total_amount",
+          "amount_minor": 800000,
+          "currency": "INR"
+        },
+        "hard_constraints": [
+          {
+            "kind": "required_attribute",
+            "name": "ports",
+            "operator": "GTE",
+            "value": 7
+          }
+        ],
+        "preferences": []
+      },
+      "oracle": {
+        "expected_outcome": "PURCHASE_AVAILABLE",
+        "simulated_value_amount_minor": 749900
+      }
+    },
+    {
+      "brief": {
+        "key": "micro-usb-dock",
+        "objective": "Buy one black micro USB dock.",
+        "quantity": 1,
+        "budget": {
+          "kind": "max_total_amount",
+          "amount_minor": 400000,
+          "currency": "INR"
+        },
+        "hard_constraints": [
+          {
+            "kind": "allowed_category",
+            "category": "docks"
+          },
+          {
+            "kind": "required_attribute",
+            "name": "connector",
+            "operator": "EQ",
+            "value": "micro-USB"
+          }
+        ],
+        "preferences": []
+      },
+      "oracle": {
+        "expected_outcome": "NO_ACCEPTABLE_PURCHASE",
+        "simulated_value_amount_minor": 0
+      }
+    }
+  ]
+}

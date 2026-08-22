@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from io import StringIO
 
 import pytest
+from benchmark_support import VOLTEDGE, VOLTEDGE_DIRECTORY
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,7 +28,6 @@ from agentrank_api.benchmark.endpoint import CREDENTIAL_LABEL
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
 from agentrank_api.benchmark.models import BenchmarkRun
 from agentrank_api.benchmark.runner import BenchmarkRunService
-from agentrank_api.benchmark.voltedge import MERCHANT_SLUG, SUITE_KEY, SUITE_VERSION
 from agentrank_api.cli import ExitCode, main
 from agentrank_api.cli.benchmark import DISCLAIMER
 from agentrank_api.commerce.repository import MerchantRepository
@@ -35,6 +35,10 @@ from agentrank_api.config import Settings
 from agentrank_api.payments.fake import FakeOutcome, FakePaymentProvider
 
 pytestmark = pytest.mark.anyio
+
+MERCHANT_SLUG = VOLTEDGE.merchant_slug
+SUITE_KEY = VOLTEDGE.suite.key
+SUITE_VERSION = VOLTEDGE.suite.version
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,10 +65,19 @@ async def cli(settings: Settings, provider: FakePaymentProvider, *arguments: str
     In a thread, because `main` owns its event loop: it calls `asyncio.run`, which is what a
     process entry point should do and what cannot be done from inside the loop a test is already
     running on.
+
+    Every benchmark command is given the authored world by absolute path unless the test names
+    one itself. The default is relative to the working directory, which is the repository root
+    for an operator and is whatever pytest was started from here, and a suite of tests that
+    depended on that would be a suite that passes for a reason nobody chose. That the default
+    resolves is asserted separately, once.
     """
+    named = list(arguments)
+    if named[:1] == ["benchmark"] and "--world" not in named:
+        named += ["--world", str(VOLTEDGE_DIRECTORY)]
     out, err = StringIO(), StringIO()
     code = await asyncio.to_thread(
-        main, list(arguments), settings=settings, provider=provider, out=out, err=err
+        main, named, settings=settings, provider=provider, out=out, err=err
     )
     return Run(code=code, out=out.getvalue(), err=err.getvalue())
 

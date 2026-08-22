@@ -29,25 +29,35 @@ Every output says what produced it. The executor is named as `reference-v1` and 
 labelled as a reference benchmark result, because the thing that produced them is a scripted
 deterministic executor and not an AI buyer. See docs/benchmark.md.
 
-Only the VoltEdge world exists, so these commands take no fixture argument. A second world means
-a `--fixture` flag resolving a label against the registry below, and nothing else.
+The authored world is read from files rather than imported, and that is a boundary rather than
+a preference. A mission's expected outcome is the answer key, and while it was Python in this
+package a buyer process could import it and read every mission's ground truth. It now lives in
+`benchmarks/<world>/` at the top of the repository, which is outside the distribution this
+package is built into, and these commands are given a path to it. A worker started in an empty
+directory with an environment naming no path has nothing to read. See
+`agentrank_api.benchmark.authored`.
+
+`--world` defaults to the one world that exists, relative to the working directory, which is
+the repository root for `make benchmark`. A second world is a second directory and no code
+change.
 """
 
 import argparse
 import uuid
+from pathlib import Path
 from typing import Any, TextIO
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.auth.service import MerchantCredentialService
 from agentrank_api.auth.tokens import TokenMarker
+from agentrank_api.benchmark.authored import AuthoredWorld, publish_world, read_world
 from agentrank_api.benchmark.buyer import MerchantBuyerSurface
 from agentrank_api.benchmark.endpoint import (
     LocalCommerceEndpoint,
     RequestLedger,
     issued_credential,
 )
-from agentrank_api.benchmark.fixtures import BenchmarkFixture
 from agentrank_api.benchmark.isolation import IsolatedMissionExecutor
 from agentrank_api.benchmark.lifecycle import MissionRunStatus
 from agentrank_api.benchmark.metrics import BenchmarkMetrics
@@ -55,7 +65,6 @@ from agentrank_api.benchmark.models import BenchmarkMissionRun, BenchmarkRun
 from agentrank_api.benchmark.reference_executor import ReferenceMissionExecutor
 from agentrank_api.benchmark.runner import BenchmarkRunService
 from agentrank_api.benchmark.tools import MeasuredBuyerSurface, ToolLedger
-from agentrank_api.benchmark.voltedge import FIXTURE, SUITE_KEY, SUITE_VERSION, seed_voltedge
 from agentrank_api.cli.exits import ExitCode
 from agentrank_api.cli.output import write_json
 from agentrank_api.commerce.repository import MerchantRepository
@@ -63,9 +72,9 @@ from agentrank_api.config import Settings
 from agentrank_api.errors import NotFoundError
 from agentrank_api.payments.provider import PaymentProvider
 
-# The one world that exists. A second one becomes a `--fixture` flag and a mapping, and nothing
-# here has to change shape for it.
-WORLD: BenchmarkFixture = FIXTURE
+# Where the authored world lives, relative to the working directory. A path rather than an
+# import, because an imported oracle is one a buyer process can import too.
+DEFAULT_WORLD = Path("benchmarks/voltedge")
 
 # Column widths, so a mission line is one line on an ordinary terminal.
 KEY_WIDTH = 30
@@ -94,6 +103,7 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
             " version is refused, which is what the versions are for."
         ),
     )
+    _add_world(seeding)
     _add_json(seeding)
     seeding.set_defaults(command=seed)
 
@@ -120,6 +130,7 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
             " commerce API on a loopback port. Slower, and the boundary a model will use"
         ),
     )
+    _add_world(running)
     _add_json(running)
     running.set_defaults(command=run)
 
@@ -133,6 +144,7 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
         ),
     )
     detail.add_argument("run_id", type=uuid.UUID, help="the benchmark run identifier")
+    _add_world(detail)
     _add_json(detail)
     detail.set_defaults(command=show)
 
@@ -147,8 +159,28 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
         ),
     )
     closing.add_argument("run_id", type=uuid.UUID, help="the benchmark run identifier")
+    _add_world(closing)
     _add_json(closing)
     closing.set_defaults(command=abort)
+
+
+def _add_world(parser: argparse.ArgumentParser) -> None:
+    """Where the authored world is, which every command needs and none of them imports.
+
+    Even `show` and `abort` take it, because the merchant a run belongs to is named by the
+    authored world and these commands hold no credential to be told it by. One option on every
+    command beats a second way of naming a merchant.
+    """
+    parser.add_argument(
+        "--world",
+        type=Path,
+        default=DEFAULT_WORLD,
+        dest="world",
+        help=(
+            "the directory holding the authored benchmark world, its catalog and its suite"
+            f" (default {DEFAULT_WORLD})"
+        ),
+    )
 
 
 def _add_json(parser: argparse.ArgumentParser) -> None:
@@ -171,7 +203,7 @@ async def seed(
 ) -> int:
     """Register the world, put it back, and publish the suite."""
     del sessions, provider, settings
-    prepared, suite = await seed_voltedge(session)
+    prepared, suite = await publish_world(session, read_world(arguments.world))
     payload = {
         "environment": prepared.environment.label,
         "fixture_hash": prepared.environment.fixture_hash,
@@ -230,10 +262,13 @@ async def run(
     from what the surface actually did, and the executor is given the surface that writes to it
     rather than the ledger itself.
     """
-    merchant_id = await _benchmark_merchant(session)
+    world = read_world(arguments.world)
+    merchant_id = await _benchmark_merchant(session, world)
     service = BenchmarkRunService(session)
     if arguments.isolated:
-        finished = await _isolated_run(session, service, merchant_id, arguments, provider, settings)
+        finished = await _isolated_run(
+            session, service, merchant_id, world, arguments, provider, settings
+        )
         return await _report(service, finished.id, merchant_id, arguments, out)
 
     ledger = ToolLedger()
@@ -242,9 +277,9 @@ async def run(
     )
     finished = await service.run_suite(
         ReferenceMissionExecutor(surface),
-        suite_key=SUITE_KEY,
-        suite_version=SUITE_VERSION,
-        fixture=WORLD,
+        suite_key=world.suite.key,
+        suite_version=world.suite.version,
+        fixture=world.fixture,
         witness=ledger,
         representation_label=arguments.representation_label,
     )
@@ -255,6 +290,7 @@ async def _isolated_run(
     session: AsyncSession,
     service: BenchmarkRunService,
     merchant_id: uuid.UUID,
+    world: AuthoredWorld,
     arguments: argparse.Namespace,
     provider: PaymentProvider,
     settings: Settings,
@@ -284,9 +320,9 @@ async def _isolated_run(
         executor = IsolatedMissionExecutor(base_url=endpoint.base_url, token=token, served=served)
         return await service.run_suite(
             executor,
-            suite_key=SUITE_KEY,
-            suite_version=SUITE_VERSION,
-            fixture=WORLD,
+            suite_key=world.suite.key,
+            suite_version=world.suite.version,
+            fixture=world.fixture,
             witness=executor,
             representation_label=arguments.representation_label,
         )
@@ -303,7 +339,7 @@ async def show(
     """One run, its pins, its metrics and every mission outcome."""
     del sessions, provider, settings
     service = BenchmarkRunService(session)
-    merchant_id = await _benchmark_merchant(session)
+    merchant_id = await _benchmark_merchant(session, read_world(arguments.world))
     return await _report(service, arguments.run_id, merchant_id, arguments, out)
 
 
@@ -318,7 +354,7 @@ async def abort(
     """Close a run that stopped, and say what state it is being closed in."""
     del sessions, provider, settings
     service = BenchmarkRunService(session)
-    merchant_id = await _benchmark_merchant(session)
+    merchant_id = await _benchmark_merchant(session, read_world(arguments.world))
     before = await service.load(arguments.run_id, merchant_id=merchant_id)
     unfinished = [result for result in before.mission_runs if not result.is_terminal]
     closed = await service.abort_run(arguments.run_id, merchant_id=merchant_id)
@@ -351,7 +387,7 @@ async def abort(
     return ExitCode.OK
 
 
-async def _benchmark_merchant(session: AsyncSession) -> uuid.UUID:
+async def _benchmark_merchant(session: AsyncSession, world: AuthoredWorld) -> uuid.UUID:
     """The merchant these commands are about, which is the one the world describes.
 
     Every read on the run service takes a merchant and puts it in the query, which is the rule
@@ -360,9 +396,9 @@ async def _benchmark_merchant(session: AsyncSession) -> uuid.UUID:
     way available: from the benchmark world these commands are for. A run belonging to anybody
     else is not found here, exactly as it would not be over HTTP.
     """
-    merchant = await MerchantRepository(session).get_by_slug(WORLD.merchant_slug)
+    merchant = await MerchantRepository(session).get_by_slug(world.merchant_slug)
     if merchant is None:
-        raise NotFoundError("merchant", WORLD.merchant_slug)
+        raise NotFoundError("merchant", world.merchant_slug)
     return merchant.id
 
 

@@ -7,14 +7,21 @@ reproducible rather than a measurement of whatever the database happened to cont
 
 Running it after editing the suite or the catalog fixture without bumping that definition's
 version is refused, which is the point of the versions.
+
+The world is read from `benchmarks/voltedge` rather than imported. The authored files are
+operator side and are deliberately outside the package a benchmark worker runs from, because a
+mission's expected outcome is the answer key. See `agentrank_api.benchmark.authored`.
 """
 
 import asyncio
+from pathlib import Path
 
-from agentrank_api.benchmark.voltedge import seed_voltedge
+from agentrank_api.benchmark.authored import publish_world, read_world
 from agentrank_api.config import get_settings
 from agentrank_api.database import create_engine, create_session_factory
 from agentrank_api.registry import Base  # noqa: F401  registers every table
+
+WORLD = Path(__file__).resolve().parent.parent / "benchmarks" / "voltedge"
 
 
 async def main() -> None:
@@ -23,7 +30,7 @@ async def main() -> None:
     factory = create_session_factory(engine)
     try:
         async with factory() as session:
-            prepared, suite = await seed_voltedge(session)
+            prepared, suite = await publish_world(session, read_world(WORLD))
     finally:
         await engine.dispose()
 

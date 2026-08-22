@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
+from benchmark_support import VOLTEDGE, seed_voltedge
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -41,16 +42,6 @@ from agentrank_api.benchmark.reference_executor import (
 )
 from agentrank_api.benchmark.runner import BenchmarkRunService
 from agentrank_api.benchmark.tools import MeasuredBuyerSurface, ToolLedger
-from agentrank_api.benchmark.voltedge import (
-    CURRENCY,
-    FIXTURE,
-    MERCHANT_SLUG,
-    MISSIONS,
-    PRODUCTS,
-    SUITE_KEY,
-    SUITE_VERSION,
-    seed_voltedge,
-)
 from agentrank_api.checkout.models import CheckoutSession, CheckoutStatus
 from agentrank_api.commerce.models import Variant
 from agentrank_api.constraints.rules import ConstraintOperator
@@ -59,6 +50,16 @@ from agentrank_api.payments.fake import FakePaymentProvider
 from agentrank_api.payments.models import PaymentAttempt, PaymentAttemptStatus
 
 pytestmark = pytest.mark.anyio
+
+# The authored world, read from `benchmarks/voltedge` rather than imported from the package.
+# Named here so every assertion below reads as a statement about VoltEdge.
+FIXTURE = VOLTEDGE.fixture
+PRODUCTS = FIXTURE.products
+MISSIONS = VOLTEDGE.suite.missions
+MERCHANT_SLUG = VOLTEDGE.merchant_slug
+SUITE_KEY = VOLTEDGE.suite.key
+SUITE_VERSION = VOLTEDGE.suite.version
+CURRENCY = "INR"
 
 
 @dataclass(frozen=True, slots=True)

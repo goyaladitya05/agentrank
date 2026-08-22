@@ -11,6 +11,7 @@ import uuid
 from itertools import pairwise
 
 import pytest
+from benchmark_support import VOLTEDGE, seed_voltedge
 from commerce_support import PRICE
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,21 +30,22 @@ from agentrank_api.benchmark.observation import (
 )
 from agentrank_api.benchmark.runner import BenchmarkRunService, executor_from
 from agentrank_api.benchmark.suites import BenchmarkSuiteService
-from agentrank_api.benchmark.voltedge import (
-    FIXTURE,
-    MERCHANT_SLUG,
-    MISSIONS,
-    SUITE,
-    SUITE_KEY,
-    SUITE_VERSION,
-    seed_voltedge,
-)
 from agentrank_api.commerce.repository import MerchantRepository
 from agentrank_api.payments.models import PaymentAttemptStatus
 
 pytestmark = pytest.mark.anyio
 
 CURRENCY = "INR"
+
+# The authored world, read from `benchmarks/voltedge` rather than imported from the package.
+# Named here so the assertions below read as statements about VoltEdge rather than about a
+# loader.
+FIXTURE = VOLTEDGE.fixture
+SUITE = VOLTEDGE.suite
+MISSIONS = SUITE.missions
+MERCHANT_SLUG = VOLTEDGE.merchant_slug
+SUITE_KEY = SUITE.key
+SUITE_VERSION = SUITE.version
 
 
 async def seeded(session: AsyncSession) -> uuid.UUID:

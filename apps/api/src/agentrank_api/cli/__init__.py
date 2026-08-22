@@ -57,7 +57,7 @@ Exit codes are meant to be acted on by a script as well as read by a person:
 ```text
 0  the command ran and reported what it found
 1  an unexpected internal failure, with the traceback, because this is a trusted tool
-2  the arguments were wrong
+2  the arguments were wrong, including an authored benchmark world that cannot be read
 3  the payment, merchant, credential or benchmark run named does not exist
 4  the current state refuses the operation
 ```
@@ -86,6 +86,7 @@ import sys
 from collections.abc import Sequence
 from typing import TextIO
 
+from agentrank_api.benchmark.authored import AuthoredDefinitionError
 from agentrank_api.cli import benchmark, credentials, payments
 from agentrank_api.cli.command import Command
 from agentrank_api.cli.exits import ExitCode
@@ -163,6 +164,12 @@ def main(
                 out=stream,
             )
         )
+    except AuthoredDefinitionError as unreadable:
+        # An authored world is an argument rather than an internal fact: the operator named the
+        # directory, and a file that is missing or malformed is something they can fix. It is a
+        # usage exit for the same reason a bad flag is, and it says which file and why.
+        print(f"unusable benchmark world: {unreadable}", file=errors)
+        return ExitCode.USAGE
     except NotFoundError as missing:
         print(f"not found: {missing}", file=errors)
         return ExitCode.NOT_FOUND
