@@ -19,13 +19,12 @@ from sqlalchemy.orm import selectinload
 
 from agentrank_api.benchmark.definitions import BenchmarkSuiteDefinition
 from agentrank_api.benchmark.identity import suite_content_hash
+from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
 from agentrank_api.benchmark.models import (
     BenchmarkMission,
     BenchmarkMissionRun,
     BenchmarkRun,
-    BenchmarkRunStatus,
     BenchmarkSuite,
-    MissionRunStatus,
 )
 
 # A listing is a work list, not an export. The bound is here rather than at a caller so that

@@ -19,6 +19,7 @@ is close enough. See docs/decisions.md.
 """
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Self
@@ -99,6 +100,29 @@ def normalize_text(value: str) -> str:
     another. Nothing here decides that two different words mean the same thing.
     """
     return value.strip().casefold()
+
+
+def lookup_attribute(attributes: Mapping[str, Any], key: str) -> tuple[bool, Any]:
+    """Find an attribute by name, allowing for a merchant's capitalisation.
+
+    An exact match wins. Failing that, a single match after normalization is accepted, so a
+    buyer asking for `color` is answered by a merchant who wrote `Color`. Two keys that
+    normalize to the same name are ambiguous, and an ambiguous lookup is reported as missing
+    rather than resolved by picking one, because picking one is a guess.
+
+    Here rather than in either of its callers, because both the semantic authorization gate and
+    the benchmark evaluator have to answer "did the merchant state this" the same way. Two
+    copies of this rule would eventually be two rules, and the benchmark would then measure
+    something the authorization layer does not enforce.
+    """
+    if key in attributes:
+        return True, attributes[key]
+
+    wanted = normalize_text(key)
+    matches = [value for name, value in attributes.items() if normalize_text(name) == wanted]
+    if len(matches) == 1:
+        return True, matches[0]
+    return False, None
 
 
 def compare(operator: ConstraintOperator, expected: ConstraintValue, actual: object) -> bool | None:

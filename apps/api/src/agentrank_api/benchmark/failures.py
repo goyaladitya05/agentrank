@@ -26,6 +26,7 @@ not be reached at all, then what was chosen, then whether the choice was allowed
 could be quoted, authorized and paid for.
 """
 
+from collections.abc import Set as AbstractSet
 from enum import StrEnum
 
 
@@ -206,7 +207,7 @@ UNSAFE_SELECTION_REASONS = frozenset(
 )
 
 
-def in_precedence(reasons: frozenset[FailureReason]) -> tuple[FailureReason, ...]:
+def in_precedence(reasons: AbstractSet[FailureReason]) -> tuple[FailureReason, ...]:
     """The reasons found, ordered so that the primary one is first.
 
     A set goes in and a tuple comes out, which is the point. The evaluator collects reasons

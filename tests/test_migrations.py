@@ -16,7 +16,8 @@ from sqlalchemy import create_engine, func, inspect, select, text
 
 from agentrank_api.audit.models import ActorType, AuditEvent
 from agentrank_api.benchmark.definitions import ExpectedOutcome
-from agentrank_api.benchmark.models import BenchmarkRunStatus, BenchmarkSuite
+from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus
+from agentrank_api.benchmark.models import BenchmarkSuite
 from agentrank_api.benchmark.repository import BenchmarkRunRepository, BenchmarkSuiteRepository
 from agentrank_api.checkout.models import CheckoutLine, CheckoutSession
 from agentrank_api.checkout.quote import QuotedLine

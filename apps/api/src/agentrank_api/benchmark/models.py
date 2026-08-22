@@ -30,7 +30,6 @@ the run service refuses to run a suite against any other merchant. See docs/deci
 
 import uuid
 from datetime import datetime
-from enum import StrEnum
 from typing import Any
 
 from sqlalchemy import (
@@ -64,6 +63,12 @@ from agentrank_api.benchmark.definitions import (
 )
 from agentrank_api.benchmark.failures import FailureReason
 from agentrank_api.benchmark.identity import HASH_LENGTH, HASH_PATTERN
+from agentrank_api.benchmark.lifecycle import (
+    TERMINAL_MISSION_STATUSES,
+    TERMINAL_RUN_STATUSES,
+    BenchmarkRunStatus,
+    MissionRunStatus,
+)
 from agentrank_api.mandates.intent import MAX_DESCRIPTION_LENGTH
 from agentrank_api.models import Base
 from agentrank_api.money import CURRENCY_PATTERN
@@ -264,82 +269,6 @@ class BenchmarkMission(Base):
         )
 
 
-class BenchmarkRunStatus(StrEnum):
-    """Where one execution of one suite against one merchant has got to.
-
-    Four, and each names something a reader has to be able to tell apart.
-
-    PENDING
-        Every mission run exists and none has started. The shape of the run is already fixed by
-        the suite, so a run always has exactly as many mission runs as its suite has missions.
-
-    RUNNING
-        Execution has begun.
-
-    COMPLETED
-        Every mission run reached a terminal state. This is the only status under which a report
-        describes the whole workload.
-
-    ABORTED
-        Execution stopped and some missions never reached a terminal state. Its own value rather
-        than COMPLETED with fewer results, because a partial run presented as a complete one
-        would report a task completion rate over a denominator nobody chose.
-    """
-
-    PENDING = "PENDING"
-    RUNNING = "RUNNING"
-    COMPLETED = "COMPLETED"
-    ABORTED = "ABORTED"
-
-
-class MissionRunStatus(StrEnum):
-    """What became of one mission in one run.
-
-    PENDING
-        Recorded and not started.
-
-    RUNNING
-        Started, with no outcome yet.
-
-    SUCCEEDED
-        A compliant purchase completed, on a mission whose ground truth said one was available.
-        This is the only status that counts as task completion, and the only one under which
-        simulated GMV is captured.
-
-    FAILED
-        An attempt was made and did not produce the expected outcome. Always carries a reason.
-
-    ABSTAINED
-        The executor deliberately declined to buy. Its own status rather than a kind of failure,
-        because declining is correct on a mission where nothing acceptable is for sale and is a
-        finding on a mission where something is, and one status covering both would make a
-        cautious agent and a broken catalog look the same. Correctness is recorded as the
-        presence or absence of a failure reason rather than as a second status.
-
-    ERRORED
-        The harness itself could not carry the mission out. Deliberately not FAILED: an
-        infrastructure fault is not a fact about the merchant, and counting one as a commerce
-        failure would make a flaky runner look like a bad catalog. A merchant surface returning
-        an error is the other case and is a FAILED with MERCHANT_API_ERROR.
-    """
-
-    PENDING = "PENDING"
-    RUNNING = "RUNNING"
-    SUCCEEDED = "SUCCEEDED"
-    FAILED = "FAILED"
-    ABSTAINED = "ABSTAINED"
-    ERRORED = "ERRORED"
-
-
-TERMINAL_MISSION_STATUSES = frozenset(
-    {
-        MissionRunStatus.SUCCEEDED,
-        MissionRunStatus.FAILED,
-        MissionRunStatus.ABSTAINED,
-        MissionRunStatus.ERRORED,
-    }
-)
-
 # Stored as text with check constraints rather than as native PostgreSQL enums, for the same
 # reason as every other enumeration in this schema.
 BENCHMARK_RUN_STATUS = Enum(
@@ -459,7 +388,7 @@ class BenchmarkRun(Base):
 
     @property
     def is_terminal(self) -> bool:
-        return self.status in (BenchmarkRunStatus.COMPLETED, BenchmarkRunStatus.ABORTED)
+        return self.status in TERMINAL_RUN_STATUSES
 
 
 class BenchmarkMissionRun(Base):

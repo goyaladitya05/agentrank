@@ -43,7 +43,7 @@ from agentrank_api.constraints.rules import (
     IntentConstraintSpec,
     PersistedConstraintKind,
     compare,
-    normalize_text,
+    lookup_attribute,
 )
 
 
@@ -234,7 +234,7 @@ def _check_attribute(
         # cannot be evaluated must not be a rule that passed.
         return _LineFailure(code=IntentViolationCode.REQUIRED_ATTRIBUTE_MISSING, actual=None)
 
-    found, actual = _lookup(attributes, spec.attribute_key)
+    found, actual = lookup_attribute(attributes, spec.attribute_key)
     if not found:
         # Absence is not falsehood and it is not zero. Nothing here reads a product
         # description to guess what the merchant meant.
@@ -246,21 +246,3 @@ def _check_attribute(
     if not result:
         return _LineFailure(code=IntentViolationCode.REQUIRED_ATTRIBUTE_MISMATCH, actual=actual)
     return None
-
-
-def _lookup(attributes: Mapping[str, Any], key: str) -> tuple[bool, Any]:
-    """Find an attribute by name, allowing for a merchant's capitalisation.
-
-    An exact match wins. Failing that, a single match after normalization is accepted, so
-    a buyer asking for `color` is answered by a merchant who wrote `Color`. Two keys that
-    normalize to the same name are ambiguous, and an ambiguous lookup is reported as
-    missing rather than resolved by picking one, because picking one is a guess.
-    """
-    if key in attributes:
-        return True, attributes[key]
-
-    wanted = normalize_text(key)
-    matches = [value for name, value in attributes.items() if normalize_text(name) == wanted]
-    if len(matches) == 1:
-        return True, matches[0]
-    return False, None

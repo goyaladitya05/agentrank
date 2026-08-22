@@ -11,13 +11,8 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentrank_api.benchmark.failures import FailureReason
-from agentrank_api.benchmark.models import (
-    BenchmarkMissionRun,
-    BenchmarkRun,
-    BenchmarkRunStatus,
-    BenchmarkSuite,
-    MissionRunStatus,
-)
+from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
+from agentrank_api.benchmark.models import BenchmarkMissionRun, BenchmarkRun, BenchmarkSuite
 from agentrank_api.benchmark.repository import BenchmarkRunRepository, BenchmarkSuiteRepository
 from agentrank_api.commerce.repository import MerchantRepository
 
