@@ -12,7 +12,8 @@ OPERATOR_CLI := agentrank_api.cli
 
 .PHONY: help install format lint format-check typecheck test test-backend test-frontend \
 	build-frontend check-text check-whitespace check \
-	db-up db-down db-reset db-verify migrate seed-dev seed-benchmark api web payments credentials
+	db-up db-down db-reset db-verify migrate seed-dev seed-benchmark api web payments credentials \
+	benchmark
 
 help: ## List available targets
 	@grep -hE '^[a-zA-Z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) \
@@ -92,3 +93,6 @@ payments: ## Run the payment operator CLI. Example: make payments ARGS="list-unr
 
 credentials: ## Run the credential operator CLI. Example: make credentials ARGS="list --merchant-slug ampere-supply"
 	$(UV) run python -m $(OPERATOR_CLI) credentials $(ARGS)
+
+benchmark: ## Run the benchmark operator CLI. Example: make benchmark ARGS="run"
+	$(UV) run python -m $(OPERATOR_CLI) benchmark $(ARGS)

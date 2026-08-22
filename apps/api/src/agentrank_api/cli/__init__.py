@@ -46,6 +46,10 @@ uv run python -m agentrank_api.cli payments status
 uv run python -m agentrank_api.cli credentials create --merchant-slug ampere-supply --label local
 uv run python -m agentrank_api.cli credentials list --merchant-slug ampere-supply
 uv run python -m agentrank_api.cli credentials revoke <credential-id>
+uv run python -m agentrank_api.cli benchmark seed
+uv run python -m agentrank_api.cli benchmark run --representation-label baseline
+uv run python -m agentrank_api.cli benchmark show <run-id>
+uv run python -m agentrank_api.cli benchmark abort <run-id>
 ```
 
 Exit codes are meant to be acted on by a script as well as read by a person:
@@ -54,7 +58,7 @@ Exit codes are meant to be acted on by a script as well as read by a person:
 0  the command ran and reported what it found
 1  an unexpected internal failure, with the traceback, because this is a trusted tool
 2  the arguments were wrong
-3  the payment, merchant or credential named does not exist
+3  the payment, merchant, credential or benchmark run named does not exist
 4  the current state refuses the operation
 ```
 
@@ -82,7 +86,7 @@ import sys
 from collections.abc import Sequence
 from typing import TextIO
 
-from agentrank_api.cli import credentials, payments
+from agentrank_api.cli import benchmark, credentials, payments
 from agentrank_api.cli.command import Command
 from agentrank_api.cli.exits import ExitCode
 from agentrank_api.config import Settings, get_settings
@@ -101,11 +105,11 @@ def build_parser() -> argparse.ArgumentParser:
     option group, and a dependency added for this would be a dependency in the deployment
     artifact for the sake of coloured help text.
 
-    Two groups, and the second one is the reason the first was grouped at all. `credentials`
-    provisions merchant API keys, which is deliberately not an HTTP surface: an endpoint that
-    issued one could issue it for anybody, and nothing could authenticate the caller asking,
-    because a credential is what makes authentication possible. See
-    `agentrank_api.cli.credentials`.
+    Three groups. `credentials` provisions merchant API keys, which is deliberately not an HTTP
+    surface: an endpoint that issued one could issue it for anybody, and nothing could
+    authenticate the caller asking, because a credential is what makes authentication possible.
+    `benchmark` prepares a world and executes a suite, which overwrites a merchant's catalog and
+    consumes its stock, and neither is something a network surface should be able to start.
     """
     parser = argparse.ArgumentParser(
         prog=PROGRAM,
@@ -114,6 +118,9 @@ def build_parser() -> argparse.ArgumentParser:
     groups = parser.add_subparsers(dest="group", required=True)
     payments.add_commands(groups.add_parser("payments", help="payment operations and recovery"))
     credentials.add_commands(groups.add_parser("credentials", help="merchant API key provisioning"))
+    benchmark.add_commands(
+        groups.add_parser("benchmark", help="benchmark worlds, runs and results")
+    )
     return parser
 
 
