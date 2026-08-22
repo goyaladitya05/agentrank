@@ -1,4 +1,4 @@
-"""Benchmark definition persistence.
+"""Benchmark definition and run persistence.
 
 A published suite is the historical record of one workload. A run points at it, and a report
 read a year later has to mean what it meant on the day it was produced, so these rows are
@@ -30,14 +30,18 @@ the run service refuses to run a suite against any other merchant. See docs/deci
 
 import uuid
 from datetime import datetime
+from enum import StrEnum
 from typing import Any
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
+    ForeignKeyConstraint,
+    Index,
     Integer,
     String,
     UniqueConstraint,
@@ -58,6 +62,7 @@ from agentrank_api.benchmark.definitions import (
     ExpectedOutcome,
     MissionOracle,
 )
+from agentrank_api.benchmark.failures import FailureReason
 from agentrank_api.benchmark.identity import HASH_LENGTH, HASH_PATTERN
 from agentrank_api.mandates.intent import MAX_DESCRIPTION_LENGTH
 from agentrank_api.models import Base
@@ -256,4 +261,384 @@ class BenchmarkMission(Base):
                 expected_outcome=self.expected_outcome,
                 simulated_value_amount_minor=self.simulated_value_amount_minor,
             ),
+        )
+
+
+class BenchmarkRunStatus(StrEnum):
+    """Where one execution of one suite against one merchant has got to.
+
+    Four, and each names something a reader has to be able to tell apart.
+
+    PENDING
+        Every mission run exists and none has started. The shape of the run is already fixed by
+        the suite, so a run always has exactly as many mission runs as its suite has missions.
+
+    RUNNING
+        Execution has begun.
+
+    COMPLETED
+        Every mission run reached a terminal state. This is the only status under which a report
+        describes the whole workload.
+
+    ABORTED
+        Execution stopped and some missions never reached a terminal state. Its own value rather
+        than COMPLETED with fewer results, because a partial run presented as a complete one
+        would report a task completion rate over a denominator nobody chose.
+    """
+
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    ABORTED = "ABORTED"
+
+
+class MissionRunStatus(StrEnum):
+    """What became of one mission in one run.
+
+    PENDING
+        Recorded and not started.
+
+    RUNNING
+        Started, with no outcome yet.
+
+    SUCCEEDED
+        A compliant purchase completed, on a mission whose ground truth said one was available.
+        This is the only status that counts as task completion, and the only one under which
+        simulated GMV is captured.
+
+    FAILED
+        An attempt was made and did not produce the expected outcome. Always carries a reason.
+
+    ABSTAINED
+        The executor deliberately declined to buy. Its own status rather than a kind of failure,
+        because declining is correct on a mission where nothing acceptable is for sale and is a
+        finding on a mission where something is, and one status covering both would make a
+        cautious agent and a broken catalog look the same. Correctness is recorded as the
+        presence or absence of a failure reason rather than as a second status.
+
+    ERRORED
+        The harness itself could not carry the mission out. Deliberately not FAILED: an
+        infrastructure fault is not a fact about the merchant, and counting one as a commerce
+        failure would make a flaky runner look like a bad catalog. A merchant surface returning
+        an error is the other case and is a FAILED with MERCHANT_API_ERROR.
+    """
+
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    ABSTAINED = "ABSTAINED"
+    ERRORED = "ERRORED"
+
+
+TERMINAL_MISSION_STATUSES = frozenset(
+    {
+        MissionRunStatus.SUCCEEDED,
+        MissionRunStatus.FAILED,
+        MissionRunStatus.ABSTAINED,
+        MissionRunStatus.ERRORED,
+    }
+)
+
+# Stored as text with check constraints rather than as native PostgreSQL enums, for the same
+# reason as every other enumeration in this schema.
+BENCHMARK_RUN_STATUS = Enum(
+    BenchmarkRunStatus,
+    native_enum=False,
+    create_constraint=False,
+    validate_strings=True,
+    length=16,
+    name="benchmark_run_status",
+)
+
+MISSION_RUN_STATUS = Enum(
+    MissionRunStatus,
+    native_enum=False,
+    create_constraint=False,
+    validate_strings=True,
+    length=16,
+    name="benchmark_mission_run_status",
+)
+
+FAILURE_REASON = Enum(
+    FailureReason,
+    native_enum=False,
+    create_constraint=False,
+    validate_strings=True,
+    length=32,
+    name="benchmark_failure_reason",
+)
+
+_RUN_STATUS_VALUES = ", ".join(f"'{status.value}'" for status in BenchmarkRunStatus)
+_MISSION_STATUS_VALUES = ", ".join(f"'{status.value}'" for status in MissionRunStatus)
+_TERMINAL_VALUES = ", ".join(f"'{status.value}'" for status in sorted(TERMINAL_MISSION_STATUSES))
+_REASON_VALUES = ", ".join(f"'{reason.value}'" for reason in FailureReason)
+
+MAX_REPRESENTATION_LABEL_LENGTH = 100
+
+
+class BenchmarkRun(Base):
+    """One execution of one suite against one merchant representation.
+
+    Merchant owned, unlike the suite it executes. A run holds what happened when a specific
+    merchant was measured, which is exactly the kind of thing Phase 1H made private.
+
+    There is no `updated_at` and there are no aggregate count columns. Metrics are derived from
+    the mission runs below rather than stored beside them, because a stored count is a count that
+    can disagree with the rows it summarises, and the rows are already the answer. See
+    docs/decisions.md.
+
+    `representation_label` is a label and not an identity. The Merchant Compiler does not exist,
+    so there is no content identity for a merchant representation to record, and this column must
+    never be read as one: it holds whatever an operator called the representation, which is
+    enough to tell a baseline run from a later one and is not evidence that anything changed.
+    """
+
+    __tablename__ = "benchmark_run"
+    __table_args__ = (
+        # Redundant against the primary key, and present only as a composite foreign key target,
+        # so a mission run carries this run's merchant structurally rather than by convention.
+        UniqueConstraint("id", "merchant_id", name="uq_benchmark_run_ownership"),
+        CheckConstraint(f"status IN ({_RUN_STATUS_VALUES})", name="status_known"),
+        CheckConstraint(
+            "representation_label IS NULL OR length(btrim(representation_label)) > 0",
+            name="representation_label_not_blank",
+        ),
+        # A run that has not started has no start instant, and one that has finished has both.
+        CheckConstraint("(status = 'PENDING') = (started_at IS NULL)", name="started_at_matches"),
+        CheckConstraint(
+            "(status IN ('COMPLETED', 'ABORTED')) = (completed_at IS NOT NULL)",
+            name="completed_at_matches",
+        ),
+        CheckConstraint(
+            "completed_at IS NULL OR completed_at >= started_at", name="completion_after_start"
+        ),
+        # Merchant scoped reads and the RESTRICT check when a merchant is deleted. The ownership
+        # constraint above has id leftmost, so it does not serve either.
+        Index(None, "merchant_id"),
+        Index(None, "suite_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)
+    # RESTRICT, not CASCADE. A measurement of a merchant is a record about that merchant and
+    # must not disappear as a side effect of removing them.
+    merchant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("merchant.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    # RESTRICT for a stronger reason: a run whose suite was removed would describe a workload
+    # nobody can read, which is the failure the whole definition side of this schema prevents.
+    suite_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("benchmark_suite.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    representation_label: Mapped[str | None] = mapped_column(
+        String(MAX_REPRESENTATION_LABEL_LENGTH), nullable=True
+    )
+    # No server default, for the same reason as everywhere else in this schema: an insert that
+    # does not state a status is a bug.
+    status: Mapped[BenchmarkRunStatus] = mapped_column(BENCHMARK_RUN_STATUS, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    mission_runs: Mapped[list[BenchmarkMissionRun]] = relationship(
+        back_populates="run",
+        lazy="raise_on_sql",
+        cascade="all, delete-orphan",
+        # Version 7 identifiers are time ordered, so this is a stable order that is also the
+        # order the rows were created in.
+        order_by="BenchmarkMissionRun.id",
+    )
+
+    @property
+    def is_terminal(self) -> bool:
+        return self.status in (BenchmarkRunStatus.COMPLETED, BenchmarkRunStatus.ABORTED)
+
+
+class BenchmarkMissionRun(Base):
+    """What became of one mission in one run.
+
+    Narrow on purpose. It carries the outcome, the classification, and identifiers for the real
+    commerce rows the attempt produced. It does not carry an agent trace: traces will matter
+    later and will reference this row's identifier, and designing the whole trace system now
+    would be guessing at the shape of an agent that does not exist.
+
+    The three commerce references are nullable composite foreign keys, each carrying
+    `merchant_id`. That is what makes merchant isolation structural in both directions: a run for
+    one merchant cannot record another merchant's variant, quote or payment, whatever a caller
+    passes. PostgreSQL does not enforce a composite foreign key when any of its columns is null,
+    which is exactly the behavior wanted here: a mission that never selected anything simply has
+    no reference to check.
+
+    Safety is two booleans rather than something derived at report time, because whether the
+    executor tried to buy something it was not authorized to buy is a fact about the attempt, and
+    the attempt is gone by the time a report is read. `unsafe_completion` implies
+    `unsafe_attempt`, and neither can sit on a succeeded mission, both at the database.
+    """
+
+    __tablename__ = "benchmark_mission_run"
+    __table_args__ = (
+        # Named explicitly. The convention would generate names longer than the 63 bytes
+        # PostgreSQL keeps, so the name in the migration and the name in the database would
+        # silently disagree.
+        #
+        # CASCADE, unlike everything else here. A mission run has no meaning without its run,
+        # exactly as a checkout line has none without its quote.
+        ForeignKeyConstraint(
+            ["run_id", "merchant_id"],
+            ["benchmark_run.id", "benchmark_run.merchant_id"],
+            name="fk_benchmark_mission_run_run",
+            ondelete="CASCADE",
+        ),
+        # RESTRICT. The mission definition is what makes this row interpretable.
+        ForeignKeyConstraint(
+            ["mission_id"],
+            ["benchmark_mission.id"],
+            name="fk_benchmark_mission_run_mission",
+            ondelete="RESTRICT",
+        ),
+        # The three commerce references, each tied to this row's merchant. RESTRICT on all
+        # three: a benchmark result that points at a variant, a quote or a payment which no
+        # longer exists is a hole in the record of what was measured.
+        ForeignKeyConstraint(
+            ["selected_variant_id", "merchant_id"],
+            ["variant.id", "variant.merchant_id"],
+            name="fk_benchmark_mission_run_variant",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["checkout_id", "merchant_id"],
+            ["checkout_session.id", "checkout_session.merchant_id"],
+            name="fk_benchmark_mission_run_checkout",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["payment_attempt_id", "merchant_id"],
+            ["payment_attempt.id", "payment_attempt.merchant_id"],
+            name="fk_benchmark_mission_run_payment",
+            ondelete="RESTRICT",
+        ),
+        # One result per mission per run. A run executes a suite once, and two results for one
+        # mission would make the run's own arithmetic ambiguous.
+        UniqueConstraint("run_id", "mission_id", name="uq_benchmark_mission_run_mission"),
+        CheckConstraint(f"status IN ({_MISSION_STATUS_VALUES})", name="status_known"),
+        CheckConstraint(
+            f"primary_failure_reason IS NULL OR primary_failure_reason IN ({_REASON_VALUES})",
+            name="failure_reason_known",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(additional_failure_reasons) = 'array'", name="additional_reasons_shape"
+        ),
+        # Status and reason are separate facts and are still not free of each other. A success
+        # with a reason and a failure without one are both incoherent, and a run that has not
+        # produced an outcome has produced no reason either. ABSTAINED is the one status that
+        # takes either, because a correct abstention has nothing to explain.
+        CheckConstraint(
+            "CASE status"
+            " WHEN 'SUCCEEDED' THEN primary_failure_reason IS NULL"
+            " WHEN 'FAILED' THEN primary_failure_reason IS NOT NULL"
+            " WHEN 'ERRORED' THEN primary_failure_reason IS NULL"
+            " WHEN 'PENDING' THEN primary_failure_reason IS NULL"
+            " WHEN 'RUNNING' THEN primary_failure_reason IS NULL"
+            " ELSE true END",
+            name="failure_reason_matches_status",
+        ),
+        # Additional reasons qualify a primary one. Without a primary there is nothing for them
+        # to be additional to.
+        CheckConstraint(
+            "primary_failure_reason IS NOT NULL"
+            " OR jsonb_array_length(additional_failure_reasons) = 0",
+            name="additional_reasons_need_a_primary",
+        ),
+        # An unsafe purchase that completed is an unsafe attempt that was not stopped.
+        CheckConstraint(
+            "NOT unsafe_completion OR unsafe_attempt", name="completion_implies_attempt"
+        ),
+        # Neither can sit on a mission that succeeded: success requires full compliance, so an
+        # unsafe succeeded row would be the benchmark contradicting its own definition of safe.
+        CheckConstraint(
+            "NOT unsafe_attempt OR status <> 'SUCCEEDED'", name="unsafe_is_never_a_success"
+        ),
+        CheckConstraint("NOT unsafe_completion OR status = 'FAILED'", name="escape_is_a_failure"),
+        # A selection is a variant and a count together. Half of one says nothing.
+        CheckConstraint(
+            "(selected_variant_id IS NULL) = (selected_quantity IS NULL)", name="selection_shape"
+        ),
+        CheckConstraint(
+            "selected_quantity IS NULL OR selected_quantity > 0", name="quantity_positive"
+        ),
+        CheckConstraint("(status = 'PENDING') = (started_at IS NULL)", name="started_at_matches"),
+        CheckConstraint(
+            f"(status IN ({_TERMINAL_VALUES})) = (completed_at IS NOT NULL)",
+            name="completed_at_matches",
+        ),
+        CheckConstraint(
+            "completed_at IS NULL OR completed_at >= started_at", name="completion_after_start"
+        ),
+        # The unique constraint above has run_id leftmost, so loading a run's results and the
+        # cascade delete are served. These cover the merchant scoped read and the RESTRICT
+        # checks when a mission definition or a commerce row is deleted.
+        Index(None, "merchant_id"),
+        Index(None, "mission_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)
+    run_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    merchant_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    mission_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    status: Mapped[MissionRunStatus] = mapped_column(MISSION_RUN_STATUS, nullable=False)
+    primary_failure_reason: Mapped[FailureReason | None] = mapped_column(
+        FAILURE_REASON, nullable=True
+    )
+    # The rest of the reasons, in precedence order, never including the primary. A JSONB array
+    # rather than a child table: these are read as a group with the row that owns them and are
+    # never joined against on their own.
+    additional_failure_reasons: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb"), default=list
+    )
+    unsafe_attempt: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
+    )
+    unsafe_completion: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
+    )
+    selected_variant_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    selected_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    checkout_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    payment_attempt_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    run: Mapped[BenchmarkRun] = relationship(back_populates="mission_runs", lazy="raise_on_sql")
+    mission: Mapped[BenchmarkMission] = relationship(lazy="raise_on_sql")
+
+    @property
+    def is_terminal(self) -> bool:
+        return self.status in TERMINAL_MISSION_STATUSES
+
+    @property
+    def failure_reasons(self) -> tuple[FailureReason, ...]:
+        """Every reason this mission run carries, primary first.
+
+        Reassembled rather than stored twice. The primary is a column because a report groups by
+        it and a check constraint has to see it; the rest are a document because they are only
+        ever read alongside it.
+        """
+        if self.primary_failure_reason is None:
+            return ()
+        return (
+            self.primary_failure_reason,
+            *(FailureReason(reason) for reason in self.additional_failure_reasons),
         )

@@ -1,11 +1,14 @@
-"""Persistence access for published benchmark definitions.
+"""Persistence access for benchmark definitions and benchmark runs.
 
-Create and read. There is deliberately no update and no delete: a published suite is the
-historical record of a workload, and the database refuses both through a trigger, so this is
-a contract rather than a convention.
+Definitions are create and read only. There is deliberately no update and no delete for a
+published suite: it is the historical record of a workload, and the database refuses both
+through a trigger, so this is a contract rather than a convention.
 
-The repository owns SQLAlchemy and does not commit. The caller sets the transaction boundary,
-which is what lets a suite and every mission under it be one unit of work.
+Runs are written once and then transitioned, and the transitions are held by a trigger too, so
+a recorded mission result cannot be re-classified after the fact.
+
+Both repositories own SQLAlchemy and neither commits. The caller sets the transaction boundary,
+which is what lets a suite and its missions, or a run and its mission runs, be one unit of work.
 """
 
 import uuid
@@ -16,7 +19,19 @@ from sqlalchemy.orm import selectinload
 
 from agentrank_api.benchmark.definitions import BenchmarkSuiteDefinition
 from agentrank_api.benchmark.identity import suite_content_hash
-from agentrank_api.benchmark.models import BenchmarkMission, BenchmarkSuite
+from agentrank_api.benchmark.models import (
+    BenchmarkMission,
+    BenchmarkMissionRun,
+    BenchmarkRun,
+    BenchmarkRunStatus,
+    BenchmarkSuite,
+    MissionRunStatus,
+)
+
+# A listing is a work list, not an export. The bound is here rather than at a caller so that
+# there is no way to ask for an unbounded read.
+DEFAULT_RUN_LIMIT = 20
+MAX_RUN_LIMIT = 100
 
 
 class BenchmarkSuiteRepository:
@@ -103,5 +118,124 @@ class BenchmarkSuiteRepository:
             select(BenchmarkSuite)
             .where(BenchmarkSuite.suite_key == key)
             .order_by(BenchmarkSuite.version)
+        )
+        return list((await self._session.execute(statement)).scalars())
+
+
+class BenchmarkRunRepository:
+    """Persistence access for benchmark runs and their per mission results.
+
+    Every read takes a merchant and puts it in the query rather than comparing it afterwards.
+    A run is merchant owned, and there is deliberately no unscoped read here: an unscoped read
+    is what a caller reaches for when isolation is inconvenient, and not having one is what
+    makes it not reachable. The composite foreign keys already make cross merchant rows
+    unwritable; this is the reading half of the same rule.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create(
+        self,
+        *,
+        merchant_id: uuid.UUID,
+        suite: BenchmarkSuite,
+        representation_label: str | None = None,
+    ) -> BenchmarkRun:
+        """Write a PENDING run and one PENDING mission run per mission, and flush.
+
+        Every mission run exists before anything executes, so the shape of a run is fixed by
+        the suite rather than by how far execution got. Without that, a run that stopped early
+        would look like a run over a shorter suite, and the completion rate would be computed
+        against a denominator nobody chose.
+
+        Requires `suite.missions` to be loaded. `lazy="raise_on_sql"` makes an unloaded
+        collection raise here rather than quietly producing a run with no missions to execute.
+        """
+        run = BenchmarkRun(
+            merchant_id=merchant_id,
+            suite_id=suite.id,
+            representation_label=representation_label,
+            status=BenchmarkRunStatus.PENDING,
+        )
+        run.mission_runs = [
+            BenchmarkMissionRun(
+                merchant_id=merchant_id,
+                mission_id=mission.id,
+                status=MissionRunStatus.PENDING,
+            )
+            for mission in suite.missions
+        ]
+        self._session.add(run)
+        await self._session.flush()
+        return run
+
+    async def get(self, run_id: uuid.UUID, *, merchant_id: uuid.UUID) -> BenchmarkRun | None:
+        """One merchant's run, with its mission runs and their mission definitions loaded.
+
+        The definitions come with it because nothing about a result can be interpreted without
+        them: whether a mission succeeded depends on what its ground truth said, and reading
+        that lazily would make a report depend on how the objects were fetched.
+        """
+        statement = (
+            select(BenchmarkRun)
+            .options(
+                selectinload(BenchmarkRun.mission_runs).selectinload(BenchmarkMissionRun.mission)
+            )
+            .where(BenchmarkRun.id == run_id, BenchmarkRun.merchant_id == merchant_id)
+        )
+        return (await self._session.execute(statement)).scalar_one_or_none()
+
+    async def get_for_update(
+        self, run_id: uuid.UUID, *, merchant_id: uuid.UUID
+    ) -> BenchmarkRun | None:
+        """One merchant's run, held against other transactions.
+
+        Without the mission runs. A caller that locks a run is about to change the run's own
+        status, and loading a collection under a row lock would hold it for longer than the
+        decision needs.
+        """
+        statement = (
+            select(BenchmarkRun)
+            .where(BenchmarkRun.id == run_id, BenchmarkRun.merchant_id == merchant_id)
+            .with_for_update()
+        )
+        return (await self._session.execute(statement)).scalar_one_or_none()
+
+    async def get_mission_run(
+        self, run_id: uuid.UUID, mission_id: uuid.UUID, *, merchant_id: uuid.UUID
+    ) -> BenchmarkMissionRun | None:
+        """One mission's result within one merchant's run, held against other transactions.
+
+        Locked because recording a result is a transition, and two writers recording the same
+        mission at once would otherwise both read PENDING. The trigger refuses the second write
+        either way; the lock is what turns that into a queue rather than an error.
+        """
+        statement = (
+            select(BenchmarkMissionRun)
+            .where(
+                BenchmarkMissionRun.run_id == run_id,
+                BenchmarkMissionRun.mission_id == mission_id,
+                BenchmarkMissionRun.merchant_id == merchant_id,
+            )
+            .with_for_update()
+        )
+        return (await self._session.execute(statement)).scalar_one_or_none()
+
+    async def list_for_merchant(
+        self, *, merchant_id: uuid.UUID, limit: int = DEFAULT_RUN_LIMIT
+    ) -> list[BenchmarkRun]:
+        """One merchant's runs, newest first, bounded.
+
+        Version 7 identifiers are time ordered, so ordering by identifier is ordering by
+        creation and is total. Ordering by `created_at` would not be: two runs created in the
+        same transaction share a timestamp, and a tie broken arbitrarily is a listing that can
+        change between two identical reads.
+        """
+        statement = (
+            select(BenchmarkRun)
+            .where(BenchmarkRun.merchant_id == merchant_id)
+            .order_by(BenchmarkRun.id.desc())
+            .limit(min(limit, MAX_RUN_LIMIT))
         )
         return list((await self._session.execute(statement)).scalars())

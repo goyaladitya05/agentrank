@@ -250,6 +250,13 @@ class PaymentAttempt(Base):
         UniqueConstraint(
             "id", "merchant_id", "amount_minor", "currency", name="uq_payment_attempt_binding"
         ),
+        # Another target rather than another rule, added for the same reason as the one above
+        # and pointing at two of its four columns. A benchmark mission run records which payment
+        # a mission produced, bound through (payment_attempt_id, merchant_id), so a benchmark
+        # result cannot name a payment belonging to a different merchant. The wider constraint
+        # above cannot serve it: PostgreSQL needs a unique constraint on exactly the referenced
+        # columns. It changes no row, because both are already unique through `id` alone.
+        UniqueConstraint("id", "merchant_id", name="uq_payment_attempt_ownership"),
         CheckConstraint(f"status IN ({_STATUS_VALUES})", name="status_known"),
         CheckConstraint(
             f"outcome_source IS NULL OR outcome_source IN ({_SOURCE_VALUES})",

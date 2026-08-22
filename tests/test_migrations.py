@@ -10,9 +10,14 @@ from alembic import command
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
+from benchmark_support import mission as benchmark_mission
+from benchmark_support import suite as benchmark_suite
 from sqlalchemy import create_engine, func, inspect, select, text
 
 from agentrank_api.audit.models import ActorType, AuditEvent
+from agentrank_api.benchmark.definitions import ExpectedOutcome
+from agentrank_api.benchmark.models import BenchmarkRunStatus, BenchmarkSuite
+from agentrank_api.benchmark.repository import BenchmarkRunRepository, BenchmarkSuiteRepository
 from agentrank_api.checkout.models import CheckoutLine, CheckoutSession
 from agentrank_api.checkout.quote import QuotedLine
 from agentrank_api.checkout.repository import CheckoutRepository
@@ -46,6 +51,8 @@ PHASE_1D_HEAD = "70b5c985a47a"
 PHASE_1E_HEAD = "637598637298"
 PHASE_1F_HEAD = "ab60fc05d747"
 PHASE_1G_HEAD = "4c8de0a1b562"
+PHASE_1I_HEAD = "5b3f27ad9e14"
+BENCHMARK_DEFINITIONS_HEAD = "a9c07ae31e5e"
 
 HOUR = timedelta(hours=1)
 CHECKOUT_ID = uuid.uuid7()
@@ -807,3 +814,123 @@ async def test_downgrading_past_an_unresolved_payment_refuses(
 
     assert current_revision(throwaway_database) == head
     assert row_count(throwaway_database, PaymentAttempt) == 1
+
+
+def benchmark_snapshot(settings: Settings) -> dict[str, Any]:
+    """Everything about published benchmark definitions that a later migration could move."""
+    engine = create_engine(settings.database_url)
+    try:
+        with engine.connect() as connection:
+            suite = connection.execute(
+                text(
+                    "SELECT suite_key, version, merchant_slug, name, definition_hash"
+                    " FROM benchmark_suite"
+                )
+            ).one()
+            missions = connection.execute(
+                text(
+                    "SELECT mission_key, ordinal, objective, quantity, budget_amount_minor,"
+                    " currency, expected_outcome, simulated_value_amount_minor"
+                    " FROM benchmark_mission ORDER BY ordinal"
+                )
+            ).all()
+    finally:
+        engine.dispose()
+    return {"suite": tuple(suite), "missions": [tuple(row) for row in missions]}
+
+
+def benchmark_run_snapshot(settings: Settings) -> dict[str, Any]:
+    engine = create_engine(settings.database_url)
+    try:
+        with engine.connect() as connection:
+            run = connection.execute(
+                text("SELECT status, representation_label FROM benchmark_run")
+            ).one()
+            results = connection.execute(
+                text(
+                    "SELECT status, primary_failure_reason, unsafe_attempt, unsafe_completion"
+                    " FROM benchmark_mission_run"
+                    " JOIN benchmark_mission ON benchmark_mission.id ="
+                    " benchmark_mission_run.mission_id"
+                    " ORDER BY benchmark_mission.ordinal"
+                )
+            ).all()
+    finally:
+        engine.dispose()
+    return {"run": tuple(run), "results": [tuple(row) for row in results]}
+
+
+@pytest.mark.anyio
+async def test_benchmark_migrations_apply_to_a_database_that_already_holds_data(
+    throwaway_database: Settings, alembic_config_factory: AlembicConfigFactory
+) -> None:
+    """The benchmark tables meet a database that already holds a catalog and payments.
+
+    Two things here cannot be said by an empty database. The run migration adds a unique
+    constraint to `payment_attempt`, which means building a unique index over rows that already
+    exist. And a published suite has to survive a downgrade of the run tables and then a
+    reupgrade, because a historical definition outliving the results that referenced it is the
+    whole point of publishing one.
+    """
+    config = alembic_config_factory(throwaway_database)
+    command.upgrade(config, PHASE_1I_HEAD)
+
+    engine = create_async_engine(throwaway_database)
+    factory = create_session_factory(engine)
+    try:
+        async with factory() as session:
+            await seed_dev_catalog(session)
+            await session.commit()
+        seeded = catalog_snapshot(throwaway_database)
+
+        command.upgrade(config, BENCHMARK_DEFINITIONS_HEAD)
+        async with factory() as session:
+            await BenchmarkSuiteRepository(session).create(
+                benchmark_suite(
+                    benchmark_mission("buy-a-charger"),
+                    benchmark_mission(
+                        "nothing-fits", outcome=ExpectedOutcome.NO_ACCEPTABLE_PURCHASE
+                    ),
+                )
+            )
+            await session.commit()
+        published = benchmark_snapshot(throwaway_database)
+
+        command.upgrade(config, "head")
+        # The definitions came through the migration that added the run tables unchanged.
+        assert benchmark_snapshot(throwaway_database) == published
+
+        async with factory() as session:
+            merchant_id = (await session.execute(select(Merchant.id))).scalars().one()
+            suite = await BenchmarkSuiteRepository(session).get("test-suite", 1)
+            assert suite is not None
+            run = await BenchmarkRunRepository(session).create(
+                merchant_id=merchant_id, suite=suite, representation_label="baseline"
+            )
+            run.status = BenchmarkRunStatus.RUNNING
+            run.started_at = datetime.now(UTC)
+            await session.commit()
+        recorded = benchmark_run_snapshot(throwaway_database)
+        assert recorded["run"] == ("RUNNING", "baseline")
+        assert len(recorded["results"]) == 2
+    finally:
+        await engine.dispose()
+
+    # A downgrade of the run tables takes the results with them and leaves the definitions
+    # alone, which is what makes a published suite worth publishing.
+    command.downgrade(config, BENCHMARK_DEFINITIONS_HEAD)
+    assert benchmark_snapshot(throwaway_database) == published
+    assert catalog_snapshot(throwaway_database) == seeded
+    assert "benchmark_run" not in table_names(throwaway_database)
+    assert "benchmark_mission_run" not in table_names(throwaway_database)
+
+    command.downgrade(config, PHASE_1I_HEAD)
+    assert catalog_snapshot(throwaway_database) == seeded
+    assert "benchmark_suite" not in table_names(throwaway_database)
+    assert "benchmark_mission" not in table_names(throwaway_database)
+
+    command.upgrade(config, "head")
+    assert catalog_snapshot(throwaway_database) == seeded
+    # The definitions are gone with the tables that held them, which is what a downgrade of
+    # these phases means. Everything written before them is still here.
+    assert row_count(throwaway_database, BenchmarkSuite) == 0
