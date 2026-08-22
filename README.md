@@ -152,6 +152,12 @@ request field or flag that relaxes that: this project has no live mode. The key 
 the API process; the browser receives only the public key id and an order identifier, which is
 what Standard Checkout needs.
 
+This page has not yet been run against real Razorpay Test Mode keys. The integration is verified
+end to end against a transport fake and the signature formula is pinned against a digest computed
+outside this codebase, so what is proven is that the application sends what Razorpay documents
+and handles every answer Razorpay documents. Whether Razorpay agrees is unproven until somebody
+completes one test payment.
+
 The console has no authentication of its own, so anyone who can reach it can transact as the
 configured merchant. Keep it bound to localhost.
 
