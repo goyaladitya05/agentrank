@@ -9,20 +9,10 @@ from alembic import context
 from sqlalchemy import Connection, create_engine, pool
 
 from agentrank_api.config import Settings, get_settings
-from agentrank_api.models import Base
 
-# Importing the model modules is what registers their tables on Base.metadata.
-# Autogenerate and `alembic check` see an empty schema without this.
-from agentrank_api.audit import models as audit_models  # noqa: F401  isort:skip
-from agentrank_api.auth import models as auth_models  # noqa: F401  isort:skip
-from agentrank_api.benchmark import models as benchmark_models  # noqa: F401  isort:skip
-from agentrank_api.checkout import models as checkout_models  # noqa: F401  isort:skip
-from agentrank_api.commerce import models as commerce_models  # noqa: F401  isort:skip
-from agentrank_api.constraints import models as constraint_models  # noqa: F401  isort:skip
-from agentrank_api.inventory import models as inventory_models  # noqa: F401  isort:skip
-from agentrank_api.mandates import models as mandate_models  # noqa: F401  isort:skip
-from agentrank_api.payments import models as payment_models  # noqa: F401  isort:skip
-from agentrank_api.razorpay import models as razorpay_models  # noqa: F401  isort:skip
+# Importing the registry is what registers every table on Base.metadata. Autogenerate and
+# `alembic check` see an empty schema without it.
+from agentrank_api.registry import Base
 
 config = context.config
 target_metadata = Base.metadata

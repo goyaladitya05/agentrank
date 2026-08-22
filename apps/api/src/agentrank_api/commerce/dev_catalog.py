@@ -1,12 +1,11 @@
 """A small deterministic catalog for local development.
 
 Not benchmark data. This exists so that a developer can start PostgreSQL, run one command
-and have something real to query. The eventual benchmark merchant is a separate concern
-and will be built in a later phase.
+and have something real to query. The merchant the first benchmark suite is authored against
+is VoltEdge, and it lives in `agentrank_api.benchmark.voltedge`.
 
-Seeding is idempotent and convergent: running it twice changes nothing, and running it
-after editing the definitions below updates the existing rows rather than duplicating
-them. It is never run at application startup.
+The shapes and the convergent seeding both come from `agentrank_api.commerce.catalog_fixture`,
+which the two fixtures share. What is here is the data.
 
 The data is deliberately imperfect. One product has no description, one has no category,
 one product is inactive, one variant is inactive, one variant is out of stock and one is
@@ -14,45 +13,14 @@ priced in a second currency. A catalog where everything is present and tidy woul
 exercise anything AgentRank cares about.
 """
 
-import uuid
-from dataclasses import dataclass, field
-from typing import Any
-
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from agentrank_api.commerce.repository import CatalogRepository, MerchantRepository
-
-
-@dataclass(frozen=True, slots=True)
-class SeedVariant:
-    sku: str
-    label: str
-    price_amount_minor: int
-    currency: str
-    inventory_quantity: int
-    attributes: dict[str, Any] = field(default_factory=dict)
-    is_active: bool = True
-
-
-@dataclass(frozen=True, slots=True)
-class SeedProduct:
-    external_id: str
-    title: str
-    description: str | None
-    category: str | None
-    variants: tuple[SeedVariant, ...]
-    is_active: bool = True
-
-
-@dataclass(frozen=True, slots=True)
-class SeedSummary:
-    """What a seeding run did. `created` is zero on every run after the first."""
-
-    merchant_id: uuid.UUID
-    products: int
-    variants: int
-    created: int
-
+from agentrank_api.commerce.catalog_fixture import (
+    SeedProduct,
+    SeedSummary,
+    SeedVariant,
+    seed_catalog,
+)
 
 MERCHANT_SLUG = "ampere-supply"
 MERCHANT_NAME = "Ampere Supply"
@@ -188,63 +156,4 @@ PRODUCTS: tuple[SeedProduct, ...] = (
 
 async def seed_dev_catalog(session: AsyncSession) -> SeedSummary:
     """Create or update the development catalog. Does not commit."""
-    merchants = MerchantRepository(session)
-    catalog = CatalogRepository(session)
-    created = 0
-
-    merchant = await merchants.get_by_slug(MERCHANT_SLUG)
-    if merchant is None:
-        merchant = await merchants.create(slug=MERCHANT_SLUG, name=MERCHANT_NAME)
-        created += 1
-    else:
-        merchant.name = MERCHANT_NAME
-
-    variant_count = 0
-    for definition in PRODUCTS:
-        product = await catalog.get_product_by_external_id(merchant.id, definition.external_id)
-        if product is None:
-            product = await catalog.create_product(
-                merchant_id=merchant.id,
-                external_id=definition.external_id,
-                title=definition.title,
-                description=definition.description,
-                category=definition.category,
-                is_active=definition.is_active,
-            )
-            created += 1
-        else:
-            product.title = definition.title
-            product.description = definition.description
-            product.category = definition.category
-            product.is_active = definition.is_active
-
-        for seed_variant in definition.variants:
-            variant_count += 1
-            variant = await catalog.get_variant_by_sku(merchant.id, seed_variant.sku)
-            if variant is None:
-                await catalog.create_variant(
-                    product=product,
-                    sku=seed_variant.sku,
-                    label=seed_variant.label,
-                    price_amount_minor=seed_variant.price_amount_minor,
-                    currency=seed_variant.currency,
-                    inventory_quantity=seed_variant.inventory_quantity,
-                    attributes=seed_variant.attributes,
-                    is_active=seed_variant.is_active,
-                )
-                created += 1
-            else:
-                variant.label = seed_variant.label
-                variant.price_amount_minor = seed_variant.price_amount_minor
-                variant.currency = seed_variant.currency
-                variant.inventory_quantity = seed_variant.inventory_quantity
-                variant.attributes = seed_variant.attributes
-                variant.is_active = seed_variant.is_active
-
-    await session.flush()
-    return SeedSummary(
-        merchant_id=merchant.id,
-        products=len(PRODUCTS),
-        variants=variant_count,
-        created=created,
-    )
+    return await seed_catalog(session, slug=MERCHANT_SLUG, name=MERCHANT_NAME, products=PRODUCTS)

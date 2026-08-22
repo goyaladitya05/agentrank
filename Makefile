@@ -12,7 +12,7 @@ OPERATOR_CLI := agentrank_api.cli
 
 .PHONY: help install format lint format-check typecheck test test-backend test-frontend \
 	build-frontend check-text check-whitespace check \
-	db-up db-down db-reset db-verify migrate seed-dev api web payments credentials
+	db-up db-down db-reset db-verify migrate seed-dev seed-benchmark api web payments credentials
 
 help: ## List available targets
 	@grep -hE '^[a-zA-Z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) \
@@ -77,6 +77,9 @@ migrate: ## Apply all migrations
 
 seed-dev: ## Create or refresh the local development catalog
 	$(UV) run python scripts/seed_dev_catalog.py
+
+seed-benchmark: ## Create or refresh the VoltEdge catalog and publish its benchmark suite
+	$(UV) run python scripts/seed_benchmark.py
 
 api: ## Run the API with reload
 	$(UV) run uvicorn $(API_APP) --factory --reload --port 8000
