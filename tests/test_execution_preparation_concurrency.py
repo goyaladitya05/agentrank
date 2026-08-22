@@ -442,6 +442,7 @@ def test_the_lock_order_is_one_rule_in_one_place() -> None:
         "variant",
         "inventory_reservation",
         "payment_attempt",
+        "razorpay_checkout",
     )
 
 

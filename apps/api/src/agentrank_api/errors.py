@@ -77,6 +77,30 @@ class ConflictError(AgentRankError):
         self.identifier = identifier
 
 
+class UpstreamError(AgentRankError):
+    """An external system this application depends on did not give a usable answer.
+
+    Its own class rather than a `ConflictError`, and the distinction is not cosmetic. A conflict
+    says the request was fine and the state refused it, which tells a caller to change something
+    or to wait for the state to change. This says the request was fine, the state was fine, and
+    a system neither party controls did not cooperate. The next move is to try again later, and
+    a caller that could not tell the two apart would keep editing a request that was never wrong.
+
+    Answered as 502 rather than 409 for the same reason. It is also deliberately not a 500: this
+    application did not fail, and a caller reading its own monitoring should be able to see the
+    difference between a bug here and a gateway that timed out.
+
+    `reason` is a stable machine readable code and `detail` is a sentence this repository wrote.
+    Nothing an upstream said reaches either. A vendor's prose in this application's error body
+    is a vendor's prose in a buyer agent's parser, and it changes without notice.
+    """
+
+    def __init__(self, reason: str, detail: str) -> None:
+        super().__init__(detail)
+        self.reason = reason
+        self.detail = detail
+
+
 class ErrorResponse(BaseModel):
     """The body of every deliberate error response.
 

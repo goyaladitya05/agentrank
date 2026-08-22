@@ -16,8 +16,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.auth.principal import AuthenticatedMerchant
 from agentrank_api.auth.service import MerchantCredentialService
+from agentrank_api.config import RazorpayCredentials, Settings
 from agentrank_api.errors import AuthenticationError
 from agentrank_api.payments.provider import PaymentProvider
+from agentrank_api.razorpay.client import RazorpayClient
 
 
 async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
@@ -52,6 +54,36 @@ def get_payment_provider(request: Request) -> PaymentProvider:
 
 
 ProviderDep = Annotated[PaymentProvider, Depends(get_payment_provider)]
+
+
+def get_razorpay_client(request: Request) -> RazorpayClient | None:
+    """The Razorpay transport this application was built with, or None.
+
+    None is an ordinary answer rather than a failure. An unconfigured integration is a
+    deployment that has no Razorpay key pair, which every other part of this application works
+    perfectly well without, and the service refuses by name so a caller learns what is missing.
+
+    From application state for the same reason the payment provider is: a test points an
+    application at a transport it can inspect, and no request can choose one.
+    """
+    client: RazorpayClient | None = request.app.state.razorpay_client
+    return client
+
+
+RazorpayDep = Annotated[RazorpayClient | None, Depends(get_razorpay_client)]
+
+
+def get_razorpay_credentials(request: Request) -> RazorpayCredentials | None:
+    """The Razorpay Test Mode credentials, or None when the integration is not configured.
+
+    Separate from the transport because a response needs the public key id and the transport
+    does not expose one. The secret half stays inside a `SecretStr` and is never read here.
+    """
+    settings: Settings = request.app.state.settings
+    return settings.razorpay
+
+
+RazorpayCredentialsDep = Annotated[RazorpayCredentials | None, Depends(get_razorpay_credentials)]
 
 
 # `auto_error=False` because FastAPI's own refusal is the wrong one twice over. It answers 403

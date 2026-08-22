@@ -21,6 +21,9 @@ InventoryReservation     the claim on that stock
         |
         v
 PaymentAttempt           the payment for it
+        |
+        v
+RazorpayCheckout         the interactive provider binding for that payment
 ```
 
 Every operation that needs more than one class takes them in this order and never in
@@ -29,9 +32,14 @@ mandate and nothing below it, cancelling a checkout locks the checkout and nothi
 and neither reverses the order.
 
 The order is read downwards, from the authorization to the thing it authorizes to the stock
-that thing names to the claim on that stock to the money. That is also the order the facts
-depend on each other in. A quote is meaningless without its mandate, stock is held for a
-quote, and a payment is made for a hold.
+that thing names to the claim on that stock to the money to the provider binding for it. That
+is also the order the facts depend on each other in. A quote is meaningless without its
+mandate, stock is held for a quote, a payment is made for a hold, and a provider order is
+created for a payment.
+
+The binding is last because it depends on everything above it and nothing depends on it. An
+operation that touches it touches it at the end, which is also where the external call it
+guards happens.
 
 The variant rows come before the reservation rather than after it, which reads backwards
 until it does not. Locking the shelf is what makes availability stand still, and availability
@@ -50,10 +58,18 @@ CHECKOUT = "checkout_session"
 VARIANT = "variant"
 RESERVATION = "inventory_reservation"
 PAYMENT_ATTEMPT = "payment_attempt"
+RAZORPAY_CHECKOUT = "razorpay_checkout"
 
 # The table names in lock order. Here rather than restated in a test, so the rule and the
 # thing asserting it cannot drift apart.
-LOCK_ORDER: tuple[str, ...] = (MANDATE, CHECKOUT, VARIANT, RESERVATION, PAYMENT_ATTEMPT)
+LOCK_ORDER: tuple[str, ...] = (
+    MANDATE,
+    CHECKOUT,
+    VARIANT,
+    RESERVATION,
+    PAYMENT_ATTEMPT,
+    RAZORPAY_CHECKOUT,
+)
 
 
 def respects_lock_order(tables: Sequence[str]) -> bool:

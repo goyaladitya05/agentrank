@@ -880,11 +880,14 @@ def test_no_operator_recovery_route_exists_on_the_http_surface() -> None:
 
     for forbidden in ("abandon", "resume", "sweep", "operator", "recovery", "unresolved"):
         assert not any(forbidden in path for path in paths), forbidden
-    # The buyer facing payment surface is unchanged: three operations and no fourth.
+    # The buyer facing payment surface, in full. The Razorpay preparation joined it in Phase 1I
+    # and moves no money: it creates an order for a customer to pay against. Nothing operator
+    # facing appears here, which is what the loop above is for.
     assert {path for path in paths if "payment" in path} == {
         "/api/v1/commerce/checkouts/{checkout_id}/payments",
         "/api/v1/commerce/payments/{attempt_id}",
         "/api/v1/commerce/payments/{attempt_id}/reconcile",
+        "/api/v1/commerce/payments/{attempt_id}/razorpay-checkout",
     }
 
 

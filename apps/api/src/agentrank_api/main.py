@@ -14,12 +14,21 @@ from agentrank_api.errors import (
     ConflictError,
     ErrorResponse,
     NotFoundError,
+    UpstreamError,
 )
 from agentrank_api.payments.provider import PaymentProvider
 from agentrank_api.payments.wiring import build_payment_provider
 from agentrank_api.razorpay.client import HttpRazorpayClient, RazorpayClient
 from agentrank_api.razorpay.wiring import build_razorpay_client
-from agentrank_api.routes import checkouts, commerce, constraints, mandates, payments, system
+from agentrank_api.routes import (
+    checkouts,
+    commerce,
+    constraints,
+    mandates,
+    payments,
+    razorpay,
+    system,
+)
 
 
 def create_app(
@@ -49,14 +58,14 @@ def create_app(
     """
     resolved = settings or get_settings()
     provider = payment_provider or build_payment_provider()
-    razorpay = razorpay_client if razorpay_client is not None else build_razorpay_client(resolved)
+    transport = razorpay_client if razorpay_client is not None else build_razorpay_client(resolved)
     logging.basicConfig(level=resolved.log_level.upper())
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.settings = resolved
         app.state.payment_provider = provider
-        app.state.razorpay_client = razorpay
+        app.state.razorpay_client = transport
         app.state.engine = create_engine(resolved)
         app.state.session_factory = create_session_factory(app.state.engine)
         try:
@@ -66,8 +75,8 @@ def create_app(
             # Only the real transport holds a connection pool. An injected fake has nothing to
             # close, and closing something a test still owns would be this application reaching
             # outside itself.
-            if isinstance(razorpay, HttpRazorpayClient):
-                await razorpay.aclose()
+            if isinstance(transport, HttpRazorpayClient):
+                await transport.aclose()
 
     app = FastAPI(
         title="AgentRank API",
@@ -126,10 +135,27 @@ def create_app(
         )
         return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=body.model_dump())
 
+    @app.exception_handler(UpstreamError)
+    async def handle_upstream(_: Request, error: UpstreamError) -> JSONResponse:
+        """A system this application depends on did not give a usable answer.
+
+        502 rather than 409, because nothing about the request or the state was wrong and a
+        caller that could not tell the two apart would keep editing a request that was fine.
+        502 rather than 500, because this application did not fail: a caller reading its own
+        monitoring should be able to separate a bug here from a gateway that timed out.
+
+        The body carries a code this repository chose and a sentence it wrote. Nothing an
+        upstream said is in it, including for an upstream that answered with prose explaining
+        itself.
+        """
+        body = ErrorResponse(error=error.reason, detail=error.detail)
+        return JSONResponse(status_code=status.HTTP_502_BAD_GATEWAY, content=body.model_dump())
+
     app.include_router(system.router)
     app.include_router(commerce.router)
     app.include_router(mandates.router)
     app.include_router(checkouts.router)
     app.include_router(constraints.router)
     app.include_router(payments.router)
+    app.include_router(razorpay.router)
     return app
