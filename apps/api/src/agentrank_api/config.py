@@ -39,6 +39,13 @@ class RazorpayCredentials:
     timeout_seconds: float
 
 
+@dataclass(frozen=True, slots=True)
+class OpenAICredentials:
+    """A proper application-runtime OpenAI API key, never a developer subscription token."""
+
+    api_key: SecretStr
+
+
 class Settings(BaseSettings):
     """Runtime configuration.
 
@@ -72,6 +79,7 @@ class Settings(BaseSettings):
     razorpay_key_secret: SecretStr | None = Field(default=None, alias="RAZORPAY_KEY_SECRET")
     razorpay_api_base_url: str = Field(default=RAZORPAY_API_BASE_URL, alias="RAZORPAY_API_BASE_URL")
     razorpay_timeout_seconds: float = Field(default=15.0, alias="RAZORPAY_TIMEOUT_SECONDS")
+    openai_api_key: SecretStr | None = Field(default=None, alias="OPENAI_API_KEY")
 
     @model_validator(mode="after")
     def razorpay_is_test_mode_or_absent(self) -> Self:
@@ -117,6 +125,13 @@ class Settings(BaseSettings):
             key_secret=self.razorpay_key_secret,
             api_base_url=self.razorpay_api_base_url.rstrip("/"),
             timeout_seconds=self.razorpay_timeout_seconds,
+        )
+
+    @property
+    def openai(self) -> OpenAICredentials | None:
+        """Runtime provider credentials, or None when live LLM runs are not configured."""
+        return (
+            None if self.openai_api_key is None else OpenAICredentials(api_key=self.openai_api_key)
         )
 
     @property

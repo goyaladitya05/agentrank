@@ -16,17 +16,23 @@ unit of work.
 """
 
 import uuid
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from agentrank_api.benchmark.agent_trace import AgentExecutionEvidence
 from agentrank_api.benchmark.definitions import BenchmarkSuiteDefinition
 from agentrank_api.benchmark.execution import ExecutorIdentity
 from agentrank_api.benchmark.fixtures import BenchmarkFixture
 from agentrank_api.benchmark.identity import CorruptedSuiteDefinitionError, suite_content_hash
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
 from agentrank_api.benchmark.models import (
+    AgentProviderUsage,
+    AgentTraceEvent,
+    AgentTraceEventType,
+    AgentUsageKind,
     BenchmarkEnvironment,
     BenchmarkMission,
     BenchmarkMissionRun,
@@ -39,6 +45,91 @@ from agentrank_api.commerce.models import Merchant
 # there is no way to ask for an unbounded read.
 DEFAULT_RUN_LIMIT = 20
 MAX_RUN_LIMIT = 100
+
+
+class AgentEvidenceRepository:
+    """Trusted persistence for bounded worker runtime evidence."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def append(
+        self,
+        evidence: AgentExecutionEvidence,
+        *,
+        mission_run_id: uuid.UUID,
+        run_id: uuid.UUID,
+        merchant_id: uuid.UUID,
+    ) -> None:
+        events: list[AgentTraceEvent] = []
+        for sequence, event in enumerate(evidence.events, start=1):
+            events.append(
+                AgentTraceEvent(
+                    merchant_id=merchant_id,
+                    run_id=run_id,
+                    mission_run_id=mission_run_id,
+                    sequence=sequence,
+                    event_type=AgentTraceEventType(event.event_type),
+                    payload=event.payload,
+                )
+            )
+        self._session.add_all(events)
+        await self._session.flush()
+        for usage in evidence.usages:
+            raw = usage.usage or {}
+            self._session.add(
+                AgentProviderUsage(
+                    merchant_id=merchant_id,
+                    run_id=run_id,
+                    mission_run_id=mission_run_id,
+                    trace_event_id=events[usage.trace_sequence - 1].id,
+                    invocation_sequence=usage.invocation_sequence,
+                    measurement_kind=AgentUsageKind.PROVIDER_REPORTED,
+                    provider=usage.provider,
+                    requested_model=usage.requested_model,
+                    actual_model=usage.actual_model,
+                    provider_request_id=usage.provider_request_id,
+                    provider_latency_ms=usage.provider_latency_ms,
+                    input_tokens=_integer(raw.get("input_tokens")),
+                    cached_input_tokens=_nested_integer(
+                        raw, "input_tokens_details", "cached_tokens"
+                    ),
+                    output_tokens=_integer(raw.get("output_tokens")),
+                    reasoning_tokens=_nested_integer(
+                        raw, "output_tokens_details", "reasoning_tokens"
+                    ),
+                    total_tokens=_integer(raw.get("total_tokens")),
+                )
+            )
+        await self._session.flush()
+
+
+def _integer(value: Any) -> int | None:
+    return value if type(value) is int and value >= 0 else None
+
+
+def _nested_integer(value: Any, key: str, nested_key: str) -> int | None:
+    if not isinstance(value.get(key), dict):
+        return None
+    return _integer(value[key].get(nested_key))
+
+
+def _validate_agent_configuration(
+    executor: ExecutorIdentity | None, configuration: dict[str, Any] | None
+) -> None:
+    if executor is None or executor.kind != "llm-openai":
+        if configuration is not None:
+            raise ValueError("only llm-openai runs may carry agent configuration")
+        return
+    if configuration is None:
+        raise ValueError("an llm-openai run requires frozen agent configuration")
+    # Imported only on the LLM creation path.  The repository is also part of ordinary commerce
+    # startup, where importing the HTTP buyer would create a circular service dependency.
+    from agentrank_api.benchmark.llm import AgentConfiguration
+
+    frozen = AgentConfiguration.from_payload(configuration)
+    if executor.revision != frozen.configuration_digest:
+        raise ValueError("LLM executor revision must match frozen agent configuration")
 
 
 class BenchmarkSuiteRepository:
@@ -221,6 +312,7 @@ class BenchmarkRunRepository:
         representation_label: str | None = None,
         catalog_hash: str | None = None,
         evaluator_version: str | None = None,
+        agent_configuration: dict[str, Any] | None = None,
     ) -> BenchmarkRun:
         """Write a PENDING run and one PENDING mission run per mission, and flush.
 
@@ -254,6 +346,7 @@ class BenchmarkRunRepository:
                 f"benchmark environment {environment.label} belongs to another merchant"
                 f" and cannot be the world for a run of {merchant.slug!r}"
             )
+        _validate_agent_configuration(executor, agent_configuration)
 
         run = BenchmarkRun(
             merchant_id=merchant.id,
@@ -265,6 +358,7 @@ class BenchmarkRunRepository:
             representation_label=representation_label,
             catalog_hash=catalog_hash,
             evaluator_version=evaluator_version,
+            agent_configuration=agent_configuration,
             status=BenchmarkRunStatus.PENDING,
         )
         run.mission_runs = [

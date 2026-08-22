@@ -57,14 +57,17 @@ import sys
 from collections.abc import Mapping
 from typing import TextIO
 
+from agentrank_api.benchmark.agent_trace import AgentExecutionEvidence
 from agentrank_api.benchmark.http_buyer import HttpBuyerCommerceSurface, authenticated_client
+from agentrank_api.benchmark.llm import AgentConfiguration, LLMBuyer, OpenAIResponsesProvider
 from agentrank_api.benchmark.reference_executor import ReferenceMissionExecutor
 from agentrank_api.benchmark.report import ExecutorReport
 from agentrank_api.benchmark.wire import (
+    LLM_STRATEGY,
     REFERENCE_STRATEGY,
     MissionRequest,
     ProtocolError,
-    report_payload,
+    worker_result_payload,
 )
 from agentrank_api.config import get_settings
 
@@ -104,6 +107,9 @@ PERMITTED_ENVIRONMENT = frozenset(
         "TMPDIR",
         "SSL_CERT_FILE",
         "SSL_CERT_DIR",
+        # A narrowly scoped application runtime provider secret. It is never a model tool,
+        # never crosses stdin, and is absent from reports and traces.
+        "OPENAI_API_KEY",
     }
 )
 
@@ -168,22 +174,54 @@ def worker_environment(parent: Mapping[str, str]) -> dict[str, str]:
     return {name: value for name, value in parent.items() if name in PERMITTED_ENVIRONMENT}
 
 
-async def execute(request: MissionRequest) -> ExecutorReport:
+async def execute_with_evidence(
+    request: MissionRequest,
+) -> tuple[ExecutorReport, AgentExecutionEvidence | None]:
     """Carry out one mission over the merchant's own commerce API.
 
     The strategy is named by the request and refused if it is not one this build has, because a
     worker that quietly ran a different buyer than the run's executor identity claims would make
     every historical comparison wrong in a way nothing could detect.
     """
-    if request.strategy != REFERENCE_STRATEGY:
+    if request.strategy not in {REFERENCE_STRATEGY, LLM_STRATEGY}:
         raise ProtocolError(f"unknown buyer strategy {request.strategy!r}")
 
     client = authenticated_client(request.base_url, request.token)
     surface = HttpBuyerCommerceSurface(client, merchant_id=request.merchant_id)
     async with client:
-        return await ReferenceMissionExecutor(surface)(
+        if request.strategy == LLM_STRATEGY:
+            key = os.environ.get("OPENAI_API_KEY")
+            if not key:
+                raise ProtocolError("the LLM worker was not given an OpenAI API key")
+            assert request.agent_configuration is not None
+            try:
+                configuration = AgentConfiguration.from_payload(request.agent_configuration)
+            except (TypeError, ValueError) as malformed:
+                raise ProtocolError(
+                    "the LLM worker received invalid frozen configuration"
+                ) from malformed
+            provider = OpenAIResponsesProvider(configuration, key)
+            try:
+                buyer = LLMBuyer(
+                    provider,
+                    surface,
+                    mandate_id=request.mandate_id,  # type: ignore[arg-type]
+                    configuration=configuration,
+                )
+                report = await buyer.execute(request.brief, merchant_id=request.merchant_id)
+                return report, buyer.evidence
+            finally:
+                await provider.aclose()
+        report = await ReferenceMissionExecutor(surface)(
             request.brief, merchant_id=request.merchant_id
         )
+        return report, None
+
+
+async def execute(request: MissionRequest) -> ExecutorReport:
+    """Public execution seam retained for reference-worker tests."""
+    report, _evidence = await execute_with_evidence(request)
+    return report
 
 
 def read_request(source: TextIO) -> MissionRequest:
@@ -221,7 +259,7 @@ def main(
         require_isolated_environment(os.environ if environment is None else environment)
         require_no_database_configuration()
         request = read_request(sys.stdin if stdin is None else stdin)
-        observed = asyncio.run(execute(request))
+        observed, evidence = asyncio.run(execute_with_evidence(request))
     except EnvironmentNotIsolatedError as leaked:
         print(f"refused: {leaked}", file=errors)
         return EXIT_NOT_ISOLATED
@@ -234,7 +272,7 @@ def main(
         print(f"failed: {type(failed).__name__}", file=errors)
         return EXIT_FAILED
 
-    json.dump(report_payload(observed), sys.stdout if stdout is None else stdout)
+    json.dump(worker_result_payload(observed, evidence), sys.stdout if stdout is None else stdout)
     return 0
 
 

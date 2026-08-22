@@ -43,6 +43,7 @@ change.
 """
 
 import argparse
+import os
 import uuid
 from pathlib import Path
 from typing import Any, TextIO
@@ -52,20 +53,23 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from agentrank_api.auth.service import MerchantCredentialService
 from agentrank_api.auth.tokens import TokenMarker
 from agentrank_api.benchmark.authored import AuthoredWorld, publish_world, read_world
+from agentrank_api.benchmark.authorization import provision
 from agentrank_api.benchmark.buyer import MerchantBuyerSurface
 from agentrank_api.benchmark.endpoint import (
     LocalCommerceEndpoint,
     RequestLedger,
     issued_benchmark_credential,
 )
-from agentrank_api.benchmark.execution import BenchmarkRunCapability
+from agentrank_api.benchmark.execution import BenchmarkRunCapability, ExecutorIdentity
 from agentrank_api.benchmark.isolation import IsolatedMissionExecutor
 from agentrank_api.benchmark.lifecycle import MissionRunStatus
+from agentrank_api.benchmark.llm import AgentConfiguration
 from agentrank_api.benchmark.metrics import BenchmarkMetrics
 from agentrank_api.benchmark.models import BenchmarkMissionRun, BenchmarkRun
 from agentrank_api.benchmark.reference_executor import ReferenceMissionExecutor
 from agentrank_api.benchmark.runner import BenchmarkRunService
 from agentrank_api.benchmark.tools import MeasuredBuyerSurface, ToolLedger
+from agentrank_api.benchmark.wire import LLM_STRATEGY
 from agentrank_api.cli.exits import ExitCode
 from agentrank_api.cli.output import write_json
 from agentrank_api.commerce.repository import MerchantRepository
@@ -122,6 +126,17 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
         "--representation-label",
         default=None,
         help="a label for the merchant representation under test. A label, never an identity",
+    )
+    running.add_argument(
+        "--executor",
+        choices=("reference", "llm"),
+        default="reference",
+        help="executor to sample; llm requires OPENAI_API_KEY in the untracked local .env",
+    )
+    running.add_argument(
+        "--model",
+        default="gpt-5.6-terra",
+        help="exact OpenAI Responses model identifier for --executor llm",
     )
     running.add_argument(
         "--isolated",
@@ -266,6 +281,15 @@ async def run(
     world = read_world(arguments.world)
     merchant_id = await _benchmark_merchant(session, world)
     service = BenchmarkRunService(session)
+    if arguments.executor == "llm":
+        if not arguments.isolated:
+            raise ValueError("the LLM executor is always isolated; pass --isolated")
+        if settings.openai is None:
+            raise ValueError("OPENAI_API_KEY is required for an LLM benchmark sample")
+        finished = await _llm_isolated_run(
+            session, sessions, service, merchant_id, world, arguments, provider, settings
+        )
+        return await _report(service, finished.id, merchant_id, arguments, out)
     if arguments.isolated:
         finished = await _isolated_run(
             session, service, merchant_id, world, arguments, provider, settings
@@ -327,6 +351,62 @@ async def _isolated_run(
             executor = IsolatedMissionExecutor(
                 base_url=endpoint.base_url, token=token, served=served
             )
+            return await service.execute_started_suite(
+                started.id,
+                executor,
+                merchant_id=merchant_id,
+                fixture=world.fixture,
+                witness=executor,
+            )
+
+
+async def _llm_isolated_run(
+    session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
+    service: BenchmarkRunService,
+    merchant_id: uuid.UUID,
+    world: AuthoredWorld,
+    arguments: argparse.Namespace,
+    provider: PaymentProvider,
+    settings: Settings,
+) -> BenchmarkRun:
+    """Run one sequential LLM sample with trusted mandate provisioning outside the worker."""
+    assert settings.openai is not None
+    configuration = AgentConfiguration(provider="openai-responses", requested_model=arguments.model)
+    identity = ExecutorIdentity(
+        kind="llm-openai", version=1, revision=configuration.configuration_digest
+    )
+    served = RequestLedger()
+    async with LocalCommerceEndpoint(settings, provider=provider, observer=served) as endpoint:
+        started = await service.start_suite(
+            suite_key=world.suite.key,
+            suite_version=world.suite.version,
+            fixture=world.fixture,
+            executor=identity,
+            representation_label=arguments.representation_label,
+            agent_configuration=configuration.payload(),
+        )
+        capability = BenchmarkRunCapability(merchant_id=merchant_id, run_id=started.id)
+        trusted = MerchantBuyerSurface(
+            sessions, merchant_id=merchant_id, provider=provider, benchmark_capability=capability
+        )
+        async with issued_benchmark_credential(
+            MerchantCredentialService(session),
+            capability=capability,
+            marker=TokenMarker.of(settings.environment),
+        ) as token:
+            environment = dict(os.environ)
+            environment["OPENAI_API_KEY"] = settings.openai.api_key.get_secret_value()
+            executor = IsolatedMissionExecutor(
+                base_url=endpoint.base_url,
+                token=token,
+                served=served,
+                strategy=LLM_STRATEGY,
+                provision_mandate=lambda brief: provision(trusted, brief),
+                agent_configuration=configuration.payload(),
+                environment=environment,
+            )
+            executor.identity = identity
             return await service.execute_started_suite(
                 started.id,
                 executor,

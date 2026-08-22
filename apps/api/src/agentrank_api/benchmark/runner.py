@@ -80,7 +80,11 @@ from agentrank_api.benchmark.models import (
 )
 from agentrank_api.benchmark.observation import ObservedResult
 from agentrank_api.benchmark.report import ExecutorReport
-from agentrank_api.benchmark.repository import BenchmarkRunRepository, BenchmarkSuiteRepository
+from agentrank_api.benchmark.repository import (
+    AgentEvidenceRepository,
+    BenchmarkRunRepository,
+    BenchmarkSuiteRepository,
+)
 from agentrank_api.benchmark.substantiation import CommerceSubstantiation
 from agentrank_api.benchmark.tools import ExecutionWitness
 from agentrank_api.checkout.models import CheckoutSession
@@ -124,6 +128,7 @@ class BenchmarkRunService:
         self._merchants = MerchantRepository(session)
         self._suites = BenchmarkSuiteRepository(session)
         self._runs = BenchmarkRunRepository(session)
+        self._agent_evidence = AgentEvidenceRepository(session)
         self._environments = BenchmarkEnvironmentService(session)
         self._attempts = PaymentAttemptRepository(session)
         self._substantiation = CommerceSubstantiation(session)
@@ -137,6 +142,7 @@ class BenchmarkRunService:
         environment: BenchmarkEnvironment | None = None,
         executor: ExecutorIdentity | None = None,
         representation_label: str | None = None,
+        agent_configuration: dict[str, object] | None = None,
     ) -> BenchmarkRun:
         """Create a run, pin it, and mark it RUNNING.
 
@@ -189,6 +195,7 @@ class BenchmarkRunService:
             representation_label=representation_label,
             catalog_hash=catalog_content_hash(entries),
             evaluator_version=evaluator_version(),
+            agent_configuration=agent_configuration,
         )
         run.status = BenchmarkRunStatus.RUNNING
         run.started_at = datetime.now(UTC)
@@ -217,6 +224,7 @@ class BenchmarkRunService:
         fixture: BenchmarkFixture,
         witness: ExecutionWitness | None = None,
         representation_label: str | None = None,
+        agent_configuration: dict[str, object] | None = None,
     ) -> BenchmarkRun:
         """Prepare the world, execute every mission in suite order, and complete the run.
 
@@ -264,6 +272,7 @@ class BenchmarkRunService:
             fixture=fixture,
             executor=executor.identity,
             representation_label=representation_label,
+            agent_configuration=agent_configuration,
         )
         return await self.execute_started_suite(
             run.id,
@@ -281,6 +290,7 @@ class BenchmarkRunService:
         fixture: BenchmarkFixture,
         executor: ExecutorIdentity,
         representation_label: str | None = None,
+        agent_configuration: dict[str, object] | None = None,
     ) -> BenchmarkRun:
         """Prepare a benchmark world and persist its RUNNING claim before a buyer is provisioned.
 
@@ -297,6 +307,7 @@ class BenchmarkRunService:
             environment=environment.environment,
             executor=executor,
             representation_label=representation_label,
+            agent_configuration=agent_configuration,
         )
 
     async def execute_started_suite(
@@ -364,6 +375,16 @@ class BenchmarkRunService:
                 report = ExecutorReport(merchant_id=merchant_id)
             if fault is None and witness is not None:
                 fault = witness.fault()
+            take_evidence = getattr(executor, "take_agent_evidence", None)
+            if take_evidence is not None:
+                evidence = take_evidence()
+                if evidence is not None:
+                    await self._agent_evidence.append(
+                        evidence,
+                        mission_run_id=started,
+                        run_id=run_id,
+                        merchant_id=merchant_id,
+                    )
             observed = await self._substantiate(
                 report,
                 brief=brief,

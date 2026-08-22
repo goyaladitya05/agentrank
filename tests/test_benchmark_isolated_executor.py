@@ -265,7 +265,7 @@ def test_the_environment_the_runner_builds_carries_no_credential() -> None:
     assert not any(value == "secret" for value in built.values())
 
 
-def test_the_allowlist_contains_nothing_that_could_be_a_credential() -> None:
+def test_the_allowlist_has_only_the_scoped_runtime_provider_credential() -> None:
     """Read as a whole, because the risk is a name added later that looks harmless.
 
     `PYTHONPATH` was on it and is not any more. It carries no secret, which is why it was there,
@@ -282,6 +282,7 @@ def test_the_allowlist_contains_nothing_that_could_be_a_credential() -> None:
         "TMPDIR",
         "SSL_CERT_FILE",
         "SSL_CERT_DIR",
+        "OPENAI_API_KEY",
     } == PERMITTED_ENVIRONMENT
 
 
@@ -493,7 +494,16 @@ async def test_a_mission_request_carries_no_oracle_and_has_nowhere_to_put_one(
 
     payload = request.to_payload()
 
-    assert set(payload) == {"protocol", "strategy", "merchant_id", "base_url", "token", "brief"}
+    assert set(payload) == {
+        "protocol",
+        "strategy",
+        "merchant_id",
+        "base_url",
+        "token",
+        "brief",
+        "mandate_id",
+        "agent_configuration",
+    }
     document = json.dumps(payload)
     for forbidden in (
         "expected_outcome",

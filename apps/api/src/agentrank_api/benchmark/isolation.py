@@ -58,7 +58,9 @@ import os
 import sys
 import tempfile
 import uuid
+from collections.abc import Awaitable, Callable
 
+from agentrank_api.benchmark.agent_trace import AgentExecutionEvidence
 from agentrank_api.benchmark.definitions import AgentMissionBrief
 from agentrank_api.benchmark.endpoint import DATABASE_UNAVAILABLE, RequestLedger
 from agentrank_api.benchmark.evidence import CommerceEvidence
@@ -69,6 +71,7 @@ from agentrank_api.benchmark.wire import (
     REFERENCE_STRATEGY,
     MissionRequest,
     ProtocolError,
+    agent_evidence_from_payload,
     report_from_payload,
 )
 from agentrank_api.benchmark.worker import (
@@ -129,6 +132,8 @@ class IsolatedMissionExecutor:
         token: str,
         served: RequestLedger,
         strategy: str = REFERENCE_STRATEGY,
+        provision_mandate: Callable[[AgentMissionBrief], Awaitable[uuid.UUID]] | None = None,
+        agent_configuration: dict[str, object] | None = None,
         timeout: float = DEFAULT_TIMEOUT,
         environment: dict[str, str] | None = None,
         interpreter: str | None = None,
@@ -137,10 +142,13 @@ class IsolatedMissionExecutor:
         self._token = token
         self._served = served
         self._strategy = strategy
+        self._provision_mandate = provision_mandate
+        self._agent_configuration = agent_configuration
         self._timeout = timeout
         self._environment = environment
         self._interpreter = sys.executable if interpreter is None else interpreter
         self._fault: ExecutionFault | None = None
+        self._agent_evidence: AgentExecutionEvidence | None = None
 
     # The witness half.
 
@@ -152,6 +160,7 @@ class IsolatedMissionExecutor:
         fault to the wrong mission.
         """
         self._fault = None
+        self._agent_evidence = None
         self._served.begin()
 
     def fault(self) -> ExecutionFault | None:
@@ -200,17 +209,28 @@ class IsolatedMissionExecutor:
         the mission can be recorded. It leaves a mission RUNNING only when the trusted payment
         state is genuinely unresolved, not merely because the worker died after a known denial.
         """
-        request = MissionRequest(
-            brief=brief,
-            merchant_id=merchant_id,
-            base_url=self._base_url,
-            token=self._token,
-            strategy=self._strategy,
-        )
         try:
+            mandate_id = (
+                None if self._provision_mandate is None else await self._provision_mandate(brief)
+            )
+            request = MissionRequest(
+                brief=brief,
+                merchant_id=merchant_id,
+                base_url=self._base_url,
+                token=self._token,
+                strategy=self._strategy,
+                mandate_id=mandate_id,
+                agent_configuration=self._agent_configuration,
+            )
             return await self._carry_out(request)
         except _WorkerFailureError as failed:
             self._fault = ExecutionFault(origin=failed.origin, detail=failed.detail)
+            return ExecutorReport(merchant_id=merchant_id)
+        except Exception as failed:
+            self._fault = ExecutionFault(
+                origin=FaultOrigin.HARNESS,
+                detail=f"trusted mission provisioning failed: {type(failed).__name__}",
+            )
             return ExecutorReport(merchant_id=merchant_id)
 
     async def _carry_out(self, request: MissionRequest) -> ExecutorReport:
@@ -236,7 +256,6 @@ class IsolatedMissionExecutor:
                 f"the executor process did not finish in {self._timeout}s",
                 FaultOrigin.AGENT,
             ) from expired
-
         if process.returncode != 0:
             # The worker's own words, not its classification. It has no way to say whose fault
             # anything was and this does not read one out of the text: the exit code is what is
@@ -246,7 +265,9 @@ class IsolatedMissionExecutor:
                 _exited(process.returncode),
             )
         try:
-            return report_from_payload(json.loads(stdout.decode("utf-8")))
+            document = json.loads(stdout.decode("utf-8"))
+            self._agent_evidence = agent_evidence_from_payload(document)
+            return report_from_payload(document)
         except (UnicodeDecodeError, json.JSONDecodeError) as unreadable:
             raise _WorkerFailureError(
                 "the executor process did not report JSON", FaultOrigin.AGENT
@@ -255,6 +276,11 @@ class IsolatedMissionExecutor:
             raise _WorkerFailureError(
                 f"the executor process reported {malformed}", FaultOrigin.AGENT
             ) from malformed
+
+    def take_agent_evidence(self) -> AgentExecutionEvidence | None:
+        """Return this mission's validated worker evidence to trusted orchestration once."""
+        evidence, self._agent_evidence = self._agent_evidence, None
+        return evidence
 
     async def _spawn(self, sandbox: str) -> asyncio.subprocess.Process:
         """Start the worker with an environment built by allowlist and a directory of its own.

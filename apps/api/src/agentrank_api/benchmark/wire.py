@@ -43,6 +43,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Self
 
+from agentrank_api.benchmark.agent_trace import AgentExecutionEvidence
 from agentrank_api.benchmark.definitions import AgentMissionBrief
 from agentrank_api.benchmark.report import (
     AbstentionCode,
@@ -61,10 +62,11 @@ PROTOCOL_VERSION = 1
 # an unknown name is refused rather than defaulted, because defaulting would silently run a
 # different buyer than the run's executor identity claims.
 REFERENCE_STRATEGY = "reference"
+LLM_STRATEGY = "llm"
 
 # What stands in for a credential anywhere a request might be written down.
 REDACTED = "redacted"
-STRATEGIES = frozenset({REFERENCE_STRATEGY})
+STRATEGIES = frozenset({REFERENCE_STRATEGY, LLM_STRATEGY})
 
 
 class ProtocolError(ValueError):
@@ -84,6 +86,8 @@ class MissionRequest:
     base_url: str
     token: str
     strategy: str = REFERENCE_STRATEGY
+    mandate_id: uuid.UUID | None = None
+    agent_configuration: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.strategy not in STRATEGIES:
@@ -92,6 +96,12 @@ class MissionRequest:
             raise ValueError("a mission request names where the merchant's API is")
         if not self.token.strip():
             raise ValueError("a mission request carries the credential it will present")
+        if self.strategy == LLM_STRATEGY and self.mandate_id is None:
+            raise ValueError("an LLM mission request requires a trusted mandate")
+        if self.strategy == LLM_STRATEGY and self.agent_configuration is None:
+            raise ValueError("an LLM mission request requires frozen agent configuration")
+        if self.strategy != LLM_STRATEGY and self.agent_configuration is not None:
+            raise ValueError("only an LLM mission request may carry agent configuration")
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -101,13 +111,26 @@ class MissionRequest:
             "base_url": self.base_url,
             "token": self.token,
             "brief": self.brief.to_payload(),
+            "mandate_id": None if self.mandate_id is None else str(self.mandate_id),
+            "agent_configuration": self.agent_configuration,
         }
 
     @classmethod
     def from_payload(cls, payload: Any) -> Self:
         document = _document(
             payload,
-            fields=frozenset({"protocol", "strategy", "merchant_id", "base_url", "token", "brief"}),
+            fields=frozenset(
+                {
+                    "protocol",
+                    "strategy",
+                    "merchant_id",
+                    "base_url",
+                    "token",
+                    "brief",
+                    "mandate_id",
+                    "agent_configuration",
+                }
+            ),
         )
         return cls(
             brief=AgentMissionBrief.from_payload(_object(document, "brief")),
@@ -115,6 +138,8 @@ class MissionRequest:
             base_url=_text(document, "base_url"),
             token=_text(document, "token"),
             strategy=_text(document, "strategy"),
+            mandate_id=_optional_id(document, "mandate_id"),
+            agent_configuration=_optional_object(document, "agent_configuration"),
         )
 
     def redacted(self) -> dict[str, Any]:
@@ -134,10 +159,27 @@ def report_payload(report: ExecutorReport) -> dict[str, Any]:
     return {"protocol": PROTOCOL_VERSION, "observed": executor_report_payload(report)}
 
 
+def worker_result_payload(
+    report: ExecutorReport, evidence: AgentExecutionEvidence | None = None
+) -> dict[str, Any]:
+    """The worker result, with LLM runtime evidence kept separate from its untrusted report."""
+    payload = report_payload(report)
+    if evidence is not None:
+        payload["agent_evidence"] = evidence.to_payload()
+    return payload
+
+
 def report_from_payload(payload: Any) -> ExecutorReport:
     """Read a worker's report, refusing anything that is not one."""
-    document = _document(payload, fields=frozenset({"protocol", "observed"}))
+    document = _document(payload, fields=frozenset({"protocol", "observed", "agent_evidence"}))
     return executor_report_from_payload(_object(document, "observed"))
+
+
+def agent_evidence_from_payload(payload: Any) -> AgentExecutionEvidence | None:
+    """Validate the bounded runtime evidence returned beside a worker result."""
+    document = _document(payload, fields=frozenset({"protocol", "observed", "agent_evidence"}))
+    raw = document.get("agent_evidence")
+    return None if raw is None else AgentExecutionEvidence.from_payload(raw)
 
 
 def executor_report_payload(report: ExecutorReport) -> dict[str, Any]:
@@ -258,6 +300,15 @@ def _object(document: dict[str, Any], name: str) -> dict[str, Any]:
     value = document.get(name)
     if not isinstance(value, dict):
         raise ProtocolError(f"{name} must be an object")
+    return value
+
+
+def _optional_object(document: dict[str, Any], name: str) -> dict[str, Any] | None:
+    value = document.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ProtocolError(f"{name} must be an object or null")
     return value
 
 

@@ -30,6 +30,7 @@ the run service refuses to run a suite against any other merchant. See docs/deci
 
 import uuid
 from datetime import datetime
+from enum import StrEnum
 from typing import Any
 
 from sqlalchemy import (
@@ -492,6 +493,10 @@ class BenchmarkRun(Base):
             f"executor_revision IS NULL OR executor_revision ~ '{HASH_PATTERN}'",
             name="executor_revision_format",
         ),
+        CheckConstraint(
+            "agent_configuration IS NULL OR jsonb_typeof(agent_configuration) = 'object'",
+            name="agent_configuration_object",
+        ),
         # A run that has not started has no start instant, and one that has finished has both.
         CheckConstraint("(status = 'PENDING') = (started_at IS NULL)", name="started_at_matches"),
         CheckConstraint(
@@ -574,6 +579,11 @@ class BenchmarkRun(Base):
     # from one produced before the edit. It says two runs came from different code and never
     # that the behavior changed, which is why the declared version stays beside it.
     executor_revision: Mapped[str | None] = mapped_column(String(HASH_LENGTH), nullable=True)
+    # Frozen, semantic configuration for a stochastic LLM sample.  Null is reserved for older
+    # runs and non-LLM executors; API credentials and request identifiers never belong here.
+    agent_configuration: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
     # No server default, for the same reason as everywhere else in this schema: an insert that
     # does not state a status is a bug.
     status: Mapped[BenchmarkRunStatus] = mapped_column(BENCHMARK_RUN_STATUS, nullable=False)
@@ -637,6 +647,7 @@ class BenchmarkMissionRun(Base):
 
     __tablename__ = "benchmark_mission_run"
     __table_args__ = (
+        UniqueConstraint("id", "run_id", "merchant_id", name="uq_benchmark_mission_run_binding"),
         # Named explicitly. The convention would generate names longer than the 63 bytes
         # PostgreSQL keeps, so the name in the migration and the name in the database would
         # silently disagree.
@@ -858,3 +869,127 @@ class BenchmarkMissionRun(Base):
             self.primary_failure_reason,
             *(FailureReason(reason) for reason in self.additional_failure_reasons),
         )
+
+
+class AgentTraceEventType(StrEnum):
+    MODEL_REQUEST = "MODEL_REQUEST"
+    MODEL_RESPONSE = "MODEL_RESPONSE"
+    TOOL_CALL = "TOOL_CALL"
+    TOOL_RESULT = "TOOL_RESULT"
+    TOOL_ERROR = "TOOL_ERROR"
+    AGENT_FINAL = "AGENT_FINAL"
+    AGENT_ABORT = "AGENT_ABORT"
+    PROVIDER_ERROR = "PROVIDER_ERROR"
+
+
+class AgentUsageKind(StrEnum):
+    PROVIDER_REPORTED = "PROVIDER_REPORTED"
+    SCRIPTED_FAKE = "SCRIPTED_FAKE"
+
+
+TRACE_EVENT_TYPE = Enum(AgentTraceEventType, native_enum=False, create_constraint=False, length=24)
+USAGE_KIND = Enum(AgentUsageKind, native_enum=False, create_constraint=False, length=24)
+
+
+class AgentTraceEvent(Base):
+    """Append-only trusted evidence from one model mission execution."""
+
+    __tablename__ = "agent_trace_event"
+    __table_args__ = (
+        UniqueConstraint("mission_run_id", "sequence", name="uq_agent_trace_event_sequence"),
+        UniqueConstraint(
+            "id", "mission_run_id", "run_id", "merchant_id", name="uq_agent_trace_event_binding"
+        ),
+        ForeignKeyConstraint(
+            ["mission_run_id", "run_id", "merchant_id"],
+            [
+                "benchmark_mission_run.id",
+                "benchmark_mission_run.run_id",
+                "benchmark_mission_run.merchant_id",
+            ],
+            name="fk_agent_trace_event_mission_run",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("sequence > 0", name="sequence_positive"),
+        CheckConstraint("jsonb_typeof(payload) = 'object'", name="payload_object"),
+        CheckConstraint(
+            "event_type IN ('MODEL_REQUEST', 'MODEL_RESPONSE', 'TOOL_CALL', 'TOOL_RESULT', "
+            "'TOOL_ERROR', 'AGENT_FINAL', 'AGENT_ABORT', 'PROVIDER_ERROR')",
+            name="event_type_known",
+        ),
+        Index(None, "run_id", "merchant_id"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)
+    merchant_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    run_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    mission_run_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[AgentTraceEventType] = mapped_column(TRACE_EVENT_TYPE, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class AgentProviderUsage(Base):
+    """One provider invocation's raw reported or explicitly scripted usage."""
+
+    __tablename__ = "agent_provider_usage"
+    __table_args__ = (
+        UniqueConstraint(
+            "mission_run_id", "invocation_sequence", name="uq_agent_provider_usage_invocation"
+        ),
+        UniqueConstraint("trace_event_id", name="uq_agent_provider_usage_trace_event"),
+        ForeignKeyConstraint(
+            ["trace_event_id", "mission_run_id", "run_id", "merchant_id"],
+            [
+                "agent_trace_event.id",
+                "agent_trace_event.mission_run_id",
+                "agent_trace_event.run_id",
+                "agent_trace_event.merchant_id",
+            ],
+            name="fk_agent_provider_usage_trace",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("invocation_sequence > 0", name="invocation_positive"),
+        CheckConstraint(
+            "measurement_kind IN ('PROVIDER_REPORTED', 'SCRIPTED_FAKE')",
+            name="measurement_kind_known",
+        ),
+        CheckConstraint(
+            "provider_latency_ms IS NULL OR provider_latency_ms >= 0", name="latency_nonnegative"
+        ),
+        CheckConstraint(
+            "input_tokens IS NULL OR input_tokens >= 0", name="input_tokens_nonnegative"
+        ),
+        CheckConstraint(
+            "cached_input_tokens IS NULL OR cached_input_tokens >= 0",
+            name="cached_tokens_nonnegative",
+        ),
+        CheckConstraint(
+            "output_tokens IS NULL OR output_tokens >= 0", name="output_tokens_nonnegative"
+        ),
+        CheckConstraint(
+            "reasoning_tokens IS NULL OR reasoning_tokens >= 0", name="reasoning_tokens_nonnegative"
+        ),
+        CheckConstraint(
+            "total_tokens IS NULL OR total_tokens >= 0", name="total_tokens_nonnegative"
+        ),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)
+    merchant_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    run_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    mission_run_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    trace_event_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    invocation_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    measurement_kind: Mapped[AgentUsageKind] = mapped_column(USAGE_KIND, nullable=False)
+    provider: Mapped[str] = mapped_column(String(MAX_KEY_LENGTH), nullable=False)
+    requested_model: Mapped[str] = mapped_column(String(128), nullable=False)
+    actual_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    provider_request_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    provider_latency_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    cached_input_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    reasoning_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    total_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
