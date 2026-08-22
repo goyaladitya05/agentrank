@@ -56,6 +56,30 @@ make credentials ARGS="revoke <credential-id>"
 The values in `.env.example` are development defaults that match the local Docker Compose
 service. They are not secrets and must not be reused anywhere real.
 
+## Benchmark
+
+The benchmark measures whether a buyer can complete a purchase against a merchant, and where it
+breaks. It runs against a versioned fixture world rather than against whatever is in the
+database, and the world is put back before every mission so that one mission cannot change what
+the next one sees.
+
+```bash
+make benchmark ARGS="seed"
+make benchmark ARGS="run --representation-label baseline"
+make benchmark ARGS="show <run-id>"
+```
+
+`seed` registers the VoltEdge world, restores its catalog and publishes the suite authored
+against it. `run` executes all fourteen missions with the deterministic reference executor,
+through the real checkout, authorization, inventory and payment path with a deterministic fake
+provider. No real money is involved; stock genuinely leaves the shelf inside the benchmark world
+and is restored before the next mission.
+
+The reference executor is not an AI buyer. It has no model, no prompt and no language
+understanding, and it reads structured commerce fields a real storefront does not publish. Its
+completion rate is evidence that the benchmark path works, and it must never be presented as
+evidence of what an autonomous agent can do. Every report says so.
+
 ## Checks
 
 One command validates the repository. It must pass before every commit and every push.
