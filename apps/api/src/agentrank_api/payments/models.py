@@ -16,6 +16,8 @@ database is the only layer that cannot be bypassed:
   the same foreign key that binds the checkout. Freezing here is not a copy that could drift
 - one logical payment operation exists once, through a unique constraint on the checkout and
   the idempotency key
+- an interactive provider binding cannot disagree with the attempt about the merchant, the
+  amount or the currency, because a composite foreign key points at those four columns here
 - at most one attempt under a mandate is SUCCEEDED, through a partial unique index. This is
   the single purchase mandate rule, structural at last
 - at most one attempt for a checkout is SUCCEEDED, through the same kind of index
@@ -230,6 +232,14 @@ class PaymentAttempt(Base):
         # against the same checkout are the same operation and must resolve to this one row,
         # never to two rows and two provider calls.
         UniqueConstraint("checkout_id", "idempotency_key", name="uq_payment_attempt_identity"),
+        # Not a rule, a target. PostgreSQL needs a unique constraint on exactly these columns
+        # for a composite foreign key to point at them, and `razorpay_checkout` points at them
+        # so that a provider binding structurally carries this attempt's merchant, amount and
+        # currency rather than a copy of them. It changes no row: all four are already unique
+        # because `id` alone is.
+        UniqueConstraint(
+            "id", "merchant_id", "amount_minor", "currency", name="uq_payment_attempt_binding"
+        ),
         CheckConstraint(f"status IN ({_STATUS_VALUES})", name="status_known"),
         CheckConstraint(
             f"outcome_source IS NULL OR outcome_source IN ({_SOURCE_VALUES})",

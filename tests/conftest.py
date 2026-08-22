@@ -31,6 +31,7 @@ from agentrank_api.inventory import models as inventory_models  # noqa: F401  re
 from agentrank_api.mandates import models as mandate_models  # noqa: F401  registers tables
 from agentrank_api.models import Base
 from agentrank_api.payments import models as payment_models  # noqa: F401  registers tables
+from agentrank_api.razorpay import models as razorpay_models  # noqa: F401  registers tables
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 

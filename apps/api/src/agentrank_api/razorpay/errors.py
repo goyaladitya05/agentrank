@@ -62,3 +62,28 @@ class RazorpayUnreadableError(RazorpayError):
     later" nor "the request was wrong". It means the assumption this transport is built on has
     stopped holding, which is worth being able to find in a log by type.
     """
+
+
+class RazorpayOrderMismatchError(RazorpayError):
+    """A provider entity does not describe the payment this application authorized.
+
+    Not a transport failure. Razorpay answered, and the answer was well formed, and it was about
+    something else: an order carrying a different amount, a payment against a different order, a
+    currency that is not the one the quote was priced in.
+
+    It is a `RazorpayError` because the fact came from Razorpay, and it is its own class because
+    the response to it is different from the response to every other error here. An unavailable
+    gateway is asked again later. A refusal is a request to fix. A mismatch means stop, and
+    specifically means do not open Standard Checkout against this order and do not consume any
+    stock for this payment.
+
+    The expected and observed values are carried for the trail. Neither is secret: they are an
+    amount, a currency and an identifier this application already holds.
+    """
+
+    def __init__(self, entity_id: str, field: str, expected: str, observed: str) -> None:
+        super().__init__(f"razorpay {entity_id} has {field} {observed}, expected {expected}")
+        self.entity_id = entity_id
+        self.field = field
+        self.expected = expected
+        self.observed = observed
