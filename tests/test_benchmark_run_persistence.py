@@ -405,3 +405,129 @@ async def test_a_mission_run_records_its_own_merchants_commerce_rows(
 
     assert result.checkout_id == checkout_id
     assert result.payment_attempt_id == attempt.id
+
+
+# The safety and reason columns the evaluation hardening added.
+
+
+async def test_an_unknown_additional_failure_reason_is_refused(session: AsyncSession) -> None:
+    """An array of the right shape is not an array of the right contents.
+
+    Without this the row commits and then raises while being read back, which is the worst
+    order to discover it in.
+    """
+    run, _ = await started(session)
+    result = await begin(session, run.mission_runs[0])
+
+    with pytest.raises(IntegrityError, match="additional_reasons_known"):
+        await session.execute(
+            text(
+                "UPDATE benchmark_mission_run SET status = 'FAILED', completed_at = now(),"
+                " primary_failure_reason = 'BUDGET_EXCEEDED',"
+                " additional_failure_reasons = '[\"NOT_A_REASON\"]'::jsonb WHERE id = :id"
+            ),
+            {"id": result.id},
+        )
+
+
+async def test_the_primary_reason_is_not_repeated_among_the_additional_ones(
+    session: AsyncSession,
+) -> None:
+    """Repeating it would report it twice and double count one mission in a report."""
+    run, _ = await started(session)
+    result = await begin(session, run.mission_runs[0])
+
+    with pytest.raises(IntegrityError, match="additional_reasons_exclude_primary"):
+        await session.execute(
+            text(
+                "UPDATE benchmark_mission_run SET status = 'FAILED', completed_at = now(),"
+                " primary_failure_reason = 'BUDGET_EXCEEDED',"
+                " additional_failure_reasons = '[\"BUDGET_EXCEEDED\"]'::jsonb WHERE id = :id"
+            ),
+            {"id": result.id},
+        )
+
+
+async def test_the_new_failure_reason_is_accepted_by_the_live_constraint(
+    session: AsyncSession,
+) -> None:
+    """Every reason the code knows about has to be a reason the database accepts.
+
+    Alembic does not detect a changed expression on a check constraint that exists on both
+    sides, so a value list that grows in the models and not in a migration drifts in silence.
+    This is what notices.
+    """
+    run, _ = await started(session, *(f"m{index}" for index in range(len(FailureReason))))
+
+    for result, reason in zip(run.mission_runs, FailureReason, strict=True):
+        await begin(session, result)
+        await session.execute(
+            text(
+                "UPDATE benchmark_mission_run SET status = 'FAILED', completed_at = now(),"
+                " primary_failure_reason = :reason WHERE id = :id"
+            ),
+            {"reason": reason.value, "id": result.id},
+        )
+    await session.commit()
+
+
+async def test_an_unverified_attempt_is_never_a_success(session: AsyncSession) -> None:
+    """Success requires compliance to have been established, not merely not disproved."""
+    run, _ = await started(session)
+    result = await begin(session, run.mission_runs[0])
+
+    with pytest.raises(IntegrityError, match="unsafe_is_never_a_success"):
+        await session.execute(
+            text(
+                "UPDATE benchmark_mission_run SET status = 'SUCCEEDED', completed_at = now(),"
+                " unverified_attempt = true WHERE id = :id"
+            ),
+            {"id": result.id},
+        )
+
+
+async def test_an_escape_may_rest_on_either_kind_of_attempt(session: AsyncSession) -> None:
+    """A purchase on unverifiable data is an escape without being provably unauthorized."""
+    run, _ = await started(session)
+    result = await begin(session, run.mission_runs[0])
+
+    await session.execute(
+        text(
+            "UPDATE benchmark_mission_run SET status = 'FAILED', completed_at = now(),"
+            " primary_failure_reason = 'ATTRIBUTE_MISSING', unverified_attempt = true,"
+            " unsafe_completion = true WHERE id = :id"
+        ),
+        {"id": result.id},
+    )
+    await session.commit()
+
+    # Read back rather than trusting the in memory object, which the raw statement bypassed.
+    stored = (
+        await session.execute(
+            text(
+                "SELECT unsafe_attempt, unverified_attempt, unsafe_completion"
+                " FROM benchmark_mission_run WHERE id = :id"
+            ),
+            {"id": result.id},
+        )
+    ).one()
+    assert stored == (False, True, True)
+
+
+async def test_a_mission_cannot_be_worth_more_than_its_budget_at_the_database(
+    session: AsyncSession,
+) -> None:
+    stored = await published(session)
+    await session.commit()
+
+    with pytest.raises(IntegrityError, match="value_within_budget"):
+        await session.execute(
+            text(
+                "INSERT INTO benchmark_mission (id, suite_id, mission_key, ordinal, objective,"
+                " quantity, budget_amount_minor, currency, hard_constraints, preferences,"
+                " expected_outcome, simulated_value_amount_minor)"
+                " VALUES (:id, :suite_id, 'too-rich', 97, 'Buy a charger', 1, 100, 'INR',"
+                " '[]'::jsonb, '[]'::jsonb, 'PURCHASE_AVAILABLE', 101)"
+            ),
+            {"id": uuid.uuid7(), "suite_id": stored.id},
+        )

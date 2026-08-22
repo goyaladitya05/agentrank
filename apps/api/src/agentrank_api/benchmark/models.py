@@ -182,6 +182,12 @@ class BenchmarkMission(Base):
         # Positive rather than merely non negative. A mission with no money behind it can
         # never be completed and would sit in the potential GMV denominator forever.
         CheckConstraint("budget_amount_minor > 0", name="budget_positive"),
+        # A sale cannot be worth more than the buyer was authorized to spend. Without this a
+        # mission could carry a value nobody could ever have paid, and potential simulated
+        # demand would be inflated by money that was never on the table.
+        CheckConstraint(
+            "simulated_value_amount_minor <= budget_amount_minor", name="value_within_budget"
+        ),
         CheckConstraint(f"currency ~ '{CURRENCY_PATTERN}'", name="currency_format"),
         CheckConstraint("jsonb_typeof(hard_constraints) = 'array'", name="hard_constraints_shape"),
         CheckConstraint("jsonb_typeof(preferences) = 'array'", name="preferences_shape"),
@@ -302,6 +308,7 @@ _RUN_STATUS_VALUES = ", ".join(f"'{status.value}'" for status in BenchmarkRunSta
 _MISSION_STATUS_VALUES = ", ".join(f"'{status.value}'" for status in MissionRunStatus)
 _TERMINAL_VALUES = ", ".join(f"'{status.value}'" for status in sorted(TERMINAL_MISSION_STATUSES))
 _REASON_VALUES = ", ".join(f"'{reason.value}'" for reason in FailureReason)
+_REASON_JSON = ", ".join(f'"{reason.value}"' for reason in FailureReason)
 
 MAX_REPRESENTATION_LABEL_LENGTH = 100
 
@@ -406,10 +413,13 @@ class BenchmarkMissionRun(Base):
     which is exactly the behavior wanted here: a mission that never selected anything simply has
     no reference to check.
 
-    Safety is two booleans rather than something derived at report time, because whether the
+    Safety is three booleans rather than something derived at report time, because whether the
     executor tried to buy something it was not authorized to buy is a fact about the attempt, and
-    the attempt is gone by the time a report is read. `unsafe_completion` implies
-    `unsafe_attempt`, and neither can sit on a succeeded mission, both at the database.
+    the attempt is gone by the time a report is read. `unsafe_attempt` means the merchant's data
+    proved the purchase was outside what the buyer authorized; `unverified_attempt` means the
+    data did not say, so nothing could be established either way; `unsafe_completion` means money
+    moved on a purchase that was not certified compliant. An escape implies one of the two
+    attempt flags, and none of the three can sit on a succeeded mission, all at the database.
     """
 
     __tablename__ = "benchmark_mission_run"
@@ -465,6 +475,21 @@ class BenchmarkMissionRun(Base):
         CheckConstraint(
             "jsonb_typeof(additional_failure_reasons) = 'array'", name="additional_reasons_shape"
         ),
+        # An array of the right shape is not an array of the right contents. Without this a row
+        # could hold a reason nobody defined, or a number, and `failure_reasons` would raise
+        # while reading a row that was already committed. Containment does the whole job: it is
+        # a subset test over the known values and it rejects non string members outright.
+        CheckConstraint(
+            f"additional_failure_reasons <@ '[{_REASON_JSON}]'::jsonb",
+            name="additional_reasons_known",
+        ),
+        # The primary reason is a column, so repeating it in the document would make
+        # `failure_reasons` report it twice and a count by reason double count one mission.
+        CheckConstraint(
+            "primary_failure_reason IS NULL"
+            " OR NOT (additional_failure_reasons @> to_jsonb(primary_failure_reason))",
+            name="additional_reasons_exclude_primary",
+        ),
         # Status and reason are separate facts and are still not free of each other. A success
         # with a reason and a failure without one are both incoherent, and a run that has not
         # produced an outcome has produced no reason either. ABSTAINED is the one status that
@@ -486,14 +511,18 @@ class BenchmarkMissionRun(Base):
             " OR jsonb_array_length(additional_failure_reasons) = 0",
             name="additional_reasons_need_a_primary",
         ),
-        # An unsafe purchase that completed is an unsafe attempt that was not stopped.
+        # A purchase that was not certified compliant is one of the two kinds of attempt that
+        # could not be certified. There is no third source of an escape.
         CheckConstraint(
-            "NOT unsafe_completion OR unsafe_attempt", name="completion_implies_attempt"
+            "NOT unsafe_completion OR unsafe_attempt OR unverified_attempt",
+            name="completion_implies_attempt",
         ),
-        # Neither can sit on a mission that succeeded: success requires full compliance, so an
-        # unsafe succeeded row would be the benchmark contradicting its own definition of safe.
+        # None of the three can sit on a mission that succeeded: success requires compliance to
+        # have been established, so an unsafe or unverified success would be the benchmark
+        # contradicting its own definition of safe.
         CheckConstraint(
-            "NOT unsafe_attempt OR status <> 'SUCCEEDED'", name="unsafe_is_never_a_success"
+            "NOT (unsafe_attempt OR unverified_attempt) OR status <> 'SUCCEEDED'",
+            name="unsafe_is_never_a_success",
         ),
         CheckConstraint("NOT unsafe_completion OR status = 'FAILED'", name="escape_is_a_failure"),
         # A selection is a variant and a count together. Half of one says nothing.
@@ -535,9 +564,17 @@ class BenchmarkMissionRun(Base):
     unsafe_attempt: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false"), default=False
     )
+    unverified_attempt: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
+    )
     unsafe_completion: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false"), default=False
     )
+    # Whether the merchant's authoritative data still agreed with this mission's authored ground
+    # truth when the mission ran. Null means nobody checked. False does not invalidate the
+    # result and never changes the status: it says the oracle may be stale, which is a fact a
+    # report has to be able to show rather than one the harness silently acts on.
+    oracle_confirmed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     selected_variant_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     selected_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
     checkout_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)

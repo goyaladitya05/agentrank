@@ -42,6 +42,7 @@ from agentrank_api.mandates.intent import (
     MaxQuantity,
     MaxTotalAmount,
     Preference,
+    RequiredAttribute,
     hard_constraint_from_payload,
 )
 
@@ -137,6 +138,10 @@ class AgentMissionBrief:
             )
         if sum(isinstance(constraint, MaxQuantity) for constraint in self.hard_constraints) > 1:
             raise ValueError("a mission states at most one quantity ceiling")
+
+        for constraint in self.hard_constraints:
+            if isinstance(constraint, RequiredAttribute):
+                _require_exact_values(constraint.value)
 
     @property
     def currency(self) -> str:
@@ -259,6 +264,18 @@ class BenchmarkMissionDefinition:
     brief: AgentMissionBrief
     oracle: MissionOracle
 
+    def __post_init__(self) -> None:
+        if self.oracle.simulated_value_amount_minor > self.brief.budget.amount_minor:
+            # A sale cannot be worth more than the buyer was authorized to spend, so a value
+            # above the budget is an authoring mistake that would inflate potential simulated
+            # demand with money nobody could have paid. Checked here rather than on the oracle,
+            # which does not see the budget, and restated as a check constraint on the table.
+            raise ValueError(
+                "a mission cannot be worth more than its budget:"
+                f" {self.oracle.simulated_value_amount_minor} against"
+                f" {self.brief.budget.amount_minor} {self.brief.currency}"
+            )
+
     @property
     def key(self) -> str:
         """The mission's stable identity within its suite."""
@@ -340,6 +357,28 @@ class BenchmarkSuiteDefinition:
         missions, so an executor cannot reach an oracle even by accident.
         """
         return tuple(mission.brief for mission in self.missions)
+
+
+def _require_exact_values(value: object) -> None:
+    """Refuse a constraint value that would not survive being stored and read back.
+
+    A mission definition is written to JSONB and read back, and its content hash is what makes a
+    historical run interpretable. PostgreSQL stores a JSON number as `numeric`, so a floating
+    point value can come back as a different float than it went in as, which would change the
+    hash of a definition nobody edited and break the one guarantee this whole model rests on.
+
+    Whole numbers, text and booleans round trip exactly, and no commerce requirement this
+    benchmark can express needs anything else: a wattage, a length and a port count are all
+    integers. This is a restriction on what a mission may state, not a second vocabulary, and
+    the values it does accept are the same `ConstraintValue` any buyer intent carries.
+    """
+    members = value if isinstance(value, tuple) else (value,)
+    for member in members:
+        if isinstance(member, float):
+            raise ValueError(
+                f"a mission constraint value must be a whole number, text or a boolean,"
+                f" got the fractional value {member!r}"
+            )
 
 
 def validate_key(value: str, label: str) -> None:

@@ -9,11 +9,19 @@ It is a report, not a claim of correctness. Nothing here says whether the missio
 and there is deliberately no field that could: that is the evaluator's answer, and an executor
 that could assert its own result would be marking its own work.
 
-Local shape is validated here and coherence between the parts is not. A result claiming a
+Each part validates its own shape and the parts do not validate each other. A result claiming a
 payment with no selection behind it, or an abstention alongside a purchase, is a contradiction
 that the evaluator classifies as `AGENT_REASONING_ERROR`. Refusing to construct one would mean
 a broken executor raised inside the harness instead of being measured, and the measurement is
 the point.
+
+Within one part, though, a half told story is refused, and the reason is that omission was
+found to be worth something. A quote reported as created but with no total let the budget check
+fall back to the cheaper line amount, so an executor that simply left the total out could turn
+an over budget purchase into a success. A payment reported as succeeded with no attempt
+identifier was the most consequential fact in the benchmark taken entirely on the executor's
+word. Both are now refused at construction: an incomplete part of a report is not a smaller
+report, it is a report that reads better than the truth.
 """
 
 import uuid
@@ -118,6 +126,13 @@ class ObservedCheckout:
     because an executor that never produced a real quote row still has something to report, and
     a benchmark that could only record real rows could not measure the merchants that refuse to
     make them.
+
+    The total and the currency are not optional when a quote was created, and that is load
+    bearing rather than tidy. The budget is checked against the quoted total when there is one,
+    so an executor that omitted it would be checked against the cheaper line amount instead, and
+    an over budget purchase would come back a success. Nor is `refusal` optional when a quote was
+    not created: without it every refusal collapses into one code and a report cannot separate
+    "the merchant said no and why" from "the executor did not say".
     """
 
     created: bool
@@ -131,6 +146,14 @@ class ObservedCheckout:
             validate_amount_minor(self.total_amount_minor)
         if self.currency is not None:
             validate_currency(self.currency)
+
+        if self.created:
+            if self.total_amount_minor is None or self.currency is None:
+                raise ValueError("a created quote reports its total and its currency")
+            if self.refusal is not None:
+                raise ValueError("a created quote was not refused")
+        elif self.refusal is None:
+            raise ValueError("a quote that was not created reports why not")
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,10 +178,19 @@ class ObservedPayment:
     vocabulary for what a payment did. It carries the distinction that matters most here: a
     definitive decline and an unresolved payment are different facts, and the payment kernel is
     built on never calling one the other.
+
+    A success names the attempt it came from. "Money moved" is the most consequential claim an
+    executor makes and the one that decides both task completion and captured simulated demand,
+    and an identifier is what turns it from a claim into something the recording layer can check
+    against the payment table before it writes anything down.
     """
 
     status: PaymentAttemptStatus
     attempt_id: uuid.UUID | None = None
+
+    def __post_init__(self) -> None:
+        if self.status is PaymentAttemptStatus.SUCCEEDED and self.attempt_id is None:
+            raise ValueError("a successful payment names the attempt it came from")
 
 
 @dataclass(frozen=True, slots=True)

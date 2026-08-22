@@ -4,7 +4,7 @@ import json
 import uuid
 
 import pytest
-from benchmark_support import BLACK, CHARGERS, NOT_BLACK, brief, mission, suite
+from benchmark_support import BLACK, BUDGET, CHARGERS, NOT_BLACK, brief, mission, suite
 
 from agentrank_api.benchmark.definitions import (
     AgentMissionBrief,
@@ -238,7 +238,7 @@ def test_the_hash_is_a_labelled_sha256() -> None:
         ("mission key", suite(mission("renamed"))),
         ("objective", suite(mission(objective="Buy one white charger"))),
         ("quantity", suite(mission(quantity=2))),
-        ("budget", suite(mission(budget_minor=400000))),
+        ("budget", suite(mission(budget_minor=BUDGET + 100000))),
         ("currency", suite(mission(currency="EUR"))),
         ("constraint", suite(mission(constraints=(CHARGERS,)))),
         ("constraint value", suite(mission(constraints=(RequiredAttribute("color", "white"),)))),
