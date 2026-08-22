@@ -21,6 +21,7 @@ from agentrank_api.audit import models as audit_models  # noqa: F401  registers 
 from agentrank_api.auth import models as auth_models  # noqa: F401  registers tables
 from agentrank_api.auth.service import MerchantCredentialService
 from agentrank_api.auth.tokens import TokenMarker
+from agentrank_api.benchmark import models as benchmark_models  # noqa: F401  registers tables
 from agentrank_api.checkout import models as checkout_models  # noqa: F401  registers tables
 from agentrank_api.commerce import models as commerce_models  # noqa: F401  registers tables
 from agentrank_api.config import Settings, get_settings

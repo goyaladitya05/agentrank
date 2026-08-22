@@ -26,6 +26,7 @@ by the authorization that replaces it.
 
 import uuid
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, ClassVar
@@ -34,6 +35,7 @@ from agentrank_api.constraints.rules import (
     MAX_ATTRIBUTE_KEY_LENGTH,
     ConstraintOperator,
     ConstraintValue,
+    ScalarValue,
     validate_constraint_value,
 )
 from agentrank_api.money import validate_amount_minor, validate_currency
@@ -216,6 +218,82 @@ class BuyerIntent:
             "hard_constraints": [constraint.to_payload() for constraint in self.hard_constraints],
             "preferences": [preference.statement for preference in self.preferences],
         }
+
+
+def hard_constraint_from_payload(payload: Mapping[str, Any]) -> HardConstraint:
+    """Rebuild one hard constraint from the JSON object `to_payload` produced.
+
+    The inverse exists because a benchmark mission definition is stored and read back, and a
+    stored requirement has to become the same typed constraint a buyer would have stated.
+    Without it the benchmark would need its own vocabulary for "black only" and there would
+    be two languages for one idea, which is exactly what this module exists to prevent.
+
+    Strict in both directions. An unknown kind, a missing field or a field of the wrong type
+    raises rather than producing a constraint with a plausible default, because a
+    requirement nobody stated is a requirement that silently passes. The constructed object
+    revalidates itself, so a payload that was written around this function still cannot
+    become a malformed constraint.
+
+    A JSON array becomes a tuple, which is the shape `IN` expects. Nothing else is coerced:
+    `"100"` stays a string and is refused by the value rules rather than read as a number.
+    """
+    kind = payload.get("kind")
+    match kind:
+        case ConstraintKind.MAX_TOTAL_AMOUNT.value:
+            return MaxTotalAmount(
+                amount_minor=_require_int(payload, "amount_minor"),
+                currency=_require_str(payload, "currency"),
+            )
+        case ConstraintKind.MAX_QUANTITY.value:
+            return MaxQuantity(quantity=_require_int(payload, "quantity"))
+        case ConstraintKind.REQUIRED_ATTRIBUTE.value:
+            return RequiredAttribute(
+                name=_require_str(payload, "name"),
+                operator=ConstraintOperator(_require_str(payload, "operator")),
+                value=_require_value(payload),
+            )
+        case ConstraintKind.ALLOWED_CATEGORY.value:
+            return AllowedCategory(category=_require_str(payload, "category"))
+        case _:
+            raise ValueError(f"unknown hard constraint kind: {kind!r}")
+
+
+def _require_value(payload: Mapping[str, Any]) -> ConstraintValue:
+    """The comparison value, in the vocabulary's own value type.
+
+    A JSON array becomes a tuple, which is the shape `IN` expects. Every member is checked to
+    be a scalar this vocabulary can compare, so a nested object or a null is refused here
+    rather than reaching a comparison that cannot answer. Nothing else is coerced: `"100"`
+    stays a string and is refused by the operator's own value rules.
+    """
+    raw = payload.get("value")
+    if isinstance(raw, list):
+        return tuple(_require_scalar(member) for member in raw)
+    return _require_scalar(raw)
+
+
+def _require_scalar(value: Any) -> ScalarValue:
+    # Booleans are integers in Python, and the vocabulary keeps them as their own kind rather
+    # than rejecting them here. `value_type` is what tells them apart at comparison time.
+    if isinstance(value, str | int | float):
+        return value
+    raise ValueError(f"a constraint value must be text, a number or a boolean, got {value!r}")
+
+
+def _require_str(payload: Mapping[str, Any], field: str) -> str:
+    value = payload.get(field)
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be text, got {value!r}")
+    return value
+
+
+def _require_int(payload: Mapping[str, Any], field: str) -> int:
+    value = payload.get(field)
+    # Booleans are integers in Python and would pass an isinstance check, which is the same
+    # silent coercion the constraint vocabulary refuses everywhere else.
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"{field} must be a whole number, got {value!r}")
+    return value
 
 
 def _require_text(value: str, label: str, *, limit: int | None = None) -> None:

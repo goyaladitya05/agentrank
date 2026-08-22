@@ -46,6 +46,14 @@ class InvariantConflict:
 # callers pass that check at once. A constraint whose violation cannot be explained without
 # guessing does not belong here: None and a 500 is the honest answer for one of those.
 CONFLICTS: dict[str, InvariantConflict] = {
+    # One benchmark suite definition per key and version. The publish service reads the
+    # existing version first and refuses a changed definition by name, and two publishes of a
+    # brand new version can both read that none exists.
+    "uq_benchmark_suite_version": InvariantConflict(
+        reason="suite_already_published",
+        detail="this benchmark suite key and version are already published",
+        resource="benchmark_suite",
+    ),
     # A mandate is qualified once. The service refuses a second constraint set after reading
     # that one exists, and two creations racing can both read that none does.
     "uq_intent_constraint_set_mandate_id": InvariantConflict(
