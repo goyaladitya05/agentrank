@@ -35,19 +35,20 @@ from agentrank_api.benchmark.definitions import (
 )
 from agentrank_api.benchmark.endpoint import (
     CREDENTIAL_LABEL,
+    DATABASE_UNAVAILABLE,
     LocalCommerceEndpoint,
     RequestLedger,
     ServedRequest,
 )
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
 from agentrank_api.benchmark.execution import implementation_revision
+from agentrank_api.benchmark.failures import FailureReason
 from agentrank_api.benchmark.faults import FaultOrigin
 from agentrank_api.benchmark.fixtures import BenchmarkFixture
 from agentrank_api.benchmark.isolation import (
     ISOLATED_REFERENCE,
     WORKER_MODULE,
     IsolatedMissionExecutor,
-    PaymentUnaccountedError,
 )
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
 from agentrank_api.benchmark.reference_executor import REFERENCE_EXECUTOR
@@ -513,10 +514,34 @@ async def test_a_worker_that_never_starts_is_a_harness_fault(
     assert observed.selection is None
 
 
+def test_a_server_reported_database_outage_overrides_the_workers_result(
+    served: RequestLedger,
+) -> None:
+    """The worker can only fail after this trusted infrastructure response reached it."""
+    served.record(
+        ServedRequest(
+            method="GET",
+            path="/api/v1/commerce/products",
+            status=503,
+            failure=DATABASE_UNAVAILABLE,
+        )
+    )
+    executor = IsolatedMissionExecutor(
+        base_url="http://127.0.0.1:1",
+        token="ar_dev_" + "0" * 32 + "_" + "0" * 64,
+        served=served,
+    )
+
+    fault = executor.fault()
+
+    assert fault is not None
+    assert fault.origin is FaultOrigin.HARNESS
+
+
 async def test_a_worker_that_takes_too_long_is_killed_and_attributed(
     session: AsyncSession, served: RequestLedger
 ) -> None:
-    """A benchmark that waited forever would produce no result at all, which is worse."""
+    """A buyer that takes too long failed the mission rather than disappearing from it."""
     merchant_id = await prepared(session)
     # Short enough that no worker finishes inside it and long enough that the bound is what
     # fires rather than the machine being slow. A worker's floor is one interpreter start, one
@@ -535,19 +560,19 @@ async def test_a_worker_that_takes_too_long_is_killed_and_attributed(
 
     fault = executor.fault()
     assert fault is not None
-    assert fault.origin is FaultOrigin.HARNESS
+    assert fault.origin is FaultOrigin.AGENT
     assert observed.selection is None
 
 
-async def test_a_worker_that_dispatched_a_payment_and_vanished_stops_the_run(
+async def test_a_worker_that_dispatched_a_payment_and_vanished_defers_to_trusted_substantiation(
     session: AsyncSession, served: RequestLedger
 ) -> None:
     """The one failure that must never be recorded and carried on from.
 
-    The server saw a request to the payment route, so money may have moved. Recording ERRORED
-    would say the harness could not carry the mission out and would move the mission's value out
-    of lost demand, which is the wrong thing to say about a mission that may have bought
-    something. It raises instead, and the mission stays RUNNING.
+    The isolated adapter has no database access, so it cannot know whether the request settled,
+    was denied or remains ambiguous. It returns its empty report and trusted agent fault; the
+    runner then reads the payment rows and response evidence, stopping only if the state is still
+    unknown.
     """
     merchant_id = await prepared(session)
     served.record(
@@ -560,10 +585,13 @@ async def test_a_worker_that_dispatched_a_payment_and_vanished_stops_the_run(
         interpreter="/nonexistent/python",
     )
 
-    with pytest.raises(PaymentUnaccountedError) as raised:
-        await executor(brief("paid-and-vanished"), merchant_id=merchant_id)
+    observed = await executor(brief("paid-and-vanished"), merchant_id=merchant_id)
 
-    assert raised.value.mission_key == "paid-and-vanished"
+    assert observed.selection is None
+    assert executor.payment_attempted()
+    fault = executor.fault()
+    assert fault is not None
+    assert fault.origin is FaultOrigin.HARNESS
 
 
 def test_a_worker_that_speaks_nonsense_is_refused_rather_than_believed() -> None:
@@ -685,6 +713,78 @@ async def test_a_whole_suite_runs_through_the_isolated_boundary(
     assert finished.executor_kind == "reference-isolated"
     assert finished.executor_version == 1
     assert all(result.primary_failure_reason is None for result in finished.mission_runs)
+
+
+async def test_an_actual_isolated_worker_timeout_is_persisted_as_lost_agent_demand(
+    session: AsyncSession, endpoint: LocalCommerceEndpoint, served: RequestLedger
+) -> None:
+    """The process boundary, runner, evaluator and metrics in one non-circular assertion.
+
+    One millisecond is intentionally below Python process startup, so this exercises the parent
+    timeout and reap path rather than a buyer's ordinary HTTP failure. The report is then
+    persisted through the same `run_suite` path a future model executor must use.
+    """
+    merchant_id = await prepared(session)
+    await BenchmarkSuiteService(session).publish(suite_of("timeout"))
+    token = await credential(session, merchant_id)
+    executor = IsolatedMissionExecutor(
+        base_url=endpoint.base_url,
+        token=token,
+        served=served,
+        timeout=0.001,
+    )
+
+    finished = await BenchmarkRunService(session).run_suite(
+        executor,
+        suite_key=SUITE_KEY,
+        suite_version=1,
+        fixture=WORLD,
+        witness=executor,
+    )
+    metrics = await BenchmarkRunService(session).metrics(finished.id, merchant_id=merchant_id)
+    demand = metrics.simulated_demand.single_currency()
+    result = finished.mission_runs[0]
+
+    assert result.status is MissionRunStatus.FAILED
+    assert result.primary_failure_reason is FailureReason.AGENT_EXECUTION_ERROR
+    assert metrics.purchase_missions == 1
+    assert metrics.missions_failed == 1
+    assert metrics.missions_errored == 0
+    assert demand.lost_amount_minor == PRICE
+    assert demand.not_measured_amount_minor == 0
+
+
+async def test_an_isolated_harness_startup_failure_is_persisted_as_not_measured(
+    session: AsyncSession, served: RequestLedger
+) -> None:
+    """Only a failure the runner can positively identify as its own becomes ERRORED."""
+    merchant_id = await prepared(session)
+    await BenchmarkSuiteService(session).publish(suite_of("startup"))
+    executor = IsolatedMissionExecutor(
+        base_url="http://127.0.0.1:1",
+        token="ar_dev_" + "0" * 32 + "_" + "0" * 64,
+        served=served,
+        interpreter="/nonexistent/python",
+    )
+
+    finished = await BenchmarkRunService(session).run_suite(
+        executor,
+        suite_key=SUITE_KEY,
+        suite_version=1,
+        fixture=WORLD,
+        witness=executor,
+    )
+    metrics = await BenchmarkRunService(session).metrics(finished.id, merchant_id=merchant_id)
+    demand = metrics.simulated_demand.single_currency()
+    result = finished.mission_runs[0]
+
+    assert result.status is MissionRunStatus.ERRORED
+    assert result.primary_failure_reason is None
+    assert metrics.purchase_missions == 1
+    assert metrics.missions_failed == 0
+    assert metrics.missions_errored == 1
+    assert demand.lost_amount_minor == 0
+    assert demand.not_measured_amount_minor == PRICE
 
 
 async def test_every_mission_gets_a_process_that_knows_nothing_about_the_last_one(

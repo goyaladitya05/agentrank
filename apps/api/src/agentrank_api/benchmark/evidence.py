@@ -26,6 +26,7 @@ objects the service returned. Over HTTP, a recording wrapper inside the server p
 body it just wrote with the model the route declared. Neither reads anything the executor sent.
 """
 
+import uuid
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -57,6 +58,13 @@ class CommerceEvidence:
 
     authorization: ObservedAuthorization | None = None
     stock_unavailable: bool = False
+    checkout_id: uuid.UUID | None = None
+    """The checkout named by a trusted preparation or payment response.
+
+    A buyer can die after the server answered and before it reports the quote identifier. Keeping
+    the server's identifier lets substantiation preserve that known action without believing a
+    missing or invented executor report.
+    """
 
 
 def authorization_of(decision: ExecutionAuthorizationView) -> ObservedAuthorization:
@@ -89,6 +97,7 @@ def after_preparation(
         evidence,
         authorization=authorization_of(preparation.authorization),
         stock_unavailable=preparation.authorization.authorized and not preparation.ready,
+        checkout_id=preparation.checkout_id,
     )
 
 
@@ -99,7 +108,11 @@ def after_payment(evidence: CommerceEvidence, paid: PaymentView) -> CommerceEvid
     rather than from this response, because the response is one instant and the table is the
     outcome.
     """
-    return replace(evidence, authorization=authorization_of(paid.authorization))
+    return replace(
+        evidence,
+        authorization=authorization_of(paid.authorization),
+        checkout_id=paid.checkout_id,
+    )
 
 
 def preparation_from_body(payload: Any) -> ExecutionPreparationView | None:

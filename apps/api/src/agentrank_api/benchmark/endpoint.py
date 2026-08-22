@@ -80,19 +80,23 @@ PREPARATION_PATH_SUFFIX = "/prepare-execution"
 # hold something large by anything the buyer asks for.
 MAX_RECORDED_BODY = 256 * 1024
 
+DATABASE_UNAVAILABLE = "database_unavailable"
+
 
 @dataclass(frozen=True, slots=True)
 class ServedRequest:
     """One request the endpoint answered, as the server itself saw it.
 
-    Method, path and status. No body, no header and no query string: this is evidence about the
-    boundary rather than a trace of a mission, and a record carrying an Authorization header
-    would be a credential written into a benchmark's own bookkeeping.
+    Method, path, status and an optional server-written failure code. No body, no header and no
+    query string survive: this is evidence about the boundary rather than a trace of a mission,
+    and a record carrying an Authorization header would be a credential written into a
+    benchmark's own bookkeeping.
     """
 
     method: str
     path: str
     status: int
+    failure: str | None = None
 
 
 class RequestLedger:
@@ -208,7 +212,7 @@ class _Recording:
         async def watching(message: Message) -> None:
             if message["type"] == "http.response.start":
                 answered["status"] = int(message["status"])
-            elif keeping and message["type"] == "http.response.body":
+            elif message["type"] == "http.response.body":
                 chunk = message.get("body", b"")
                 if len(body) + len(chunk) <= MAX_RECORDED_BODY:
                     body.extend(chunk)
@@ -223,6 +227,7 @@ class _Recording:
                 # Nothing answered at all is a failure of the surface, which is what a
                 # zero here means and what the 5xx test below then reads it as.
                 status=answered["status"] or 500,
+                failure=_failure_from(bytes(body)) if answered["status"] >= 500 else None,
             )
             self._ledger.record(served)
             if keeping:
@@ -235,6 +240,22 @@ def _answers_a_decision(scope: Scope) -> bool:
         return False
     path = str(scope.get("path", ""))
     return path.endswith(PREPARATION_PATH_SUFFIX) or path.endswith(PAYMENT_PATH_SUFFIX)
+
+
+def _failure_from(body: bytes) -> str | None:
+    """The stable code in a server error, if this application supplied one.
+
+    The body is discarded immediately after parsing. A failure code is evidence because the
+    server wrote it; arbitrary response prose is not retained or interpreted.
+    """
+    try:
+        payload = json.loads(body)
+    except UnicodeDecodeError, json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    code = payload.get("error")
+    return code if isinstance(code, str) else None
 
 
 class LocalCommerceEndpoint:

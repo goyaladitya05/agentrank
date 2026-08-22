@@ -2,7 +2,7 @@
 
 Not benchmark data. This exists so that a developer can start PostgreSQL, run one command
 and have something real to query. The merchant the first benchmark suite is authored against
-is VoltEdge, and it lives in `agentrank_api.benchmark.voltedge`.
+is VoltEdge, and its authored world lives in `benchmarks/voltedge`.
 
 The shapes and the convergent seeding both come from `agentrank_api.commerce.catalog_fixture`,
 which the two fixtures share. What is here is the data.

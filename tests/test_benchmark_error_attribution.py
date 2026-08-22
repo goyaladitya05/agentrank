@@ -22,6 +22,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.benchmark import evaluation
@@ -219,6 +220,25 @@ async def test_a_surface_that_fails_rather_than_answers_is_the_merchants(
     assert fault.operation == BuyerOperation.SEARCH_PRODUCTS.value
 
 
+async def test_a_benchmark_database_failure_is_infrastructure(
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """The same exception class the database layer raises cannot become merchant lost demand."""
+
+    class DatabaseDown(MerchantBuyerSurface):
+        async def search_products(self, request: Any) -> Any:
+            raise SQLAlchemyError("the benchmark database connection was lost")
+
+    ledger, executor, merchant_id = await watched(session, factory, DatabaseDown)
+
+    with pytest.raises(SQLAlchemyError):
+        await executor(mission_brief(), merchant_id=merchant_id)
+
+    fault = ledger.fault()
+    assert fault is not None
+    assert fault.origin is FaultOrigin.HARNESS
+
+
 async def test_a_merchant_dependency_that_did_not_answer_is_the_merchants(
     session: AsyncSession, factory: async_sessionmaker[AsyncSession]
 ) -> None:
@@ -373,6 +393,37 @@ async def test_a_merchant_fault_reaches_the_recorded_result(
     assert result.primary_failure_reason is FailureReason.MERCHANT_API_ERROR
 
 
+async def test_a_benchmark_database_failure_is_recorded_as_not_measured(
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """Persist the classification so an outage cannot become a false commerce readiness finding."""
+
+    class DatabaseDown(MerchantBuyerSurface):
+        async def search_products(self, request: Any) -> Any:
+            raise SQLAlchemyError("the benchmark database connection was lost")
+
+    merchant_id = await prepared(session)
+    await BenchmarkSuiteService(session).publish(suite_of("one"))
+    ledger = ToolLedger()
+    surface = MeasuredBuyerSurface(
+        DatabaseDown(factory, merchant_id=merchant_id, provider=FakePaymentProvider()), ledger
+    )
+
+    finished = await BenchmarkRunService(session).run_suite(
+        ReferenceMissionExecutor(surface),
+        suite_key=SUITE_KEY,
+        suite_version=1,
+        fixture=WORLD,
+        witness=ledger,
+    )
+    result = finished.mission_runs[0]
+    metrics = await BenchmarkRunService(session).metrics(finished.id, merchant_id=merchant_id)
+
+    assert result.status is MissionRunStatus.ERRORED
+    assert result.primary_failure_reason is None
+    assert metrics.simulated_demand.single_currency().not_measured_amount_minor == PRICE
+
+
 async def test_without_a_witness_no_interruption_is_attributed(
     session: AsyncSession, factory: async_sessionmaker[AsyncSession]
 ) -> None:
@@ -487,12 +538,12 @@ async def test_an_executor_cannot_choose_which_exception_the_boundary_observes(
 
     The surface's own code runs the argument: `MerchantBuyerSurface.search_products` calls
     `request.to_criteria(...)` on whatever it is handed. An executor passing an object whose
-    method raises `AuthenticationError` therefore chose which origin was attributed, and HARNESS
-    is the flattering one: ERRORED carries no failure reason and moves the mission's value out of
-    lost demand.
+    method raises `AuthenticationError` therefore chose which origin was attributed. A malformed
+    tool call is agent performance: it must become a FAILED mission rather than silently escaping
+    the measurement or turning into an infrastructure error.
 
     The argument's type is checked before anything is watched, so the refusal is a caller that
-    cannot call rather than a fault about anybody. A subclass rather than a duck typed object,
+    cannot call rather than a fault about the merchant. A subclass rather than a duck typed object,
     because the first version of the guard used `isinstance` and a two line subclass of the real
     request model walked straight through it. An independent test audit found that.
     """
@@ -510,8 +561,9 @@ async def test_an_executor_cannot_choose_which_exception_the_boundary_observes(
     with pytest.raises(BuyerArgumentError):
         await surface.search_products(Trap())
 
-    assert ledger.calls == ()
-    assert ledger.fault() is None
+    fault = ledger.fault()
+    assert fault is not None
+    assert fault.origin is FaultOrigin.AGENT
 
 
 async def test_a_duck_typed_argument_is_refused_as_well(
@@ -534,7 +586,9 @@ async def test_a_duck_typed_argument_is_refused_as_well(
     with pytest.raises(BuyerArgumentError):
         await surface.search_products(Impostor())  # type: ignore[arg-type]
 
-    assert ledger.fault() is None
+    fault = ledger.fault()
+    assert fault is not None
+    assert fault.origin is FaultOrigin.AGENT
 
 
 async def test_a_hallucinated_identifier_is_not_a_merchant_fault_either(
@@ -556,19 +610,21 @@ async def test_a_hallucinated_identifier_is_not_a_merchant_fault_either(
     with pytest.raises(BuyerArgumentError):
         await surface.get_product("not-a-uuid")  # type: ignore[arg-type]
 
-    assert ledger.fault() is None
+    fault = ledger.fault()
+    assert fault is not None
+    assert fault.origin is FaultOrigin.AGENT
 
 
 # Which refusals are answers.
 
 
-def test_a_catalog_refusal_is_an_answer_and_anything_else_is_this_callers_own_state() -> None:
+def test_a_catalog_refusal_is_an_answer_and_anything_else_is_the_buyers_own_state() -> None:
     """The split, as data rather than as a status code.
 
     Both arrive as a 404 or a 409, so the status cannot separate them. A variant the merchant
-    does not sell is a measurement; a mandate this execution created moments ago having vanished
-    is the harness in a state it should not be in, and marking that as a buyer reasoning failure
-    is what happened before the split existed.
+    does not sell is a measurement; a mandate the buyer created moments ago having vanished is
+    the buyer's own state being wrong. Calling it the harness would excuse a model for a mandate
+    identifier it invented or one it used in the wrong order.
     """
     assert "variant" in CATALOG_RESOURCES
     assert "product" in CATALOG_RESOURCES
@@ -578,10 +634,14 @@ def test_a_catalog_refusal_is_an_answer_and_anything_else_is_this_callers_own_st
     assert "mandate_already_consumed" not in CATALOG_REFUSALS
 
 
-async def test_a_missing_mandate_is_attributed_to_the_harness_rather_than_measured(
+async def test_a_missing_mandate_is_attributed_to_the_buyer_rather_than_the_merchant(
     session: AsyncSession, factory: async_sessionmaker[AsyncSession]
 ) -> None:
-    """A mandate this execution created a second ago cannot be a fact about the merchant."""
+    """A mandate the buyer created a second ago cannot be a fact about the merchant.
+
+    It is a buyer failure too. The model owns the sequence of tool calls that makes a mandate,
+    and a model that names one that does not exist has not carried the mission out.
+    """
 
     class MandateVanished(MerchantBuyerSurface):
         async def create_checkout(self, request: Any) -> Any:
@@ -593,17 +653,18 @@ async def test_a_missing_mandate_is_attributed_to_the_harness_rather_than_measur
 
     fault = ledger.fault()
     assert fault is not None
-    assert fault.origin is FaultOrigin.HARNESS
+    assert fault.origin is FaultOrigin.AGENT
 
 
-async def test_an_admission_refusal_that_is_not_a_denial_is_the_harnesss(
+async def test_an_admission_refusal_that_is_not_a_denial_is_the_buyers(
     session: AsyncSession, factory: async_sessionmaker[AsyncSession]
 ) -> None:
     """Read off the merchant's own answer, by trusted code, and not out of the report.
 
-    An expired reservation is wall clock dependent, so before this the same suite on a slow
-    machine published one more buyer reasoning failure and up to a mission's whole authored
-    value as demand the merchant lost. Nothing about that was a fact about the merchant.
+    A payment already in progress or a mandate already consumed is not a fact about the merchant.
+    It is state the buyer created and sequenced. A model that produces it failed to complete the
+    mission, and calling that infrastructure would move the mission out of every completion
+    denominator and out of simulated demand the merchant lost.
     """
     merchant_id = await prepared(session)
     ledger = ToolLedger()
@@ -627,7 +688,7 @@ async def test_an_admission_refusal_that_is_not_a_denial_is_the_harnesss(
 
     fault = ledger.fault()
     assert fault is not None
-    assert fault.origin is FaultOrigin.HARNESS
+    assert fault.origin is FaultOrigin.AGENT
     assert fault.detail == AdmissionRefusal.MANDATE_ALREADY_CONSUMED.value
 
 

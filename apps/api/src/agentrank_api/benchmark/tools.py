@@ -50,6 +50,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from agentrank_api.benchmark.buyer import BuyerCommerceSurface
 from agentrank_api.benchmark.evidence import (
     CommerceEvidence,
@@ -258,40 +260,40 @@ class MeasuredBuyerSurface:
         return self._inner.merchant_id
 
     async def search_products(self, request: ProductSearchRequest) -> ProductSearchResponse:
-        _given(BuyerOperation.SEARCH_PRODUCTS, request, ProductSearchRequest)
+        self._given(BuyerOperation.SEARCH_PRODUCTS, request, ProductSearchRequest)
         with self._watching(BuyerOperation.SEARCH_PRODUCTS):
             return await self._inner.search_products(request)
 
     async def get_product(self, product_id: uuid.UUID) -> ProductDetail:
-        _given(BuyerOperation.GET_PRODUCT, product_id, uuid.UUID)
+        self._given(BuyerOperation.GET_PRODUCT, product_id, uuid.UUID)
         with self._watching(BuyerOperation.GET_PRODUCT):
             return await self._inner.get_product(product_id)
 
     async def authorize_spending(self, request: CreateMandateRequest) -> MandateView:
-        _given(BuyerOperation.AUTHORIZE_SPENDING, request, CreateMandateRequest)
+        self._given(BuyerOperation.AUTHORIZE_SPENDING, request, CreateMandateRequest)
         with self._watching(BuyerOperation.AUTHORIZE_SPENDING):
             return await self._inner.authorize_spending(request)
 
     async def state_requirements(
         self, mandate_id: uuid.UUID, request: CreateIntentConstraintsRequest
     ) -> IntentConstraintSetView:
-        _given(BuyerOperation.STATE_REQUIREMENTS, mandate_id, uuid.UUID)
-        _given(BuyerOperation.STATE_REQUIREMENTS, request, CreateIntentConstraintsRequest)
+        self._given(BuyerOperation.STATE_REQUIREMENTS, mandate_id, uuid.UUID)
+        self._given(BuyerOperation.STATE_REQUIREMENTS, request, CreateIntentConstraintsRequest)
         with self._watching(BuyerOperation.STATE_REQUIREMENTS):
             return await self._inner.state_requirements(mandate_id, request)
 
     async def create_checkout(self, request: CreateCheckoutRequest) -> CheckoutView:
-        _given(BuyerOperation.CREATE_CHECKOUT, request, CreateCheckoutRequest)
+        self._given(BuyerOperation.CREATE_CHECKOUT, request, CreateCheckoutRequest)
         with self._watching(BuyerOperation.CREATE_CHECKOUT):
             return await self._inner.create_checkout(request)
 
     async def get_checkout(self, checkout_id: uuid.UUID) -> CheckoutView:
-        _given(BuyerOperation.GET_CHECKOUT, checkout_id, uuid.UUID)
+        self._given(BuyerOperation.GET_CHECKOUT, checkout_id, uuid.UUID)
         with self._watching(BuyerOperation.GET_CHECKOUT):
             return await self._inner.get_checkout(checkout_id)
 
     async def prepare_checkout(self, checkout_id: uuid.UUID) -> ExecutionPreparationView:
-        _given(BuyerOperation.PREPARE_CHECKOUT, checkout_id, uuid.UUID)
+        self._given(BuyerOperation.PREPARE_CHECKOUT, checkout_id, uuid.UUID)
         with self._watching(BuyerOperation.PREPARE_CHECKOUT):
             prepared = await self._inner.prepare_checkout(checkout_id)
         # Recorded from what the service returned, outside the watched scope so that a recording
@@ -303,13 +305,44 @@ class MeasuredBuyerSurface:
     async def complete_checkout(
         self, checkout_id: uuid.UUID, request: CreatePaymentRequest
     ) -> PaymentView:
-        _given(BuyerOperation.COMPLETE_CHECKOUT, checkout_id, uuid.UUID)
-        _given(BuyerOperation.COMPLETE_CHECKOUT, request, CreatePaymentRequest)
+        self._given(BuyerOperation.COMPLETE_CHECKOUT, checkout_id, uuid.UUID)
+        self._given(BuyerOperation.COMPLETE_CHECKOUT, request, CreatePaymentRequest)
         with self._watching(BuyerOperation.COMPLETE_CHECKOUT):
             paid = await self._inner.complete_checkout(checkout_id, request)
         self._ledger.record(_admission(paid))
         self._ledger.note_payment(paid)
         return paid
+
+    def _given(self, operation: BuyerOperation, value: object, expected: type) -> None:
+        """Refuse an argument that is not this operation's, and record that it happened.
+
+        Recorded as the buyer's fault rather than left to propagate silently. A call with the
+        wrong argument type is a call that was never made: no merchant answered it and nothing on
+        this side broke, so it is agent performance and the mission is a failure rather than an
+        error. A model that emits a malformed tool call makes exactly this shape.
+
+        The check is outside the watched scope on purpose, and it is the type itself rather than
+        an `isinstance` check. The surface's own code runs the argument, so a two line subclass of
+        a request model could otherwise choose which exception was observed inside the boundary
+        and with it which origin was attributed. An independent test audit found the first version
+        of this guard open to exactly that.
+
+        The cost is that a legitimate subclass would be refused. None exists, the view models are
+        request bodies rather than a hierarchy, and refusing a caller that cannot call is the fail
+        closed direction.
+        """
+        if type(value) is expected:
+            return
+        refused = BuyerArgumentError(operation, expected, value)
+        self._ledger.record(
+            ToolCall(
+                operation=operation,
+                outcome=ToolOutcome.FAILED,
+                detail=str(refused),
+                origin=FaultOrigin.AGENT,
+            )
+        )
+        raise refused
 
     @contextmanager
     def _watching(self, operation: BuyerOperation) -> Iterator[None]:
@@ -340,6 +373,18 @@ class MeasuredBuyerSurface:
                     outcome=ToolOutcome.FAILED,
                     detail=upstream.reason,
                     origin=FaultOrigin.MERCHANT,
+                )
+            )
+            raise
+        except SQLAlchemyError as failed:
+            # The benchmark's database is infrastructure. Calling its outage a merchant API
+            # finding would move demand into lost when the benchmark did not measure a shop.
+            self._ledger.record(
+                ToolCall(
+                    operation=operation,
+                    outcome=ToolOutcome.FAILED,
+                    detail=type(failed).__name__,
+                    origin=FaultOrigin.HARNESS,
                 )
             )
             raise
@@ -381,25 +426,6 @@ class BuyerArgumentError(TypeError):
         self.operation = operation
 
 
-def _given(operation: BuyerOperation, value: object, expected: type) -> None:
-    """Refuse an argument that is not exactly what the operation takes, before anything is
-    recorded.
-
-    The type itself and not an `isinstance` check, and that correction is the point. A subclass
-    of a Pydantic model has been through the model's own validation and can still override the
-    method the surface calls: `MerchantBuyerSurface.search_products` calls `request.to_criteria`,
-    so a two line subclass chose which exception was observed inside the boundary and with it
-    which origin was attributed. An independent test audit found the first version of this guard
-    open to exactly that.
-
-    The cost is that a legitimate subclass would be refused. None exists, the view models are
-    request bodies rather than a hierarchy, and refusing a caller that cannot call is the fail
-    closed direction.
-    """
-    if type(value) is not expected:
-        raise BuyerArgumentError(operation, expected, value)
-
-
 def _admission(paid: PaymentView) -> ToolCall:
     """What a payment answer means when no attempt was admitted.
 
@@ -425,21 +451,24 @@ def _admission(paid: PaymentView) -> ToolCall:
         operation=BuyerOperation.COMPLETE_CHECKOUT,
         outcome=ToolOutcome.FAILED,
         detail=paid.refusal.value,
-        origin=FaultOrigin.HARNESS,
+        origin=FaultOrigin.AGENT,
     )
 
 
 def _refusal(operation: BuyerOperation, refused: NotFoundError | ConflictError) -> ToolCall:
-    """A refusal, as either the merchant's answer or this caller's own state being wrong.
+    """A refusal, as either the merchant's answer or the buyer's own state being wrong.
 
     Both arrive as a 404 or a 409, so the status cannot separate them and the merchant's own
     machine readable code is what does. A variant the merchant does not sell is an answer and is
-    measured as one. A mandate this execution created moments ago having vanished is not an
-    answer about anything, and recording it as one publishes a reasoning failure against a buyer
-    whose harness broke, which is what happened before this split existed.
+    measured as one. A mandate that does not exist is not an answer about anything.
 
-    Anything unclassified is the caller's own state. That is the fail closed direction: a refusal
-    nobody has placed in `CATALOG_REFUSALS` is not evidence about a merchant.
+    The second half is attributed to the buyer. Every mandate, quote, constraint set and hold in a
+    mission is created by the buyer's own tool calls, so a reference to one that is not there is
+    its own bookkeeping, and a model naming an identifier it invented is exactly this shape.
+
+    Anything unclassified is the buyer's. That is the fail closed direction twice over: a refusal
+    nobody has placed in `CATALOG_REFUSALS` is not evidence about a merchant, and attributing an
+    unknown refusal to the harness would excuse the thing under test.
     """
     if isinstance(refused, ConflictError):
         answered = refused.reason in CATALOG_REFUSALS
@@ -454,5 +483,5 @@ def _refusal(operation: BuyerOperation, refused: NotFoundError | ConflictError) 
         operation=operation,
         outcome=ToolOutcome.FAILED,
         detail=detail,
-        origin=FaultOrigin.HARNESS,
+        origin=FaultOrigin.AGENT,
     )

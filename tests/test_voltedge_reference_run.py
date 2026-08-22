@@ -665,7 +665,7 @@ def test_the_marking_rules_this_result_was_produced_under_are_pinned() -> None:
     saying whether the fourteen answers below still hold.
     """
     assert evaluator_version() == (
-        "sha256:11172beb797f89eddd5418e949043900124a54c93a357e81fcbd900a8298c95c"
+        "sha256:dceed1f2e5994cf4db653cad25523857f6709da8e3c7558b64fb8c8001270fcc"
     )
 
 

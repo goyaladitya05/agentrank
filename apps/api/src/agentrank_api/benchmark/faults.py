@@ -19,13 +19,23 @@ and the rule is deliberately the one an HTTP transport can also apply:
 
 ```text
 404 or 409 naming the merchant's own catalog     a business answer. Not a fault at all
-404 or 409 about state this caller created       HARNESS. Our mandate, our quote, our problem
+404 or 409 about state the buyer created         AGENT. Its mandate, its quote, its bookkeeping
+an argument that is not the operation's          AGENT. A call that is not a call
 401, AuthenticationError                         HARNESS. Our credential, our problem
 502, UpstreamError                               MERCHANT. Its dependency did not answer
 5xx, anything else raised inside a call          MERCHANT. The surface failed rather than answered
 transport error, timeout, unreadable body        MERCHANT. The surface did not answer
-worker died, protocol violation, our bug         HARNESS
+the buyer process died, hung or spoke nonsense   AGENT. It did not carry the mission out
+the buyer process could not be started           HARNESS. We could not run our own executor
+the buyer refused the request we wrote           HARNESS. Our request, our environment
 ```
+
+The second and third lines moved in Phase 2B-R2 and the reason is the model. A mandate that this
+execution created moments ago having vanished was our problem when the only executor was a
+scripted one written beside the runner. When the buyer is a model, every mandate, quote and hold
+in a mission is created by its own tool calls, so a reference to one that does not exist is its
+own bookkeeping, and calling that infrastructure would excuse exactly the failure a model makes
+most often.
 
 The first two lines are what make the rest workable, and the split between them is read off the
 merchant's own machine readable codes rather than off the status. A merchant refusing to quote
@@ -53,20 +63,38 @@ from enum import StrEnum
 
 
 class FaultOrigin(StrEnum):
-    """Which side of the boundary failed, which decides whether it is a finding or a fault.
+    """Which side of the boundary failed, which decides what the mission is marked as.
+
+    Three, and the split between the last two is what stops a benchmark rewarding a buyer for
+    breaking. It used to be two, with everything that was not the merchant called HARNESS and
+    marked ERRORED, which is the one status that carries no failure reason and moves a mission's
+    authored value out of lost demand and into not measured. A model that crashed on every
+    mission it could not solve would have been excused from all of them.
 
     MERCHANT
         A merchant surface returned an error rather than an answer or a business refusal. A
         commerce readiness finding, and the mission is marked FAILED with MERCHANT_API_ERROR.
 
+    AGENT
+        The buyer failed to carry out a mission it was equipped to carry out: its process died,
+        it ran past its time, it produced a report nobody could read, it called a tool with
+        arguments that are not that tool's arguments, or it named state it never created. That
+        is agent performance, so the mission is marked FAILED with `AGENT_EXECUTION_ERROR` and
+        its value is demand the merchant lost.
+
     HARNESS
-        The benchmark's own machinery could not carry the mission out: the runner, the transport
-        to the executor, the executor process, or a credential this side is responsible for. Not
-        a fact about the merchant, and the mission is ERRORED rather than FAILED so that a flaky
-        harness cannot look like a bad catalog.
+        The benchmark's own machinery could not carry the mission out: the runner, the transport,
+        a credential this side is responsible for, or the request this side wrote. Not a fact
+        about the merchant and not a fact about the buyer, so the mission is ERRORED and its
+        value is reported as not measured.
+
+    The line between AGENT and HARNESS is who the failing thing belongs to, and it is drawn
+    fail closed: anything the trusted side cannot positively attribute to its own machinery is
+    the buyer's, because the alternative is excusing the thing under test.
     """
 
     MERCHANT = "MERCHANT"
+    AGENT = "AGENT"
     HARNESS = "HARNESS"
 
 
@@ -92,7 +120,7 @@ CATALOG_REFUSALS = frozenset(
 
 # The one payment admission refusal that is the buyer's own authorization saying no, which is the
 # safety layer working and a finding rather than a fault. Every other admission refusal is about
-# a mandate, a quote or a hold this execution created moments ago.
+# a mandate, a quote or a hold the buyer created moments ago, and is therefore the buyer's.
 AUTHORIZATION_REFUSALS = frozenset({"payment_not_authorized"})
 
 

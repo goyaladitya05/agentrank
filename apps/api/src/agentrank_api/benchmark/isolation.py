@@ -4,7 +4,7 @@ This is the trusted half of the isolated boundary. It spawns a worker, hands it 
 standard input, reads one report from standard output, and decides from evidence it gathered
 itself what happened. The worker is not trusted with any of that: it cannot mark its own mission,
 cannot say whose fault an interruption was, and cannot tell this object anything except an
-`ObservedResult`.
+`ExecutorReport`.
 
 Why a process rather than an object. An in process surface holds a session factory, and anything
 holding the surface can reach it with one attribute access, so every in process arrangement of
@@ -16,7 +16,7 @@ What the worker gets:
 
 ```text
 stdin      one MissionRequest: a brief, a merchant, a base URL and one merchant credential
-env        PATH, HOME, the locale, TMPDIR, PYTHONPATH and the certificate paths
+env        PATH, HOME, the locale, TMPDIR and the certificate paths
 cwd        an empty directory of its own, so no `.env` is readable from it
 ```
 
@@ -39,10 +39,12 @@ the server      a 5xx it answered, whether the payment route was reached, and wh
 the report      an ExecutorReport: identifiers and actions, never facts
 ```
 
-A worker that dies is a HARNESS fault and the mission is ERRORED. That is not a way to be
-excused: the completion rate's denominator is the suite rather than what ran, so a buyer that
-crashes on every mission it cannot solve scores zero rather than nothing, and `missions_errored`
-is reported beside every rate.
+A worker that dies is the buyer failing and the mission is FAILED, which is the correction Phase
+2B-R2 made. It used to be a HARNESS fault and therefore ERRORED, the one status that carries no
+failure reason and moves a mission's authored value out of demand the merchant lost. A model that
+crashed whenever it could not solve something would have been excused from every one of them. The
+harness's own failures, which are a process that could not be started at all and a worker that
+refused the request this side wrote, are still ERRORED and are still reported beside every rate.
 
 A worker that dies after the payment route was reached is different and is refused rather than
 recorded. Money may have moved, and a mission whose payment is unknown must never be replayed or
@@ -58,7 +60,7 @@ import tempfile
 import uuid
 
 from agentrank_api.benchmark.definitions import AgentMissionBrief
-from agentrank_api.benchmark.endpoint import RequestLedger
+from agentrank_api.benchmark.endpoint import DATABASE_UNAVAILABLE, RequestLedger
 from agentrank_api.benchmark.evidence import CommerceEvidence
 from agentrank_api.benchmark.execution import ExecutorIdentity, implementation_revision
 from agentrank_api.benchmark.faults import ExecutionFault, FaultOrigin
@@ -69,7 +71,11 @@ from agentrank_api.benchmark.wire import (
     ProtocolError,
     report_from_payload,
 )
-from agentrank_api.benchmark.worker import worker_environment
+from agentrank_api.benchmark.worker import (
+    EXIT_NOT_ISOLATED,
+    EXIT_PROTOCOL,
+    worker_environment,
+)
 
 WORKER_MODULE = "agentrank_api.benchmark.worker"
 
@@ -103,24 +109,6 @@ DEFAULT_TIMEOUT = 120.0
 # that ignores SIGKILL is not something this can do anything about, and blocking on one would
 # turn a bounded fault into a hang.
 REAPING_TIMEOUT = 10.0
-
-
-class PaymentUnaccountedError(RuntimeError):
-    """A worker reached the payment route and did not come back with a report.
-
-    Raised rather than recorded, and it stops the run. Money may have moved and nothing knows
-    whether it did, so the mission stays RUNNING and is never replayed: re-executing it is how a
-    benchmark buys the same thing twice. An operator reads the run, resolves the payment through
-    `agentrank_api.cli payments`, and closes the run with `benchmark abort`.
-    """
-
-    def __init__(self, mission_key: str, detail: str) -> None:
-        super().__init__(
-            f"mission {mission_key} dispatched a payment and its executor did not report:"
-            f" {detail}. The payment must be resolved before this run is closed"
-        )
-        self.mission_key = mission_key
-        self.detail = detail
 
 
 class IsolatedMissionExecutor:
@@ -169,20 +157,26 @@ class IsolatedMissionExecutor:
     def fault(self) -> ExecutionFault | None:
         """What went wrong, decided from the process and the server and never from the report.
 
-        The process comes first. A worker that died, timed out or spoke nonsense could not have
-        carried the mission out whatever the server saw, and that is the harness's failure to
-        run its own executor rather than a fact about the merchant.
+        A server response that establishes a database outage comes first. The worker can only
+        fail after receiving that response, so its exit is a consequence of benchmark
+        infrastructure rather than evidence about the buyer. Other 5xx responses are merchant
+        findings. Only when the server produced no failure does a worker exit, timeout or broken
+        report become an agent failure.
         """
-        if self._fault is not None:
-            return self._fault
         failure = self._served.first_failure()
-        if failure is None:
-            return None
-        return ExecutionFault(
-            origin=FaultOrigin.MERCHANT,
-            detail=f"the merchant answered {failure.status}",
-            operation=failure.path,
-        )
+        if failure is not None:
+            if failure.failure == DATABASE_UNAVAILABLE:
+                return ExecutionFault(
+                    origin=FaultOrigin.HARNESS,
+                    detail="the benchmark database was unavailable",
+                    operation=failure.path,
+                )
+            return ExecutionFault(
+                origin=FaultOrigin.MERCHANT,
+                detail=f"the merchant answered {failure.status}",
+                operation=failure.path,
+            )
+        return self._fault
 
     def payment_attempted(self) -> bool:
         return self._served.payment_attempted()
@@ -201,13 +195,10 @@ class IsolatedMissionExecutor:
     async def __call__(self, brief: AgentMissionBrief, *, merchant_id: uuid.UUID) -> ExecutorReport:
         """Carry one mission out in a process that has no database, and read what came back.
 
-        Anything that goes wrong with the process is recorded as a harness fault and an empty
-        report, so one crashed mission does not end a run: the mission is marked ERRORED, which
-        lowers the completion rate rather than removing the mission from its denominator.
-
-        The one exception is a worker that reached the payment route and did not report. That
-        raises, because money may have moved and a mission whose payment is unknown must not be
-        recorded, retried or tidied away.
+        Anything that goes wrong with the process becomes an empty report and a trusted fault.
+        The runner substantiates any payment or authorization response before deciding whether
+        the mission can be recorded. It leaves a mission RUNNING only when the trusted payment
+        state is genuinely unresolved, not merely because the worker died after a known denial.
         """
         request = MissionRequest(
             brief=brief,
@@ -218,12 +209,8 @@ class IsolatedMissionExecutor:
         )
         try:
             return await self._carry_out(request)
-        except PaymentUnaccountedError:
-            raise
         except _WorkerFailureError as failed:
-            self._fault = ExecutionFault(origin=FaultOrigin.HARNESS, detail=failed.detail)
-            if self.payment_attempted():
-                raise PaymentUnaccountedError(brief.key, failed.detail) from failed
+            self._fault = ExecutionFault(origin=failed.origin, detail=failed.detail)
             return ExecutorReport(merchant_id=merchant_id)
 
     async def _carry_out(self, request: MissionRequest) -> ExecutorReport:
@@ -243,23 +230,31 @@ class IsolatedMissionExecutor:
             )
         except TimeoutError as expired:
             await self._reap(process)
+            # The buyer's, and this is the one attribution a poorly performing model would most
+            # like to have the other way. A mission it never finished is a mission it failed.
             raise _WorkerFailureError(
-                f"the executor process did not finish in {self._timeout}s"
-            ) from (expired)
+                f"the executor process did not finish in {self._timeout}s",
+                FaultOrigin.AGENT,
+            ) from expired
 
         if process.returncode != 0:
             # The worker's own words, not its classification. It has no way to say whose fault
             # anything was and this does not read one out of the text: the exit code is what is
             # believed and the text is only for a person reading a failure.
             raise _WorkerFailureError(
-                f"the executor process exited {process.returncode}: {_said(stderr)}"
+                f"the executor process exited {process.returncode}: {_said(stderr)}",
+                _exited(process.returncode),
             )
         try:
             return report_from_payload(json.loads(stdout.decode("utf-8")))
         except (UnicodeDecodeError, json.JSONDecodeError) as unreadable:
-            raise _WorkerFailureError("the executor process did not report JSON") from unreadable
+            raise _WorkerFailureError(
+                "the executor process did not report JSON", FaultOrigin.AGENT
+            ) from unreadable
         except (ProtocolError, ValueError) as malformed:
-            raise _WorkerFailureError(f"the executor process reported {malformed}") from malformed
+            raise _WorkerFailureError(
+                f"the executor process reported {malformed}", FaultOrigin.AGENT
+            ) from malformed
 
     async def _spawn(self, sandbox: str) -> asyncio.subprocess.Process:
         """Start the worker with an environment built by allowlist and a directory of its own.
@@ -286,9 +281,11 @@ class IsolatedMissionExecutor:
                 cwd=sandbox,
             )
         except OSError as unstartable:
+            # Ours. Nothing about the buyer was involved in failing to start it.
             raise _WorkerFailureError(
-                f"the executor process could not be started: {unstartable}"
-            ) from (unstartable)
+                f"the executor process could not be started: {unstartable}",
+                FaultOrigin.HARNESS,
+            ) from unstartable
 
     @property
     def environment(self) -> dict[str, str]:
@@ -319,12 +316,34 @@ class IsolatedMissionExecutor:
             return
 
 
-class _WorkerFailureError(RuntimeError):
-    """Something went wrong with the process rather than inside the mission."""
+def _exited(code: int | None) -> FaultOrigin:
+    """Whose failure an exit code describes.
 
-    def __init__(self, detail: str) -> None:
+    Two codes are the worker refusing before it read a mission at all: an environment it should
+    not be able to see, and a request this side wrote that it could not read. Both are the
+    harness's own doing and neither is anything a buyer decided.
+
+    Everything else is the buyer. The exit code is trusted because the code that produces it is
+    this repository's and runs before any model output is involved, and because an unrecognised
+    code is attributed to the buyer rather than excused.
+    """
+    if code in {EXIT_NOT_ISOLATED, EXIT_PROTOCOL}:
+        return FaultOrigin.HARNESS
+    return FaultOrigin.AGENT
+
+
+class _WorkerFailureError(RuntimeError):
+    """Something went wrong with the process rather than inside the mission.
+
+    It carries the origin because the origin is decided where the failure was observed rather
+    than reconstructed afterwards from a message. A process that could not be started and a
+    process that hung are both failures of the same object and they belong to different sides.
+    """
+
+    def __init__(self, detail: str, origin: FaultOrigin) -> None:
         super().__init__(detail)
         self.detail = detail
+        self.origin = origin
 
 
 def _said(stderr: bytes) -> str:

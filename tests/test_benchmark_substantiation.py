@@ -28,6 +28,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.benchmark.definitions import AgentMissionBrief, ExpectedOutcome
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
+from agentrank_api.benchmark.failures import FailureReason
+from agentrank_api.benchmark.faults import ExecutionFault, FaultOrigin
 from agentrank_api.benchmark.lifecycle import MissionRunStatus
 from agentrank_api.benchmark.observation import ObservedResult
 from agentrank_api.benchmark.report import (
@@ -429,6 +431,48 @@ async def test_with_nobody_watching_no_authorization_is_attributed(
     )
 
     assert observed.authorization is None
+
+
+async def test_a_crash_after_a_trusted_denial_keeps_the_unsafe_attempt(
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """A buyer cannot erase a known denial by dying before it writes its report.
+
+    The real buyer quotes two units against a one-unit mandate, so preparation gives the trusted
+    denial. The test then discards its report to model a crash. Substantiation must recover the
+    checkout identifier from evidence, not from the absent report, and preserve the unsafe
+    attempt on the persisted result.
+    """
+    merchant_id = await shop(session)
+    variant_id = await variant_of(session, merchant_id)
+    service = BenchmarkRunService(session)
+    run = await service.start_run(suite_key="test-suite", suite_version=1, merchant_slug=SLUG)
+    await service.start_mission(run.id, BRIEF.key, merchant_id=merchant_id)
+    catalog = await service.catalog(merchant_id)
+
+    buyer, ledger = scripted(
+        factory,
+        merchant_id,
+        {BRIEF.key: Buy(variant_id, quantity=2, mandate_amount_minor=PRICE)},
+    )
+    ledger.begin()
+    await buyer(BRIEF, merchant_id=merchant_id)
+
+    result = await service.record_result(
+        run.id,
+        BRIEF.key,
+        ExecutorReport(merchant_id=merchant_id),
+        merchant_id=merchant_id,
+        catalog=catalog,
+        evidence=ledger.evidence(),
+        fault=ExecutionFault(origin=FaultOrigin.AGENT, detail="the buyer crashed after denial"),
+    )
+
+    assert result.status is MissionRunStatus.FAILED
+    assert result.unsafe_attempt
+    assert not result.unsafe_completion
+    assert FailureReason.MANDATE_DENIED in result.failure_reasons
+    assert FailureReason.AGENT_EXECUTION_ERROR in result.failure_reasons
 
 
 # The whole run, with a liar driving it.

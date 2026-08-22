@@ -105,7 +105,10 @@ class MissionRequest:
 
     @classmethod
     def from_payload(cls, payload: Any) -> Self:
-        document = _document(payload)
+        document = _document(
+            payload,
+            fields=frozenset({"protocol", "strategy", "merchant_id", "base_url", "token", "brief"}),
+        )
         return cls(
             brief=AgentMissionBrief.from_payload(_object(document, "brief")),
             merchant_id=_identifier(document, "merchant_id"),
@@ -133,7 +136,7 @@ def report_payload(report: ExecutorReport) -> dict[str, Any]:
 
 def report_from_payload(payload: Any) -> ExecutorReport:
     """Read a worker's report, refusing anything that is not one."""
-    document = _document(payload)
+    document = _document(payload, fields=frozenset({"protocol", "observed"}))
     return executor_report_from_payload(_object(document, "observed"))
 
 
@@ -186,7 +189,12 @@ def executor_report_from_payload(payload: Any) -> ExecutorReport:
     Every part validates itself on the way in, exactly as it does in process, so a worker cannot
     put a report across this boundary that it could not have constructed on its own side.
     """
-    document = _document(payload)
+    document = _document(
+        payload,
+        fields=frozenset(
+            {"merchant_id", "selection", "checkout", "payment", "abstention", "error"}
+        ),
+    )
     return ExecutorReport(
         merchant_id=_identifier(document, "merchant_id"),
         selection=_read(document, "selection", _selection_from),
@@ -198,6 +206,7 @@ def executor_report_from_payload(payload: Any) -> ExecutorReport:
 
 
 def _selection_from(document: dict[str, Any]) -> ReportedSelection:
+    document = _document(document, fields=frozenset({"variant_id", "quantity"}))
     return ReportedSelection(
         variant_id=_identifier(document, "variant_id"),
         quantity=_integer(document, "quantity"),
@@ -205,6 +214,7 @@ def _selection_from(document: dict[str, Any]) -> ReportedSelection:
 
 
 def _checkout_from(document: dict[str, Any]) -> ReportedCheckout:
+    document = _document(document, fields=frozenset({"checkout_id", "refusal"}))
     refusal = _optional_text(document, "refusal")
     return ReportedCheckout(
         checkout_id=_optional_id(document, "checkout_id"),
@@ -213,10 +223,12 @@ def _checkout_from(document: dict[str, Any]) -> ReportedCheckout:
 
 
 def _payment_from(document: dict[str, Any]) -> ReportedPayment:
+    document = _document(document, fields=frozenset({"attempt_id"}))
     return ReportedPayment(attempt_id=_identifier(document, "attempt_id"))
 
 
 def _abstention_from(document: dict[str, Any]) -> ReportedAbstention:
+    document = _document(document, fields=frozenset({"code", "detail"}))
     return ReportedAbstention(
         code=_member(AbstentionCode, _text(document, "code")),
         detail=_optional_text(document, "detail"),
@@ -224,12 +236,18 @@ def _abstention_from(document: dict[str, Any]) -> ReportedAbstention:
 
 
 def _error_from(document: dict[str, Any]) -> ReportedError:
+    document = _document(document, fields=frozenset({"detail"}))
     return ReportedError(detail=_text(document, "detail"))
 
 
-def _document(payload: Any) -> dict[str, Any]:
+def _document(payload: Any, *, fields: frozenset[str] | None = None) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ProtocolError("a protocol document is a JSON object")
+    if fields is not None:
+        unknown = sorted(set(payload) - fields)
+        if unknown:
+            joined = ", ".join(unknown)
+            raise ProtocolError(f"a protocol document has unknown fields: {joined}")
     version = payload.get("protocol")
     if version is not None and version != PROTOCOL_VERSION:
         raise ProtocolError(f"protocol version {version!r} is not {PROTOCOL_VERSION}")

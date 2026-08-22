@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import SQLAlchemyError
 
 from agentrank_api.config import Settings, get_settings
 from agentrank_api.database import create_engine, create_session_factory
@@ -150,6 +151,21 @@ def create_app(
         """
         body = ErrorResponse(error=error.reason, detail=error.detail)
         return JSONResponse(status_code=status.HTTP_502_BAD_GATEWAY, content=body.model_dump())
+
+    @app.exception_handler(SQLAlchemyError)
+    async def handle_database_unavailable(_: Request, error: SQLAlchemyError) -> JSONResponse:
+        """Refuse a request when this application's database cannot establish a fact.
+
+        This is infrastructure, not a merchant business answer and not a generic 500. The stable
+        response lets the trusted benchmark endpoint distinguish a database outage from a
+        merchant surface failure without exposing driver detail to a buyer.
+        """
+        logging.getLogger(__name__).warning("database request failed", exc_info=error)
+        body = ErrorResponse(error="database_unavailable", detail="the database is unavailable")
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content=body.model_dump(),
+        )
 
     app.include_router(system.router)
     app.include_router(commerce.router)

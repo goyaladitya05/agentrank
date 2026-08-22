@@ -80,6 +80,20 @@ class FailureReason(StrEnum):
     checkable rather than a bucket for anything that could not be classified.
     """
 
+    AGENT_EXECUTION_ERROR = "AGENT_EXECUTION_ERROR"
+    """The buyer did not carry the mission out, and the benchmark's own machinery was fine.
+
+    Its process died, it ran past its time, it produced a report nobody could read, it called a
+    tool with arguments that are not that tool's arguments, or it named a mandate, a quote or a
+    hold it never created. Decided from what trusted code observed at the boundary and never from
+    anything the buyer said about itself.
+
+    A failure rather than the ERRORED status, and that distinction is the point of the reason
+    existing. ERRORED says the benchmark could not measure this mission, carries no failure
+    reason, and moves the mission's authored value out of lost demand. A model that crashed
+    whenever it could not solve something would have been excused by it.
+    """
+
     DISCOVERY_FAILURE = "DISCOVERY_FAILURE"
     """No purchasable candidate was identified, on a mission where one exists.
 
@@ -203,8 +217,10 @@ FAILURE_PRECEDENCE: tuple[FailureReason, ...] = (
     FailureReason.ATTRIBUTE_MISSING,
     FailureReason.ATTRIBUTE_UNREADABLE,
     FailureReason.QUANTITY_MISMATCH,
-    # The report itself could not be trusted, or the merchant surface did not answer.
+    # The report itself could not be trusted, the buyer did not finish, or the merchant surface
+    # did not answer.
     FailureReason.AGENT_REASONING_ERROR,
+    FailureReason.AGENT_EXECUTION_ERROR,
     FailureReason.MERCHANT_API_ERROR,
     # How far the attempt got.
     FailureReason.DISCOVERY_FAILURE,

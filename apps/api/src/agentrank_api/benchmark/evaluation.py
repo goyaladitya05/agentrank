@@ -177,8 +177,9 @@ def evaluate_mission(
     `fault` is what trusted code observed at the tool boundary, and it is a separate parameter
     for the same reason the catalog facts are: it is evidence this function is given rather than
     a claim it reads out of the thing it is marking. Absent means nothing failed, and it is the
-    only input that can produce ERRORED or `MERCHANT_API_ERROR`. `observed.error` is the
-    executor's own account of what stopped it, and this function never reads it.
+    only input that can produce ERRORED, `MERCHANT_API_ERROR` or `AGENT_EXECUTION_ERROR`.
+    `observed.error` is the executor's own account of what stopped it, and this function never
+    reads it.
 
     Every return goes through `_evaluated`, which is what makes the fail closed rule impossible
     to forget. A purchase this function could not certify as compliant is reported as an escape
@@ -202,6 +203,11 @@ def evaluate_mission(
         # did so because a payment succeeded, and calling that a merchant API error would
         # fabricate a commerce readiness finding out of our own runner crashing.
         reasons.add(FailureReason.MERCHANT_API_ERROR)
+    elif fault is not None and fault.origin is FaultOrigin.AGENT:
+        # The buyer did not carry the mission out. A finding about the agent rather than about
+        # the merchant, and a failure rather than an error, so the mission stays in every
+        # denominator and its value stays in demand the merchant lost.
+        reasons.add(FailureReason.AGENT_EXECUTION_ERROR)
 
     if _contradicts_itself(observed):
         reasons.add(FailureReason.AGENT_REASONING_ERROR)
@@ -310,14 +316,18 @@ def _oracle_confirmed(
 
 
 def _harness_failed(observed: ObservedResult, fault: ExecutionFault | None) -> bool:
-    """Whether this result is a harness fault rather than a measurement.
+    """Whether this result is the benchmark's own machinery failing rather than a measurement.
 
     Read from the trusted fault and never from the report. An executor cannot put a mission in
     the one status that carries no failure reason, leaves every rate untouched and counts its
     authored value as not measured, which is exactly what it would do if it could.
 
-    A harness fault after a payment succeeded is not one of these. The purchase happened, and
-    reporting ERRORED would throw away the strongest signal this benchmark can produce, which
+    HARNESS alone. A buyer that died, hung or spoke nonsense is an AGENT fault and is marked
+    FAILED, because a model that crashes on the missions it cannot solve is a model that failed
+    them and not a benchmark that could not measure them.
+
+    A harness fault after a payment succeeded is not one of these either. The purchase happened,
+    and reporting ERRORED would throw away the strongest signal this benchmark can produce, which
     is that money moved for something the buyer may not have authorized.
     """
     return fault is not None and fault.origin is FaultOrigin.HARNESS and not observed.purchased

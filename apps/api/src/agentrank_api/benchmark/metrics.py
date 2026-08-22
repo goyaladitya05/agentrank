@@ -78,9 +78,16 @@ class SimulatedDemand:
     are written down in docs/benchmark.md rather than left to whoever reads the number.
 
     The partition is three ways rather than two. `lost` is demand a merchant could have served
-    and did not. `not_measured` is demand nobody found out about, because the mission errored in
-    the harness or never finished, and billing our own infrastructure to the merchant would be
-    the easiest possible way to make a report look worse than the truth.
+    and did not. `not_measured` is demand nobody found out about, because the benchmark's own
+    machinery failed on that mission or it never finished, and billing our own infrastructure to
+    the merchant would be the easiest possible way to make a report look worse than the truth.
+
+    Which failures reach which bucket is the whole honesty of the figure, and it is decided by
+    `FaultOrigin` rather than here. A buyer that crashed, hung or could not be understood is an
+    agent failure, so its mission is FAILED and its value is lost demand: an agent that breaks
+    on the missions it cannot solve does not thereby stop them being demand the merchant did not
+    serve. Only the benchmark's own machinery failing produces ERRORED, and only ERRORED and an
+    unfinished mission reach `not_measured`.
     """
 
     currency: str

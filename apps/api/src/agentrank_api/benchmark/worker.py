@@ -82,6 +82,18 @@ from agentrank_api.config import get_settings
 # checkout on it makes anything in the repository importable from a process whose whole point is
 # that it has been given a brief and nothing else. The package this worker runs from is installed
 # in the environment, so nothing needs it.
+# How this process says why it stopped, and the only thing it is trusted to say. The trusted side
+# reads the number and never the text: a worker that cannot be trusted to mark its own mission is
+# not trusted to explain itself either.
+#
+# The split that matters is between what this process refused before reading a mission and what
+# failed while carrying one out. The first two are the harness's own doing, because the runner
+# built the environment and wrote the request; the third is the buyer failing to shop. A code
+# nobody recognises is the buyer's, which is the fail closed direction.
+EXIT_NOT_ISOLATED = 2
+EXIT_PROTOCOL = 3
+EXIT_FAILED = 4
+
 PERMITTED_ENVIRONMENT = frozenset(
     {
         "PATH",
@@ -212,15 +224,15 @@ def main(
         observed = asyncio.run(execute(request))
     except EnvironmentNotIsolatedError as leaked:
         print(f"refused: {leaked}", file=errors)
-        return 2
+        return EXIT_NOT_ISOLATED
     except ProtocolError as malformed:
         print(f"refused: {malformed}", file=errors)
-        return 3
+        return EXIT_PROTOCOL
     except Exception as failed:  # the exit code is the report, not this
         # The type and nothing else. A traceback from a buyer process can carry a request body,
         # and a request body carries the credential this process was given.
         print(f"failed: {type(failed).__name__}", file=errors)
-        return 4
+        return EXIT_FAILED
 
     json.dump(report_payload(observed), sys.stdout if stdout is None else stdout)
     return 0

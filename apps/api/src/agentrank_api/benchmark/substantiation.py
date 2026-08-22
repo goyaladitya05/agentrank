@@ -107,9 +107,9 @@ class CommerceSubstantiation:
         is not this mission's.
         """
         payment = await self._payment(report, merchant_id=merchant_id, since=since)
-        checkout = await self._checkout(report, payment, merchant_id=merchant_id)
-        lines = [] if checkout is None else await self._lines(checkout.id)
         watched = CommerceEvidence() if evidence is None else evidence
+        checkout = await self._checkout(report, payment, watched, merchant_id=merchant_id)
+        lines = [] if checkout is None else await self._lines(checkout.id)
 
         return ObservedResult(
             merchant_id=report.merchant_id,
@@ -185,6 +185,7 @@ class CommerceSubstantiation:
         self,
         report: ExecutorReport,
         payment: PaymentAttempt | None,
+        evidence: CommerceEvidence,
         *,
         merchant_id: uuid.UUID,
     ) -> CheckoutSession | None:
@@ -196,9 +197,11 @@ class CommerceSubstantiation:
         """
         if payment is not None:
             return await self._owned(payment.checkout_id, merchant_id=merchant_id)
-        if report.checkout is None or report.checkout.checkout_id is None:
-            return None
-        return await self._owned(report.checkout.checkout_id, merchant_id=merchant_id)
+        if report.checkout is not None and report.checkout.checkout_id is not None:
+            return await self._owned(report.checkout.checkout_id, merchant_id=merchant_id)
+        if evidence.checkout_id is not None:
+            return await self._owned(evidence.checkout_id, merchant_id=merchant_id)
+        return None
 
     async def _owned(
         self, checkout_id: uuid.UUID, *, merchant_id: uuid.UUID

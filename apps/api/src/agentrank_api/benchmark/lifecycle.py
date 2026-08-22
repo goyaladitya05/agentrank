@@ -62,10 +62,16 @@ class MissionRunStatus(StrEnum):
         presence or absence of a failure reason rather than as a second status.
 
     ERRORED
-        The harness itself could not carry the mission out. Deliberately not FAILED: an
-        infrastructure fault is not a fact about the merchant, and counting one as a commerce
-        failure would make a flaky runner look like a bad catalog. A merchant surface returning
-        an error is the other case and is a FAILED with MERCHANT_API_ERROR.
+        The benchmark's own machinery could not carry the mission out. Deliberately not FAILED:
+        an infrastructure fault is not a fact about the merchant, and counting one as a commerce
+        failure would make a flaky runner look like a bad catalog.
+
+        Narrow, and narrower since Phase 2B-R2, because this is the status a badly performing
+        buyer would most like to reach: it carries no failure reason, leaves every rate untouched
+        and moves the mission's authored value out of demand the merchant lost. A buyer that died,
+        hung or spoke nonsense is FAILED with `AGENT_EXECUTION_ERROR`, and a merchant surface that
+        returned an error is FAILED with `MERCHANT_API_ERROR`. What is left here is the runner,
+        the transport, our credential and our own request.
     """
 
     PENDING = "PENDING"

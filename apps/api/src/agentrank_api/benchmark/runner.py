@@ -64,7 +64,7 @@ from agentrank_api.benchmark.evaluation import (
 )
 from agentrank_api.benchmark.evidence import CommerceEvidence
 from agentrank_api.benchmark.execution import ExecutorIdentity, MissionExecutor
-from agentrank_api.benchmark.faults import ExecutionFault
+from agentrank_api.benchmark.faults import ExecutionFault, FaultOrigin
 from agentrank_api.benchmark.fixtures import BenchmarkFixture
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
 from agentrank_api.benchmark.metrics import BenchmarkMetrics, MissionOutcome, compute_metrics
@@ -235,10 +235,12 @@ class BenchmarkRunService:
         distinguishes "this never started" from "this started and what it did is unknown". The
         second must never be replayed, and without the transition there would be no way to tell.
 
-        Anything the executor raises propagates, having left the mission RUNNING. That is
-        deliberate: a runner that swallowed an exception and carried on would produce a
-        COMPLETED run with a mission nobody executed, and the honest close for a run that
-        stopped is `abort_run`.
+        An untrusted executor that raises without dispatching payment is normalized to a trusted
+        AGENT fault and recorded. A witness is required for that normalization: without a
+        boundary record the trusted in-process reference path still propagates, because it has no
+        evidence that no payment was attempted. If a witness saw a payment request, trusted
+        substantiation decides whether it reached a terminal state; an unresolved one stays
+        RUNNING and stops the run rather than risking a duplicate charge.
 
         The world is claimed for the whole run. The first preparation happens before the run
         exists and is refused if another run already owns this merchant, so a stale RUNNING run
@@ -285,8 +287,21 @@ class BenchmarkRunService:
             # The read above opened a transaction that would otherwise stay open for as long as
             # the executor takes, which for a model is a long time to hold one for nothing.
             await self._session.commit()
-            report = await executor(brief, merchant_id=merchant_id)
-            fault = None if witness is None else witness.fault()
+            fault: ExecutionFault | None = None
+            try:
+                report = await executor(brief, merchant_id=merchant_id)
+            except Exception as failed:
+                if witness is None:
+                    raise
+                fault = witness.fault()
+                if fault is None:
+                    fault = ExecutionFault(
+                        origin=FaultOrigin.AGENT,
+                        detail=f"the executor raised {type(failed).__name__}",
+                    )
+                report = ExecutorReport(merchant_id=merchant_id)
+            if fault is None and witness is not None:
+                fault = witness.fault()
             observed = await self._substantiate(
                 report,
                 brief=brief,
@@ -808,6 +823,11 @@ def _require_payment_accounted(
     if witness is None or fault is None:
         return
     if not witness.payment_attempted():
+        return
+    if observed.authorization is not None and not observed.authorization.allowed:
+        # The trusted payment response established that the authorization layer refused before a
+        # provider request could exist. A worker dying after that answer is an unsafe attempt or
+        # an agent failure, not an unknown payment.
         return
     if observed.payment is not None and observed.payment.status in TERMINAL_STATUSES:
         return
