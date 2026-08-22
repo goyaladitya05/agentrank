@@ -129,6 +129,11 @@ def satisfies(brief: AgentMissionBrief, entry: CatalogEntry) -> bool:
     Fail closed in the same three ways the evaluator is. An inactive or out of stock variant
     cannot satisfy anything. A category the merchant never published cannot be an allowed one.
     An attribute that is absent, or present in a form that cannot be compared, is not a pass.
+
+    The buyer's own quantity ceiling is not checked here. It is a property of the brief alone, so
+    checking it per entry would make this answer false for every variant on the strength of
+    something no variant has anything to do with. `AgentMissionBrief` refuses that mission
+    outright instead.
     """
     if not entry.is_purchasable:
         return False
@@ -136,9 +141,6 @@ def satisfies(brief: AgentMissionBrief, entry: CatalogEntry) -> bool:
         return False
     if entry.price_amount_minor * brief.quantity > brief.budget.amount_minor:
         return False
-    if brief.max_quantity is not None and brief.quantity > brief.max_quantity:
-        return False
-
     allowed = tuple(
         constraint.category
         for constraint in brief.hard_constraints
@@ -162,13 +164,18 @@ def satisfies(brief: AgentMissionBrief, entry: CatalogEntry) -> bool:
 
 
 def _sellable(selection: ObservedSelection, entries: Sequence[CatalogEntry]) -> bool:
-    """Whether the merchant currently offers the thing that was selected.
+    """Whether the merchant offers the thing that was selected at all.
 
-    False for a variant the merchant does not have, one it no longer sells, and one it has run
-    out of. Absence is the interesting case: an executor that named a variant this merchant has
-    never had is the shape a hallucinated identifier takes.
+    False for a variant the merchant does not have and for one it no longer sells. Deliberately
+    true for one it has simply run out of: the merchant does sell that, it cannot ship it today,
+    and those are different findings with different repairs and separate reasons. Reporting an
+    empty shelf as a catalog that lists things nobody sells would be the wrong repair to hand a
+    merchant, and the taxonomy says so in `INVALID_VARIANT`'s own words.
+
+    Absence is the interesting case: an executor that named a variant this merchant has never
+    had is the shape a hallucinated identifier takes.
     """
     for entry in entries:
         if entry.variant_id == selection.variant_id:
-            return entry.is_purchasable
+            return entry.is_active
     return False

@@ -139,6 +139,16 @@ class AgentMissionBrief:
         if sum(isinstance(constraint, MaxQuantity) for constraint in self.hard_constraints) > 1:
             raise ValueError("a mission states at most one quantity ceiling")
 
+        ceiling = self.max_quantity
+        if ceiling is not None and self.quantity > ceiling:
+            # A buyer asking for three units while authorizing two is asking for something they
+            # have forbidden. It is unsatisfiable by construction rather than by anything the
+            # merchant did, and a mission nobody can complete for a reason that has nothing to
+            # do with the merchant is not a measurement.
+            raise ValueError(
+                f"a mission cannot want {self.quantity} units while authorizing {ceiling}"
+            )
+
         for constraint in self.hard_constraints:
             if isinstance(constraint, RequiredAttribute):
                 _require_exact_values(constraint.value)

@@ -118,7 +118,7 @@ def test_a_suite_names_a_mission_or_raises() -> None:
     defined = suite(mission("one"), mission("two"))
 
     assert defined.mission("two").key == "two"
-    with pytest.raises(KeyError):
+    with pytest.raises(KeyError, match="has no mission"):
         defined.mission("three")
 
 
@@ -138,14 +138,23 @@ def test_a_serialized_brief_contains_no_oracle_value() -> None:
 
     An oracle value smuggled into an objective string, a preference or a nested constraint
     payload would pass a field name check. This searches the bytes an agent would actually
-    receive for the two facts it must not learn.
-    """
-    defined = mission(outcome=ExpectedOutcome.NO_ACCEPTABLE_PURCHASE)
-    serialized = json.dumps(defined.brief.to_payload())
+    receive for the facts it must not learn.
 
-    assert "NO_ACCEPTABLE_PURCHASE" not in serialized
-    assert "expected_outcome" not in serialized
-    assert "simulated_value" not in serialized
+    Both kinds of mission, and both kinds of fact. A control mission is worth nothing, so
+    searching one for its value proves nothing at all; the purchasable one below is what makes
+    the value half of this test real.
+    """
+    control = json.dumps(mission(outcome=ExpectedOutcome.NO_ACCEPTABLE_PURCHASE).brief.to_payload())
+    purchasable = json.dumps(mission(value_minor=123457).brief.to_payload())
+
+    for serialized in (control, purchasable):
+        assert "expected_outcome" not in serialized
+        assert "simulated_value" not in serialized
+        assert "NO_ACCEPTABLE_PURCHASE" not in serialized
+        assert "PURCHASE_AVAILABLE" not in serialized
+    # The value itself, as an agent would see it in the bytes. Chosen not to collide with the
+    # budget or the quantity, so finding it can only mean the oracle leaked.
+    assert "123457" not in purchasable
 
 
 def test_the_briefs_projection_yields_briefs_and_not_missions() -> None:

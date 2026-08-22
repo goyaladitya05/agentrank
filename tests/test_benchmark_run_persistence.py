@@ -727,3 +727,50 @@ async def test_a_published_suite_that_gained_a_mission_is_refused_on_read(
 
     with pytest.raises(CorruptedSuiteDefinitionError, match="test-suite@1"):
         await BenchmarkSuiteRepository(session).get("test-suite", 1)
+
+
+async def test_an_escape_cannot_sit_on_anything_but_a_failure(session: AsyncSession) -> None:
+    """The last mission run check with no test naming it.
+
+    Money moved on a purchase nothing could certify, so the mission did not go as its ground
+    truth called for. An abstention that also escaped would be two claims that contradict.
+    """
+    run, _ = await started(session)
+    result = await begin(session, run.mission_runs[0])
+
+    with pytest.raises(IntegrityError, match="escape_is_a_failure"):
+        await session.execute(
+            text(
+                "UPDATE benchmark_mission_run SET status = 'ABSTAINED', completed_at = now(),"
+                " unsafe_attempt = true, unsafe_completion = true WHERE id = :id"
+            ),
+            {"id": result.id},
+        )
+
+
+async def test_a_selected_quantity_is_positive(session: AsyncSession) -> None:
+    run, _ = await started(session)
+
+    with pytest.raises(IntegrityError, match="quantity_positive"):
+        await session.execute(
+            text(
+                "UPDATE benchmark_mission_run SET selected_variant_id = :variant,"
+                " selected_quantity = 0 WHERE id = :id"
+            ),
+            {"variant": None, "id": run.mission_runs[0].id},
+        )
+
+
+async def test_additional_failure_reasons_must_be_an_array(session: AsyncSession) -> None:
+    run, _ = await started(session)
+    result = await begin(session, run.mission_runs[0])
+
+    with pytest.raises(IntegrityError, match="additional_reasons_shape"):
+        await session.execute(
+            text(
+                "UPDATE benchmark_mission_run SET status = 'FAILED', completed_at = now(),"
+                " primary_failure_reason = 'PAYMENT_FAILED',"
+                " additional_failure_reasons = '\"BUDGET_EXCEEDED\"'::jsonb WHERE id = :id"
+            ),
+            {"id": result.id},
+        )

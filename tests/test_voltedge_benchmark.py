@@ -150,8 +150,14 @@ def test_the_controls_are_not_all_built_the_same_way() -> None:
         # The product was withdrawn from sale with stock still on the shelf.
         "micro-usb-dock",
     }
-    # And they do not all lean on one kind of constraint either.
-    assert len({len(defined.brief.hard_constraints) for defined in controls.values()}) > 1
+    # And they do not all lean on one kind of constraint either. Kinds, not counts: three
+    # controls built from three allowed categories would have passed a count check.
+    kinds = {
+        type(constraint).__name__
+        for defined in controls.values()
+        for constraint in defined.brief.hard_constraints
+    }
+    assert len(kinds) > 1
 
 
 # The fixture through the real machinery.
