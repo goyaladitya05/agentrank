@@ -8,6 +8,7 @@ what is no longer there.
 """
 
 import uuid
+from itertools import pairwise
 
 import pytest
 from commerce_support import PRICE
@@ -114,6 +115,29 @@ def test_the_suite_covers_every_dimension_this_benchmark_can_decide() -> None:
     assert {defined.key for defined in MISSIONS if defined.brief.max_quantity is not None} == {
         "a-pair-of-cables"
     }
+
+
+def test_no_stretch_of_the_suite_shares_one_expected_outcome() -> None:
+    """The order missions are presented in is part of the workload, not a presentation choice.
+
+    Version 1 listed the eight purchasable missions and then the six controls, which made the
+    ground truth a step function of the call index: an executor holding a single integer counter
+    scored fourteen out of fourteen on its first ever run without reading the catalog. That is a
+    much stronger giveaway than the repeat exposure inference docs/shortcomings.md describes, and
+    it is why version 2 exists.
+
+    Two is the bound rather than one, because alternating perfectly is its own pattern.
+    """
+    outcomes = [defined.oracle.expected_outcome for defined in MISSIONS]
+
+    longest, current = 1, 1
+    for previous, outcome in pairwise(outcomes):
+        current = current + 1 if outcome is previous else 1
+        longest = max(longest, current)
+
+    assert longest <= 2, [defined.key for defined in MISSIONS]
+    # And it is not a perfect alternation either, which would be as learnable as a block.
+    assert longest == 2
 
 
 def test_no_mission_key_names_its_own_answer() -> None:

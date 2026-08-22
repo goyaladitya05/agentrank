@@ -70,7 +70,7 @@ MERCHANT_NAME = "VoltEdge"
 # separate dimensions. Editing a mission changes what is being asked; editing the catalog
 # changes what can be answered, and a run has to record both to be interpretable later.
 SUITE_KEY = "voltedge-core"
-SUITE_VERSION = 1
+SUITE_VERSION = 2
 SUITE_NAME = "VoltEdge core commerce"
 
 FIXTURE_KEY = "voltedge-catalog"
@@ -291,6 +291,12 @@ AVAILABLE = ExpectedOutcome.PURCHASE_AVAILABLE
 NOTHING = ExpectedOutcome.NO_ACCEPTABLE_PURCHASE
 
 MISSIONS: tuple[BenchmarkMissionDefinition, ...] = (
+    # Interleaved, and the order is a property of the workload rather than a presentation
+    # choice. Version 1 listed the eight purchasable missions and then the six controls, so
+    # the ground truth was a step function of the call index: an executor holding one integer
+    # counter scored fourteen out of fourteen on its first ever run without reading the
+    # catalog. Found by an independent review. No more than two consecutive missions share an
+    # expected outcome now, which a test enforces, and reordering is why this is version 2.
     _mission(
         "black-100w-charger",
         "Buy one black wall charger that can deliver at least 100 watts.",
@@ -303,6 +309,16 @@ MISSIONS: tuple[BenchmarkMissionDefinition, ...] = (
             RequiredAttribute("wattage", 100, ConstraintOperator.GTE),
         ),
         preferences=(Preference("prefer more ports"),),
+    ),
+    _mission(
+        "hub-from-accessories",
+        "Buy one hub with at least seven ports from the accessories range.",
+        budget_minor=800000,
+        outcome=NOTHING,
+        constraints=(
+            AllowedCategory("accessories"),
+            RequiredAttribute("ports", 7, ConstraintOperator.GTE),
+        ),
     ),
     _mission(
         "white-travel-charger",
@@ -330,6 +346,16 @@ MISSIONS: tuple[BenchmarkMissionDefinition, ...] = (
         ),
     ),
     _mission(
+        "three-metre-cable",
+        "Buy one USB-C cable that is exactly three metres long.",
+        budget_minor=150000,
+        outcome=NOTHING,
+        constraints=(
+            AllowedCategory("cables"),
+            RequiredAttribute("length_m", 3),
+        ),
+    ),
+    _mission(
         "two-metre-cable",
         "Buy one USB-C cable that is exactly two metres long.",
         budget_minor=150000,
@@ -339,6 +365,13 @@ MISSIONS: tuple[BenchmarkMissionDefinition, ...] = (
             AllowedCategory("cables"),
             RequiredAttribute("length_m", 2),
         ),
+    ),
+    _mission(
+        "charger-under-a-thousand",
+        "Buy any wall charger, spending no more than 1000 rupees.",
+        budget_minor=100000,
+        outcome=NOTHING,
+        constraints=(AllowedCategory("chargers"),),
     ),
     _mission(
         "two-travel-chargers",
@@ -367,39 +400,6 @@ MISSIONS: tuple[BenchmarkMissionDefinition, ...] = (
         ),
     ),
     _mission(
-        "black-power-bank",
-        "Buy one black power bank of at least 20000 mAh.",
-        budget_minor=450000,
-        outcome=AVAILABLE,
-        value_minor=399900,
-        constraints=(
-            AllowedCategory("power-banks"),
-            RequiredAttribute("color", "black"),
-            RequiredAttribute("capacity_mah", 20000, ConstraintOperator.GTE),
-        ),
-    ),
-    _mission(
-        "seven-port-hub",
-        "Buy one USB-C hub with at least seven ports.",
-        budget_minor=800000,
-        outcome=AVAILABLE,
-        value_minor=749900,
-        # No category constraint, because this merchant never published one for the hub. The
-        # mission is completable and the same product is out of reach the moment a buyer asks
-        # for it by category, which is the mission below.
-        constraints=(RequiredAttribute("ports", 7, ConstraintOperator.GTE),),
-    ),
-    _mission(
-        "hub-from-accessories",
-        "Buy one hub with at least seven ports from the accessories range.",
-        budget_minor=800000,
-        outcome=NOTHING,
-        constraints=(
-            AllowedCategory("accessories"),
-            RequiredAttribute("ports", 7, ConstraintOperator.GTE),
-        ),
-    ),
-    _mission(
         "navy-power-bank",
         "Buy one navy power bank of at least 20000 mAh.",
         budget_minor=450000,
@@ -411,21 +411,16 @@ MISSIONS: tuple[BenchmarkMissionDefinition, ...] = (
         ),
     ),
     _mission(
-        "three-metre-cable",
-        "Buy one USB-C cable that is exactly three metres long.",
-        budget_minor=150000,
-        outcome=NOTHING,
+        "black-power-bank",
+        "Buy one black power bank of at least 20000 mAh.",
+        budget_minor=450000,
+        outcome=AVAILABLE,
+        value_minor=399900,
         constraints=(
-            AllowedCategory("cables"),
-            RequiredAttribute("length_m", 3),
+            AllowedCategory("power-banks"),
+            RequiredAttribute("color", "black"),
+            RequiredAttribute("capacity_mah", 20000, ConstraintOperator.GTE),
         ),
-    ),
-    _mission(
-        "charger-under-a-thousand",
-        "Buy any wall charger, spending no more than 1000 rupees.",
-        budget_minor=100000,
-        outcome=NOTHING,
-        constraints=(AllowedCategory("chargers"),),
     ),
     _mission(
         "desktop-charger-on-a-budget",
@@ -441,6 +436,17 @@ MISSIONS: tuple[BenchmarkMissionDefinition, ...] = (
         ),
     ),
     _mission(
+        "seven-port-hub",
+        "Buy one USB-C hub with at least seven ports.",
+        budget_minor=800000,
+        outcome=AVAILABLE,
+        value_minor=749900,
+        # No category constraint, because this merchant never published one for the hub. The
+        # mission is completable and the same product is out of reach the moment a buyer asks
+        # for it by category, which is the mission below.
+        constraints=(RequiredAttribute("ports", 7, ConstraintOperator.GTE),),
+    ),
+    _mission(
         "micro-usb-dock",
         "Buy one black micro USB dock.",
         budget_minor=400000,
@@ -451,7 +457,6 @@ MISSIONS: tuple[BenchmarkMissionDefinition, ...] = (
         ),
     ),
 )
-
 SUITE = BenchmarkSuiteDefinition(
     key=SUITE_KEY,
     version=SUITE_VERSION,
