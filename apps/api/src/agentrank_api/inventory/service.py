@@ -88,6 +88,13 @@ class ReleaseReason(StrEnum):
     the provider may yet reveal that money moved. It is deliberately its own reason so that no
     reader mistakes it for a provider confirmed outcome. See
     `agentrank_api.payments.recovery`.
+
+    `BENCHMARK_WORLD_PREPARED` is ordinary housekeeping and is its own reason for exactly that
+    reason. A benchmark world is put back to what its fixture describes before every mission, and
+    anything a stopped mission was still holding goes back with it. That happens routinely, and
+    filing it under `RESERVATION_RECOVERED` would fill the trail with the one signal that is
+    supposed to mean the execution locking failed. Nothing is in doubt when this is used: only a
+    hold no payment was ever admitted against is released this way.
     """
 
     CHECKOUT_CANCELLED = "checkout_cancelled"
@@ -95,6 +102,7 @@ class ReleaseReason(StrEnum):
     PAYMENT_DECLINED = "payment_declined"
     PAYMENT_NOT_EXECUTED = "payment_not_executed"
     PAYMENT_ABANDONED = "payment_abandoned"
+    BENCHMARK_WORLD_PREPARED = "benchmark_world_prepared"
 
 
 class InventoryViolationCode(StrEnum):

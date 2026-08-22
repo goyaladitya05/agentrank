@@ -391,12 +391,13 @@ async def test_one_fixture_version_names_one_world(session: AsyncSession) -> Non
         await session.execute(
             text(
                 "INSERT INTO benchmark_environment"
-                " (id, merchant_id, fixture_key, fixture_version, fixture_hash)"
-                " VALUES (:id, :merchant_id, 'test-world-catalog', 1, :hash)"
+                " (id, merchant_id, merchant_slug, fixture_key, fixture_version, fixture_hash)"
+                " VALUES (:id, :merchant_id, :slug, 'test-world-catalog', 1, :hash)"
             ),
             {
                 "id": uuid.uuid7(),
                 "merchant_id": other.id,
+                "slug": other.slug,
                 "hash": fixture().content_hash,
             },
         )
@@ -474,3 +475,97 @@ async def test_a_run_without_a_registered_world_says_so(session: AsyncSession) -
     )
 
     assert run.environment_id is None
+
+
+# What a rename cannot do, and what a dropped product cannot survive.
+
+
+async def test_a_registered_benchmark_merchant_cannot_be_renamed(
+    session: AsyncSession,
+) -> None:
+    """Preparation overwrites a catalog, so which catalog must not be resolvable by a name.
+
+    Renaming the merchant and taking its old slug was enough to have a benchmark rewrite the
+    catalog of a shop nobody registered. The composite foreign key onto the merchant's own
+    identifier and slug is what makes that impossible rather than merely checked.
+    """
+    environment = await BenchmarkEnvironmentService(session).register(fixture())
+
+    with pytest.raises(IntegrityError, match="fk_benchmark_environment_merchant_binding"):
+        await session.execute(
+            text("UPDATE merchant SET slug = 'renamed-shop' WHERE id = :id"),
+            {"id": environment.merchant_id},
+        )
+    await session.rollback()
+
+
+async def test_a_registration_names_the_merchant_it_is_for(session: AsyncSession) -> None:
+    environment = await BenchmarkEnvironmentService(session).register(fixture())
+
+    assert environment.merchant_slug == SLUG
+
+
+async def test_preparing_withdraws_what_the_fixture_stopped_describing(
+    session: AsyncSession,
+) -> None:
+    """A fixture version that drops a product must actually drop it from the world.
+
+    Seeding alone only writes what the fixture names, so the removed product would stay active
+    and stocked, would enter the catalog pin, and could satisfy a mission whose author had taken
+    the answer away.
+    """
+    service = BenchmarkEnvironmentService(session)
+    two = fixture(variant("TW-1"), variant("TW-2"))
+    await service.register(two)
+    prepared = await service.prepare(two)
+    merchant_id = prepared.environment.merchant_id
+    assert await stock_of(session, merchant_id, "TW-2") == 5
+
+    one = fixture(variant("TW-1"), version=2)
+    await service.register(one)
+    outcome = await service.prepare(one)
+
+    assert outcome.withdrawn == 1
+    assert await stock_of(session, merchant_id, "TW-2") == 0
+    dropped = await CatalogRepository(session).get_variant_by_sku(merchant_id, "TW-2")
+    assert dropped is not None and not dropped.is_active
+    # The row survives, because a historical mission result holds a reference to it.
+    assert await stock_of(session, merchant_id, "TW-1") == 5
+
+
+async def test_withdrawing_nothing_is_the_ordinary_case(session: AsyncSession) -> None:
+    service = BenchmarkEnvironmentService(session)
+    await service.register(fixture())
+
+    first = await service.prepare(fixture())
+    second = await service.prepare(fixture())
+
+    assert first.withdrawn == 0
+    assert second.withdrawn == 0
+
+
+async def test_preparing_releases_a_hold_as_housekeeping_and_not_as_a_recovery(
+    session: AsyncSession,
+) -> None:
+    """`reservation_recovered` is supposed to mean the execution locking failed.
+
+    A benchmark releasing what a stopped mission was holding happens routinely, and filing it
+    under that code would fill the trail with the one signal worth reading.
+    """
+    service = BenchmarkEnvironmentService(session)
+    await service.register(fixture())
+    prepared = await service.prepare(fixture())
+    merchant_id = prepared.environment.merchant_id
+    await _held_quote(session, merchant_id)
+
+    await service.prepare(fixture())
+
+    released = (
+        await session.execute(
+            text(
+                "SELECT payload ->> 'reason' FROM audit_event"
+                " WHERE event_type = 'inventory.released'"
+            )
+        )
+    ).scalars()
+    assert list(released) == ["benchmark_world_prepared"]

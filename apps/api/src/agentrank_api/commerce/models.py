@@ -46,6 +46,13 @@ class Merchant(TimestampMixin, Base):
     __tablename__ = "merchant"
     __table_args__ = (
         CheckConstraint(f"slug ~ '{SLUG_PATTERN}'", name="slug_format"),
+        # Redundant against the primary key and the slug's own uniqueness, and present only as
+        # a composite foreign key target. `benchmark_environment` reaches this table through
+        # (merchant_id, merchant_slug), which is what makes a registered benchmark world's
+        # merchant provable from the row rather than resolved by name at the moment somebody
+        # overwrites a catalog. It also means a merchant that is a benchmark world cannot be
+        # renamed while it is one, which is the point rather than a side effect.
+        UniqueConstraint("id", "slug", name="uq_merchant_binding"),
         CheckConstraint("length(btrim(name)) > 0", name="name_not_blank"),
     )
 

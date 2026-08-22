@@ -188,6 +188,47 @@ class Quoted:
     refusal: CheckoutRefusal | None = None
 
 
+@dataclass(slots=True)
+class Attempt:
+    """What this execution has established so far, and whose fault an error at this point is.
+
+    Mutable, and the only mutable thing in this module. It exists because an error has to be
+    reported *beside* what already happened rather than instead of it. The first version threw
+    the partial report away, which meant a mission that had quoted, held stock and paid was
+    recorded as one that selected nothing: the run lost its link to the commerce it caused, and
+    the evaluator's rule about a harness fault after a successful payment became unreachable,
+    because there was never a payment on an error result to reach it with.
+
+    `origin` moves once. While the executor is reading the catalog, a refusal is the merchant
+    surface answering with an error rather than with an outcome, and it is a commerce readiness
+    finding. From the moment this execution starts creating its own mandate, quote and hold, a
+    refusal is about state it created moments ago, which means the harness reached somewhere it
+    should not have. Calling that a fact about the merchant would manufacture evidence.
+    """
+
+    merchant_id: uuid.UUID
+    origin: ErrorOrigin = ErrorOrigin.MERCHANT
+    selection: ObservedSelection | None = None
+    checkout: ObservedCheckout | None = None
+    authorization: ObservedAuthorization | None = None
+    payment: ObservedPayment | None = None
+
+    def reported(self, *, error: ObservedError | None = None) -> ObservedResult:
+        """Everything established so far, with an error beside it when there was one."""
+        return ObservedResult(
+            merchant_id=self.merchant_id,
+            selection=self.selection,
+            checkout=self.checkout,
+            authorization=self.authorization,
+            payment=self.payment,
+            error=error,
+        )
+
+    def failed(self, refused: AgentRankError) -> ObservedResult:
+        """Everything established so far, plus the refusal that stopped it."""
+        return self.reported(error=ObservedError(origin=self.origin, detail=_detail(refused)))
+
+
 def assess(brief: AgentMissionBrief, candidate: Candidate) -> Rejection | None:
     """Why this candidate cannot satisfy this mission, or None when it can.
 
@@ -289,9 +330,15 @@ class ReferenceMissionExecutor:
         misconfiguration, and letting it through would fill a run with `WRONG_MERCHANT` findings
         that say nothing about any merchant.
 
-        A refusal that reaches here is one no step below expected, so it is reported as a
-        merchant surface answering with an error rather than with a business outcome. Anything
-        else propagates: an unexpected exception inside a benchmark harness should be loud.
+        A refusal that reaches here is one no step below expected, and it is reported beside
+        everything the mission had already established rather than instead of it. A mission that
+        quoted, held stock and paid before something refused is not a mission that selected
+        nothing, and recording it as one would lose the run's link to the commerce it caused and
+        would hide the strongest signal this benchmark can produce.
+
+        Whose fault the refusal was comes from how far the mission had got, not from the
+        exception. Anything else propagates: an unexpected exception inside a benchmark harness
+        should be loud.
         """
         if merchant_id != self._surface.merchant_id:
             raise ValueError(
@@ -299,25 +346,22 @@ class ReferenceMissionExecutor:
                 f" execute mission {brief.key!r} at {merchant_id}"
             )
 
+        attempt = Attempt(merchant_id=merchant_id)
         try:
-            return await self._execute(brief)
+            return await self._execute(brief, attempt)
         except AgentRankError as refused:
-            return ObservedResult(
-                merchant_id=merchant_id,
-                error=ObservedError(origin=ErrorOrigin.MERCHANT, detail=_detail(refused)),
-            )
+            return attempt.failed(refused)
 
-    async def _execute(self, brief: AgentMissionBrief) -> ObservedResult:
-        merchant_id = self._surface.merchant_id
+    async def _execute(self, brief: AgentMissionBrief, attempt: Attempt) -> ObservedResult:
         candidates, rejections = await self._candidates(brief)
         if not candidates:
             return ObservedResult(
-                merchant_id=merchant_id,
+                merchant_id=attempt.merchant_id,
                 abstention=ObservedAbstention(code=_abstention(rejections)),
             )
 
         chosen = select(candidates, quantity=brief.quantity)
-        selection = ObservedSelection(
+        attempt.selection = ObservedSelection(
             variant_id=chosen.variant_id,
             quantity=brief.quantity,
             unit_price_amount_minor=chosen.unit_price_amount_minor,
@@ -326,14 +370,16 @@ class ReferenceMissionExecutor:
             variant_attributes=chosen.attributes,
         )
 
+        # From here on this execution is acting on state it created moments ago, so a refusal is
+        # the harness reaching somewhere it should not have rather than a fact about the
+        # merchant. The one refusal that is a finding is the authorization gates saying no, and
+        # that arrives as an answer rather than as an exception.
+        attempt.origin = ErrorOrigin.HARNESS
         mandate_id = await self._authorize(brief)
         quoted = await self._quote(brief, chosen, mandate_id=mandate_id)
         if quoted.checkout is None:
-            return ObservedResult(
-                merchant_id=merchant_id,
-                selection=selection,
-                checkout=ObservedCheckout(created=False, refusal=quoted.refusal),
-            )
+            attempt.checkout = ObservedCheckout(created=False, refusal=quoted.refusal)
+            return attempt.reported()
         checkout_id = quoted.checkout.id
 
         preparation = await self._surface.prepare_checkout(checkout_id)
@@ -341,43 +387,44 @@ class ReferenceMissionExecutor:
             # The buyer's own authorization refused, and the merchant offered nothing but the
             # quote. Reported as a created quote with a denial beside it, which is what makes
             # this a mandate denial rather than a merchant that could not supply the item.
-            return ObservedResult(
-                merchant_id=merchant_id,
-                selection=selection,
-                checkout=_quoted(quoted.checkout),
-                authorization=_authorization(preparation.authorization),
-            )
+            attempt.checkout = _quoted(quoted.checkout)
+            attempt.authorization = _authorization(preparation.authorization)
+            return attempt.reported()
         if not preparation.ready:
             # Authorized, and the merchant could not hold the stock. An offer nothing can be
             # bought against is not an offer, so it is reported as a merchant refusal rather
-            # than as a quote the buyer simply failed to act on.
-            return ObservedResult(
-                merchant_id=merchant_id,
-                selection=selection,
-                checkout=ObservedCheckout(
-                    created=False,
-                    checkout_id=checkout_id,
-                    refusal=CheckoutRefusal.OUT_OF_STOCK,
-                ),
+            # than as a quote the buyer simply failed to act on. The quote's own identifier and
+            # total travel with it, because the row exists and the run's record of what this
+            # mission produced should point at it.
+            attempt.checkout = ObservedCheckout(
+                created=False,
+                checkout_id=checkout_id,
+                total_amount_minor=quoted.checkout.total_amount_minor,
+                currency=quoted.checkout.currency,
+                refusal=CheckoutRefusal.OUT_OF_STOCK,
             )
+            return attempt.reported()
 
+        attempt.checkout = _quoted(quoted.checkout)
         payment = await self._surface.complete_checkout(
             checkout_id, CreatePaymentRequest(idempotency_key=idempotency_key(checkout_id))
         )
-        attempt = payment.attempt
-        if attempt is None:
-            return self._refused_payment(payment.refusal, selection, quoted.checkout)
+        # The authorization the payment was admitted under, not the one the earlier preparation
+        # decided. They are two transactions at two instants, and the one that governed the
+        # money is the one worth reporting.
+        attempt.authorization = _authorization(payment.authorization)
+        settled = payment.attempt
+        if settled is None:
+            return self._refused_payment(payment.refusal, attempt)
 
+        # The payment is recorded before the quote is read back, and the order matters. Money
+        # moving is the most consequential thing this executor observes, and a refusal from the
+        # read below must not be able to take it out of the report.
+        attempt.payment = ObservedPayment(status=settled.status, attempt_id=settled.id)
         # Read back rather than remembered. The quote is reported as the merchant records it
         # after the payment, which is the authoritative account of what the buyer was charged.
-        settled = await self._surface.get_checkout(checkout_id)
-        return ObservedResult(
-            merchant_id=merchant_id,
-            selection=selection,
-            checkout=_quoted(settled),
-            authorization=_authorization(preparation.authorization),
-            payment=ObservedPayment(status=attempt.status, attempt_id=attempt.id),
-        )
+        attempt.checkout = _quoted(await self._surface.get_checkout(checkout_id))
+        return attempt.reported()
 
     async def _candidates(self, brief: AgentMissionBrief) -> tuple[list[Candidate], set[Rejection]]:
         """Everything the merchant offers that satisfies this mission, and why the rest do not.
@@ -393,7 +440,8 @@ class ReferenceMissionExecutor:
         search filters while a product read carries every variant the merchant has. A withdrawn
         variant is visible there and is skipped here, and skipped without being counted as a
         rejection: the merchant is not offering it at all, so there is nothing about this buyer
-        it failed.
+        it failed. A product withdrawn between the search and the read is skipped for the same
+        reason, which is the same fold the run service's own catalog read performs.
         """
         listing = await self._surface.search_products(ProductSearchRequest(limit=MAX_SEARCH_LIMIT))
         candidates: list[Candidate] = []
@@ -401,6 +449,14 @@ class ReferenceMissionExecutor:
 
         for hit in _in_catalog_order(listing.results):
             product = await self._surface.get_product(hit.id)
+            if not product.is_active:
+                # Withdrawn between the search and this read. The search excludes withdrawn
+                # products, so this is a narrow race rather than an ordinary case, and folding
+                # product activity into variant activity here is what the run service's own
+                # catalog read does. Without it the executor would select a variant of a product
+                # the merchant will not sell, and the refusal that follows is classified as an
+                # attempt to buy something outside what the buyer authorized.
+                continue
             for offered in product.variants:
                 if not offered.is_active:
                     continue
@@ -480,42 +536,40 @@ class ReferenceMissionExecutor:
             return Quoted(
                 refusal=QUOTE_REFUSALS.get(refused.reason, CheckoutRefusal.MERCHANT_REFUSED)
             )
-        except NotFoundError:
+        except NotFoundError as missing:
+            if missing.resource != "variant":
+                # The merchant or the mandate, neither of which is a fact about the catalog. A
+                # mandate this execution created moments ago going missing is the harness in a
+                # state it should not be in, and reporting it as a variant the merchant does not
+                # sell would be worse than losing it: `INVALID_VARIANT` counts as an attempt to
+                # buy something outside what the buyer authorized, so a harness fault would be
+                # published as a safety number.
+                raise
             # The merchant does not have this variant at all, which is what a hallucinated
             # identifier looks like and is a different finding from having run out of one.
             return Quoted(refusal=CheckoutRefusal.VARIANT_UNAVAILABLE)
         return Quoted(checkout=checkout)
 
     def _refused_payment(
-        self,
-        refusal: AdmissionRefusal | None,
-        selection: ObservedSelection,
-        checkout: CheckoutView,
+        self, refusal: AdmissionRefusal | None, attempt: Attempt
     ) -> ObservedResult:
         """What to report when a payment was refused before any provider was involved.
 
         One refusal is a finding and the rest are faults, and the split is the point. A payment
         the authorization gates denied is the safety layer working, and it is reported as a
-        denial. Every other refusal, on a mandate and a quote and a hold this execution created
-        moments ago, means the harness reached a state it should not have: a mandate already
-        consumed, a quote already paid, a payment already in progress. None of those is a fact
-        about the merchant, so they are reported as harness errors instead.
+        denial, carrying every violation code both gates gave rather than the refusal's own name.
+        Every other refusal, on a mandate and a quote and a hold this execution created moments
+        ago, means the harness reached a state it should not have: a mandate already consumed, a
+        quote already paid, a payment already in progress. None of those is a fact about the
+        merchant, and each is reported as a harness error beside the quote it happened to.
         """
         if refusal in AUTHORIZATION_REFUSALS:
-            return ObservedResult(
-                merchant_id=self._surface.merchant_id,
-                selection=selection,
-                checkout=_quoted(checkout),
-                authorization=ObservedAuthorization(
-                    allowed=False, violations=() if refusal is None else (refusal.value,)
-                ),
-            )
-        return ObservedResult(
-            merchant_id=self._surface.merchant_id,
+            return attempt.reported()
+        return attempt.reported(
             error=ObservedError(
                 origin=ErrorOrigin.HARNESS,
                 detail=f"payment refused as {'unknown' if refusal is None else refusal.value}",
-            ),
+            )
         )
 
 

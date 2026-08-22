@@ -29,9 +29,13 @@ reveal that the money moved. Nothing here is willing to do that. The refusal nam
 and `agentrank_api.cli payments` is where it gets resolved.
 
 And preparation converges rather than deletes. The catalog is seeded from the fixture, which
-updates the rows that exist and creates the ones that do not, so every foreign key a historical
-mission result holds onto stays valid. A benchmark that erased its own evidence between runs
-would be a benchmark nobody could audit.
+updates the rows that exist and creates the ones that do not; anything the fixture no longer
+names is withdrawn and emptied rather than removed, because a historical mission result holds a
+RESTRICT reference to the variant it selected and a benchmark that erased its own evidence
+between runs would be a benchmark nobody could audit. Withdrawing is what makes the world
+actually be what the fixture describes: without it, publishing a fixture version that drops a
+product would leave that product purchasable forever, and every later run would be measured
+against a catalog wider than the one somebody authored.
 
 What preparation deliberately does not do is remove the mandates, quotes and payments earlier
 missions created. Those are records of what happened and they are what a mission result points
@@ -39,23 +43,29 @@ at. They also cannot affect a later mission: a mandate authorizes one purchase a
 creates its own, and a checkout and a payment are scoped to the mandate and the quote they
 belong to. The only two things an earlier mission can change about a later one's world are the
 stock on the shelf and the claims against it, and both are what this puts back.
+
+Two preparations of one world serialize on a transaction scoped advisory lock, taken before any
+row lock and keyed on the merchant. Without it two first preparations of a brand new world both
+find no variant rows to lock, both seed, and the loser gets an integrity error rather than a
+turn. The lock does not make two whole benchmark runs safe against each other, which is a
+different claim and is written down in docs/shortcomings.md.
 """
 
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentrank_api.benchmark.fixtures import BenchmarkFixture
 from agentrank_api.benchmark.models import BenchmarkEnvironment
 from agentrank_api.benchmark.repository import BenchmarkEnvironmentRepository
 from agentrank_api.commerce.catalog_fixture import SeedSummary, seed_catalog
-from agentrank_api.commerce.models import Variant
+from agentrank_api.commerce.models import Product, Variant
 from agentrank_api.commerce.repository import MerchantRepository
 from agentrank_api.conflicts import translated_conflicts
 from agentrank_api.errors import ConflictError, NotFoundError
-from agentrank_api.inventory.models import ReservationStatus
+from agentrank_api.inventory.models import HOLDING_STATUSES, ReservationStatus
 from agentrank_api.inventory.repository import InventoryReservationRepository
 from agentrank_api.inventory.service import InventoryReservationService, ReleaseReason
 
@@ -76,11 +86,17 @@ class PreparedEnvironment:
 
     `catalog` is the seeding summary, and `catalog.created` is zero on every preparation after
     the first. A non zero value on a later one means rows were missing, which is worth seeing.
+
+    `withdrawn` counts what the fixture no longer names and this preparation took off the shelf.
+    Zero on every preparation of an unchanged world, and non zero exactly once after a fixture
+    version drops something, which is a fact a report should be able to show rather than one the
+    harness performs silently.
     """
 
     environment: BenchmarkEnvironment
     catalog: SeedSummary
     released_holds: int = 0
+    withdrawn: int = 0
 
 
 class BenchmarkEnvironmentService:
@@ -111,7 +127,13 @@ class BenchmarkEnvironmentService:
         The merchant is created if it does not exist. That is the one act of creation this
         service performs, and it is what makes a benchmark world reachable from an empty
         database without anybody first seeding a merchant by hand and hoping the slug matches.
+
+        Two registrations of one merchant's worlds serialize on the same advisory lock
+        preparation takes. Without it both can find no merchant, both create one, and the loser
+        gets an integrity error on the merchant's slug rather than the registration the winner
+        wrote.
         """
+        await self._claim(fixture.merchant_slug)
         content_hash = fixture.content_hash
         existing = await self._environments.get(fixture.key, fixture.version)
         if existing is not None:
@@ -154,23 +176,42 @@ class BenchmarkEnvironmentService:
         creates nothing and rewrites the same values, so the catalog pin a run takes afterwards
         is the same digest every time.
         """
+        await self._claim(fixture.merchant_slug)
         environment = await self.require_registered(fixture)
-        merchant = await self._merchants.get_by_id(environment.merchant_id)
-        if merchant is None:
-            # Not reachable through the schema: the foreign key onto the merchant is RESTRICT.
-            raise NotFoundError("merchant", str(environment.merchant_id))
+        if environment.merchant_slug != fixture.merchant_slug:
+            # Not reachable through the schema: the composite foreign key onto
+            # (merchant.id, merchant.slug) refuses a rename while this registration exists, so
+            # the slug on the row is the merchant's own. Stated anyway, because the whole of
+            # production safety here is that the merchant being overwritten is the registered
+            # one rather than whichever shop happens to answer to a name today.
+            raise ConflictError(
+                "fixture_merchant_changed",
+                f"benchmark environment {environment.label} is registered for merchant"
+                f" {environment.merchant_slug!r} and this fixture describes"
+                f" {fixture.merchant_slug!r}",
+                resource=ENVIRONMENT_RESOURCE,
+                identifier=environment.label,
+            )
 
-        await self._lock_shelf(environment.merchant_id)
-        released = await self._release_holds(environment.merchant_id)
+        merchant_id = environment.merchant_id
+        await self._lock_shelf(merchant_id)
+        released = await self._release_holds(merchant_id)
         summary = await seed_catalog(
             self._session,
-            slug=fixture.merchant_slug,
+            # The registered merchant's own slug rather than the fixture's copy of it. They are
+            # equal by the check above, and reading it from the row is what makes that provable
+            # at the line that does the overwriting.
+            slug=environment.merchant_slug,
             name=fixture.merchant_name,
             products=fixture.products,
         )
+        withdrawn = await self._withdraw_unnamed(merchant_id, fixture)
         await self._session.commit()
         return PreparedEnvironment(
-            environment=environment, catalog=summary, released_holds=released
+            environment=environment,
+            catalog=summary,
+            released_holds=released,
+            withdrawn=withdrawn,
         )
 
     async def require_registered(self, fixture: BenchmarkFixture) -> BenchmarkEnvironment:
@@ -215,6 +256,75 @@ class BenchmarkEnvironmentService:
         _require_same_content(existing, content_hash)
         return existing
 
+    async def _claim(self, merchant_slug: str) -> None:
+        """Hold this merchant's benchmark world against every other preparation, until commit.
+
+        An advisory lock rather than a row lock, and that is the point: the rows a preparation
+        would lock are the ones it may be about to create, so on a brand new world there is
+        nothing to serialize on. Two first preparations would both find no variants, both seed,
+        and the loser would get an integrity error on a unique SKU instead of a turn.
+
+        Transaction scoped, so it is released by the commit or the rollback that ends this
+        operation and there is nothing to leak. Taken before any row lock, so it cannot
+        participate in a cycle with the order `agentrank_api.locking` writes down.
+
+        Keyed on the merchant slug rather than on the fixture, because two fixture versions of
+        one merchant's world are still one shelf.
+        """
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"{ENVIRONMENT_RESOURCE}:{merchant_slug}"},
+        )
+
+    async def _withdraw_unnamed(self, merchant_id: uuid.UUID, fixture: BenchmarkFixture) -> int:
+        """Take everything the fixture does not name off the shelf, and report how much.
+
+        Withdrawn and emptied rather than deleted. A historical mission result holds a RESTRICT
+        reference to the variant it selected, so removing one would either fail or take the
+        evidence with it, and a benchmark that erases what it measured is not auditable.
+        Deactivating and zeroing achieves what preparation is actually for: nothing a buyer can
+        reach that the fixture did not describe.
+
+        This is what makes a fixture version that drops a product mean something. Seeding alone
+        only writes what the fixture names, so the dropped product would stay active and stocked,
+        would enter the catalog pin, would be discoverable by an executor, and could satisfy a
+        mission the fixture's author had removed the answer for.
+
+        Returns the number of variant rows this call actually changed. Zero on every preparation
+        of an unchanged world.
+        """
+        skus = [variant.sku for product in fixture.products for variant in product.variants]
+        external_ids = [product.external_id for product in fixture.products]
+
+        # The variant rows are already held by `_lock_shelf`, which locked every one of this
+        # merchant's variants rather than only the ones the fixture names.
+        stale = (
+            await self._session.execute(
+                select(Variant.id).where(
+                    Variant.merchant_id == merchant_id,
+                    Variant.sku.notin_(skus),
+                    or_(Variant.is_active.is_(True), Variant.inventory_quantity > 0),
+                )
+            )
+        ).scalars()
+        withdrawn = list(stale)
+        if withdrawn:
+            await self._session.execute(
+                update(Variant)
+                .where(Variant.id.in_(withdrawn))
+                .values(is_active=False, inventory_quantity=0)
+            )
+        await self._session.execute(
+            update(Product)
+            .where(
+                Product.merchant_id == merchant_id,
+                Product.external_id.notin_(external_ids),
+                Product.is_active.is_(True),
+            )
+            .values(is_active=False)
+        )
+        return len(withdrawn)
+
     async def _lock_shelf(self, merchant_id: uuid.UUID) -> None:
         """Hold every one of this merchant's variant rows until commit.
 
@@ -237,9 +347,9 @@ class BenchmarkEnvironmentService:
         An ACTIVE hold belongs to a mission that stopped before it paid: no payment attempt was
         ever admitted against it, because admission commits a hold in the same transaction that
         writes the attempt. Nothing is in doubt, so the units go back and the trail says
-        `reservation_recovered`, which is the honest reason. A hold still standing when a world
-        is being prepared is a mission that did not finish, and that reason is the one that
-        reads as an admission rather than as an ordinary lifecycle event.
+        `benchmark_world_prepared`, which is its own reason precisely because this is routine.
+        Filing it under `reservation_recovered` would fill the trail with the one code that is
+        supposed to mean the execution locking failed.
 
         A COMMITTED hold is refused outright. Something was admitted against it and has not
         reached a definitive answer, so releasing it would give the stock back under a payment
@@ -247,7 +357,19 @@ class BenchmarkEnvironmentService:
         it has its own command and its own reason code, and a benchmark preparing its next
         mission must never make it by accident.
         """
-        holds = await self._reservations.list_holding_for_merchant(merchant_id)
+        # Read, then re-read each one under its own row lock before deciding anything. The
+        # variant locks this operation holds do not serialize it against a release: a decline
+        # and an operator abandonment both release stock without ever wanting a variant lock,
+        # so a status read outside the reservation lock can be stale by the time it is acted
+        # on, and acting on a stale ACTIVE means the reservation guard aborts the whole
+        # preparation with an error nobody can explain.
+        found = await self._reservations.list_holding_for_merchant(merchant_id)
+        holds = [
+            locked
+            for candidate in found
+            if (locked := await self._reservations.get_for_update(candidate.id)) is not None
+            and locked.status in HOLDING_STATUSES
+        ]
         committed = [hold for hold in holds if hold.status is ReservationStatus.COMMITTED]
         if committed:
             raise ConflictError(
@@ -261,7 +383,7 @@ class BenchmarkEnvironmentService:
 
         released = 0
         for hold in holds:
-            if await self._inventory.release(hold, reason=ReleaseReason.RESERVATION_RECOVERED):
+            if await self._inventory.release(hold, reason=ReleaseReason.BENCHMARK_WORLD_PREPARED):
                 released += 1
         return released
 

@@ -193,7 +193,19 @@ class BenchmarkEnvironment(Base):
         # It is what makes a run's environment provably the run's own merchant rather than
         # somebody else's world with a plausible identifier.
         UniqueConstraint("id", "merchant_id", name="uq_benchmark_environment_binding"),
+        # The merchant this world is, named as well as referenced. Reached through
+        # (merchant_id, merchant_slug), so the slug on this row is provably the merchant's own
+        # and a rename cannot make a registration point at a different shop. Preparation
+        # overwrites a catalog, and which catalog that is must not be resolvable by a name
+        # somebody can change underneath it.
+        ForeignKeyConstraint(
+            ["merchant_id", "merchant_slug"],
+            ["merchant.id", "merchant.slug"],
+            name="fk_benchmark_environment_merchant_binding",
+            ondelete="RESTRICT",
+        ),
         CheckConstraint(f"fixture_key ~ '{KEY_PATTERN}'", name="fixture_key_format"),
+        CheckConstraint(f"merchant_slug ~ '{KEY_PATTERN}'", name="merchant_slug_format"),
         CheckConstraint("fixture_version > 0", name="fixture_version_positive"),
         CheckConstraint(f"fixture_hash ~ '{HASH_PATTERN}'", name="fixture_hash_format"),
         # The RESTRICT check when a merchant is deleted. Neither unique constraint above serves
@@ -209,6 +221,7 @@ class BenchmarkEnvironment(Base):
         ForeignKey("merchant.id", ondelete="RESTRICT"),
         nullable=False,
     )
+    merchant_slug: Mapped[str] = mapped_column(String(MAX_KEY_LENGTH), nullable=False)
     fixture_key: Mapped[str] = mapped_column(String(MAX_KEY_LENGTH), nullable=False)
     fixture_version: Mapped[int] = mapped_column(Integer, nullable=False)
     fixture_hash: Mapped[str] = mapped_column(String(HASH_LENGTH), nullable=False)
@@ -471,8 +484,17 @@ class BenchmarkRun(Base):
         # constraint above has id leftmost, so it does not serve either.
         Index(None, "merchant_id"),
         Index(None, "suite_id"),
-        # There is deliberately no index on environment_id. A registered environment cannot be
-        # deleted, so no referential probe ever filters on it, and nothing reads runs by world.
+        # The RESTRICT check when an environment is deleted. A registered environment cannot be
+        # deleted through the trigger, and resting an index decision on a trigger is resting it
+        # on something a restore can switch off: `session_replication_role = 'replica'` disables
+        # row triggers and leaves the referential probe scanning every run the merchant has.
+        # Partial, because a run against an unregistered merchant has no world to check.
+        Index(
+            None,
+            "environment_id",
+            "merchant_id",
+            postgresql_where=text("environment_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)

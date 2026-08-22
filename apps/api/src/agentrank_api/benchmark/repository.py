@@ -162,6 +162,7 @@ class BenchmarkEnvironmentRepository:
 
         environment = BenchmarkEnvironment(
             merchant_id=merchant.id,
+            merchant_slug=merchant.slug,
             fixture_key=fixture.key,
             fixture_version=fixture.version,
             fixture_hash=fixture.content_hash,
