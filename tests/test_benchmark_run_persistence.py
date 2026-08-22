@@ -680,19 +680,41 @@ async def test_a_finished_run_cannot_be_deleted(session: AsyncSession) -> None:
         {"id": run.id},
     )
 
-    with pytest.raises(DBAPIError, match="finished benchmark run cannot be deleted"):
+    with pytest.raises(DBAPIError, match="that has started cannot be deleted"):
         await session.execute(text("DELETE FROM benchmark_run WHERE id = :id"), {"id": run.id})
 
 
-async def test_an_unfinished_run_can_still_be_deleted_and_takes_its_results(
+async def test_a_running_run_cannot_be_deleted_either(session: AsyncSession) -> None:
+    """The guard refused a finished run and permitted a running one, which was the wrong way
+    round.
+
+    Found by an independent database review. RUNNING is the state that means the executor was
+    called and what it did is unknown, so its recorded results are the only evidence of it and
+    its world claim is the only thing stopping the next run resetting the shelf underneath it.
+    Deleting it removed both in one statement, through `ON DELETE CASCADE`.
+    """
+    run, _ = await started(session, "one", "two")
+
+    with pytest.raises(DBAPIError, match="that has started cannot be deleted"):
+        await session.execute(text("DELETE FROM benchmark_run WHERE id = :id"), {"id": run.id})
+
+
+async def test_a_pending_run_can_still_be_deleted_and_takes_its_results(
     session: AsyncSession,
 ) -> None:
     """The cascade has to keep working, which is what the delete guard is written around.
 
     During ON DELETE CASCADE the parent row is already gone when the child guard runs, so a
     legitimate cascade passes and a standalone delete does not.
+
+    PENDING is the one status this is allowed from, and that is not arbitrary: every mission run
+    exists, none has started, so there is no evidence to lose and no world claimed.
     """
-    run, _ = await started(session, "one", "two")
+    stored = await published(session, "one", "two")
+    run = await BenchmarkRunRepository(session).create(
+        merchant=await merchant(session, "test-merchant"), suite=stored
+    )
+    await session.commit()
 
     await session.execute(text("DELETE FROM benchmark_run WHERE id = :id"), {"id": run.id})
     await session.commit()

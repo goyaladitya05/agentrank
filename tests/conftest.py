@@ -9,30 +9,34 @@ import socket
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol
 
 import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, event, text
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
-from agentrank_api.audit import models as audit_models  # noqa: F401  registers tables
-from agentrank_api.auth import models as auth_models  # noqa: F401  registers tables
+import agentrank_api.audit.models as audit_models  # noqa: F401  registers tables
+import agentrank_api.auth.models as auth_models  # noqa: F401  registers tables
+import agentrank_api.benchmark.models as benchmark_models  # noqa: F401  registers tables
+import agentrank_api.checkout.models as checkout_models  # noqa: F401  registers tables
+import agentrank_api.commerce.models as commerce_models  # noqa: F401  registers tables
+import agentrank_api.constraints.models as constraint_models  # noqa: F401  registers tables
+import agentrank_api.inventory.models as inventory_models  # noqa: F401  registers tables
+import agentrank_api.mandates.models as mandate_models  # noqa: F401  registers tables
+import agentrank_api.payments.models as payment_models  # noqa: F401  registers tables
+import agentrank_api.razorpay.models as razorpay_models  # noqa: F401  registers tables
 from agentrank_api.auth.service import MerchantCredentialService
 from agentrank_api.auth.tokens import TokenMarker
-from agentrank_api.benchmark import models as benchmark_models  # noqa: F401  registers tables
-from agentrank_api.checkout import models as checkout_models  # noqa: F401  registers tables
-from agentrank_api.commerce import models as commerce_models  # noqa: F401  registers tables
 from agentrank_api.config import Settings, get_settings
-from agentrank_api.constraints import models as constraint_models  # noqa: F401  registers tables
-from agentrank_api.database import create_engine as create_async_engine
 from agentrank_api.database import create_session_factory
-from agentrank_api.inventory import models as inventory_models  # noqa: F401  registers tables
-from agentrank_api.mandates import models as mandate_models  # noqa: F401  registers tables
 from agentrank_api.models import Base
-from agentrank_api.payments import models as payment_models  # noqa: F401  registers tables
-from agentrank_api.razorpay import models as razorpay_models  # noqa: F401  registers tables
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 
@@ -133,37 +137,40 @@ def catalog_settings(
 # Two bounds rather than one. `lock_timeout` covers waiting for a lock somebody else holds, which
 # is the failure these tests actually produce. `statement_timeout` is the backstop for a statement
 # that is slow for some other reason, and is generous enough that no honest statement reaches it.
+#
+# Passed as connection options rather than executed as `SET`, and that correction is the whole
+# reason this comment is this long. `SET` is transactional, psycopg opens an implicit transaction,
+# and SQLAlchemy rolls back on returning a connection to the pool, so a `SET` in a connect handler
+# bound only the first test to use each pooled connection and silently bound none of the rest. An
+# independent review measured it: `lock_timeout` read back as `0` from the second checkout
+# onwards. Options given at connect are the server's startup parameters for that backend and no
+# rollback touches them.
 LOCK_TIMEOUT = "10s"
 STATEMENT_TIMEOUT = "120s"
+
+BOUNDED_WAITS = f"-c lock_timeout={LOCK_TIMEOUT} -c statement_timeout={STATEMENT_TIMEOUT}"
 
 
 @pytest.fixture(scope="session")
 async def catalog_engine(catalog_settings: Settings) -> AsyncIterator[AsyncEngine]:
-    engine = create_async_engine(catalog_settings)
-    _bound_waits(engine)
+    """The engine every catalog test shares, with every wait it can make bounded.
+
+    Built here rather than through `agentrank_api.database.create_engine` for one reason: the
+    bounds belong to the test suite and not to the application, and adding a parameter to the
+    application's builder so that a test can pass one is the wrong way round.
+    """
+    engine = create_async_engine(
+        catalog_settings.database_url,
+        pool_pre_ping=True,
+        connect_args={
+            "connect_timeout": catalog_settings.postgres_connect_timeout,
+            "options": BOUNDED_WAITS,
+        },
+    )
     try:
         yield engine
     finally:
         await engine.dispose()
-
-
-def _bound_waits(engine: AsyncEngine) -> None:
-    """Apply the wait bounds to every connection this engine opens.
-
-    On connect rather than per transaction, so nothing a test writes can forget it and no
-    `SET LOCAL` has to be threaded through a helper. The settings are per session in the
-    PostgreSQL sense, so they survive the pooled connection being handed to the next test.
-    """
-
-    @event.listens_for(engine.sync_engine, "connect")
-    def _apply(dbapi_connection: Any, record: Any) -> None:
-        del record
-        cursor = dbapi_connection.cursor()
-        try:
-            cursor.execute(f"SET lock_timeout = '{LOCK_TIMEOUT}'")
-            cursor.execute(f"SET statement_timeout = '{STATEMENT_TIMEOUT}'")
-        finally:
-            cursor.close()
 
 
 @pytest.fixture

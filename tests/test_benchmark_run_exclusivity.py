@@ -21,6 +21,9 @@ import uuid
 from datetime import UTC, datetime
 
 import pytest
+from conftest import LOCK_TIMEOUT
+from sqlalchemy import delete, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.benchmark.buyer import MerchantBuyerSurface
@@ -344,3 +347,92 @@ async def test_preparing_another_merchants_world_is_never_blocked(session: Async
     elsewhere = await BenchmarkEnvironmentService(session).prepare(OTHER_WORLD)
 
     assert elsewhere.environment.merchant_slug == OTHER_SLUG
+
+
+# What a claim survives, and what releases it.
+
+
+async def test_a_running_run_cannot_be_deleted(
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """The one deletion that would release a claim and erase the evidence at the same time.
+
+    Found by an independent database review, which proved it end to end: the delete guard refused
+    a COMPLETED or an ABORTED run and permitted a RUNNING one, and `ON DELETE CASCADE` took the
+    recorded mission results with it. RUNNING is the state the whole crash story rests on, so it
+    is the last state a run should be deletable in.
+    """
+    merchant_id = await prepared(session)
+    run = await started(session)
+    await session.commit()
+
+    async with factory() as other:
+        with pytest.raises(DBAPIError, match="cannot be deleted"):
+            await other.execute(delete(BenchmarkRun).where(BenchmarkRun.id == run.id))
+            await other.commit()
+
+    async with factory() as reader:
+        remaining = await BenchmarkRunRepository(reader).active_run_id(merchant_id=merchant_id)
+    assert remaining == run.id
+
+
+async def test_a_pending_run_is_still_deletable(
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """A run that never started has no evidence to lose and claims nothing."""
+    await prepared(session)
+    merchant = await MerchantRepository(session).get_by_slug(SLUG)
+    assert merchant is not None
+    suite = await BenchmarkSuiteRepository(session).get(suite_key(SLUG), 1)
+    assert suite is not None
+    pending = await BenchmarkRunRepository(session).create(merchant=merchant, suite=suite)
+    await session.commit()
+
+    async with factory() as other:
+        await other.execute(delete(BenchmarkRun).where(BenchmarkRun.id == pending.id))
+        await other.commit()
+
+    async with factory() as reader:
+        assert await reader.get(BenchmarkRun, pending.id) is None
+
+
+async def test_two_closes_of_one_run_produce_a_refusal_rather_than_a_database_error(
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """An operator aborting a run at the moment it completes is an ordinary collision.
+
+    Both closes read the run before either wrote, so both saw a run that was not terminal and
+    the second one's update reached the lifecycle trigger, which answers with a raw database
+    error rather than something a caller can act on. The row lock is what turns that into a
+    queue and a refusal.
+    """
+    merchant_id = await prepared(session)
+    run = await started(session)
+    await session.commit()
+
+    async def close() -> BenchmarkRun:
+        async with factory() as own:
+            return await BenchmarkRunService(own).abort_run(run.id, merchant_id=merchant_id)
+
+    outcomes = await asyncio.gather(close(), close(), return_exceptions=True)
+
+    closed = [result for result in outcomes if isinstance(result, BenchmarkRun)]
+    refused = [result for result in outcomes if isinstance(result, ConflictError)]
+    assert len(closed) == 1
+    assert len(refused) == 1
+    assert refused[0].reason == "run_already_finished"
+
+
+async def test_the_test_engine_actually_bounds_a_lock_wait(session: AsyncSession) -> None:
+    """The bound these tests rely on, read back from the server rather than assumed.
+
+    It was a `SET` in a connect handler first, which psycopg opens a transaction for and
+    SQLAlchemy rolls back when the connection returns to the pool, so only the first test to use
+    each pooled connection was bounded and an independent review measured `0` on every one after
+    it. Connection options are startup parameters for the backend and no rollback touches them.
+    """
+    bounds = (await session.execute(text("SHOW lock_timeout"))).scalar_one()
+    statements = (await session.execute(text("SHOW statement_timeout"))).scalar_one()
+
+    assert bounds == LOCK_TIMEOUT
+    assert statements == "2min"

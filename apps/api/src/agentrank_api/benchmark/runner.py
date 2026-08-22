@@ -144,11 +144,15 @@ class BenchmarkRunService:
         without this they would be compared as though they had not. Also optional, and null there
         means the same thing every other null pin means: nobody recorded it.
 
-        Refused while another run is already executing against this merchant. That is the whole
-        of environment exclusivity at this layer, and the read is the courtesy rather than the
-        mechanism: the partial unique index underneath refuses the same thing across processes,
-        and the transition to RUNNING is what enters it. Both statements are in one transaction,
-        so a second starter blocks on the index until the first commits and then loses.
+        Refused while another run is already executing against this merchant. The partial unique
+        index underneath is what makes that true across processes, and the transition to RUNNING
+        is what enters it.
+
+        The advisory lock in front of the read is what makes the answer the same every time. Two
+        starters racing on the index alone get whatever the index gives them, which is an
+        integrity error when they wait and a cancelled statement when a `lock_timeout` is set,
+        and neither is a refusal naming the run an operator has to close. Holding the lock first
+        means the loser reads the winner's committed run and is refused by name.
         """
         merchant = await self._merchants.get_by_slug(merchant_slug)
         if merchant is None:
@@ -157,6 +161,10 @@ class BenchmarkRunService:
         if suite is None:
             raise NotFoundError("benchmark_suite", f"{suite_key}@{suite_version}")
 
+        # The advisory lock before the read, so a second starter waits here rather than racing
+        # the index. The same lock preparation takes, keyed on the merchant slug, released by
+        # this transaction's commit.
+        await self._environments.claim(merchant.slug)
         await self._require_unclaimed(merchant.id)
         entries = await self.catalog(merchant.id)
         run = await self._runs.create(
@@ -423,6 +431,7 @@ class BenchmarkRunService:
         never folded into one. A mission still RUNNING is not terminal and refuses here, because
         what it did is unknown.
         """
+        await self._locked_run(run_id, merchant_id=merchant_id)
         run = await self._loaded_run(run_id, merchant_id=merchant_id)
         unfinished = [result.id for result in run.mission_runs if not result.is_terminal]
         if unfinished:
@@ -441,6 +450,7 @@ class BenchmarkRunService:
         stopped stays recorded and stays true; what changes is that the run no longer claims to
         describe the whole suite.
         """
+        await self._locked_run(run_id, merchant_id=merchant_id)
         run = await self._loaded_run(run_id, merchant_id=merchant_id)
         return await self._finish(run, BenchmarkRunStatus.ABORTED)
 
@@ -531,6 +541,15 @@ class BenchmarkRunService:
         ]
 
     async def _finish(self, run: BenchmarkRun, status: BenchmarkRunStatus) -> BenchmarkRun:
+        """Close a run, having read its status under a row lock.
+
+        The lock is taken by the callers and it is not decoration. Two closes racing on an
+        unlocked read both saw a run that was not terminal, and the second one's UPDATE was
+        refused by the lifecycle trigger with a raw database error rather than by the guard
+        below with a refusal a caller can act on. That is not far fetched: an operator running
+        `benchmark abort` on a run that looks stuck, at the moment `run_suite` reaches
+        `complete_run`, is exactly it.
+        """
         if run.is_terminal:
             raise ConflictError(
                 "run_already_finished",

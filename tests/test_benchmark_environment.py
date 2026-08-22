@@ -34,6 +34,7 @@ from agentrank_api.constraints.rules import ConstraintOperator, IntentConstraint
 from agentrank_api.errors import ConflictError, NotFoundError
 from agentrank_api.inventory.models import ReservationStatus
 from agentrank_api.inventory.repository import InventoryReservationRepository
+from agentrank_api.locking import LOCK_ORDER, VARIANT, respects_lock_order
 from agentrank_api.mandates.repository import MandateRepository
 from agentrank_api.payments.admission import PaymentAdmissionService
 
@@ -569,3 +570,26 @@ async def test_preparing_releases_a_hold_as_housekeeping_and_not_as_a_recovery(
         )
     ).scalars()
     assert list(released) == ["benchmark_world_prepared"]
+
+
+async def test_preparing_a_world_takes_its_locks_in_the_documented_order(
+    session: AsyncSession, row_locks: list[str]
+) -> None:
+    """`agentrank_api.locking` says preparation is one of the operations the order exists for.
+
+    Nothing asserted it. The order is a property of the sequence and the only honest way to
+    assert it is to watch the statements, which is what `row_locks` does. A preparation that
+    took the reservation before the shelf would deadlock against a payment admission, which
+    takes them the other way round.
+    """
+    world = fixture(variant(stock=4))
+    environments = BenchmarkEnvironmentService(session)
+    await environments.register(world)
+    await environments.prepare(world)
+    row_locks.clear()
+
+    await environments.prepare(world)
+
+    assert row_locks, "no row lock was observed, so this check would pass vacuously"
+    assert respects_lock_order(row_locks)
+    assert LOCK_ORDER.index(row_locks[0]) >= LOCK_ORDER.index(VARIANT)

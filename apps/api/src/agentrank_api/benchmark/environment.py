@@ -270,6 +270,21 @@ class BenchmarkEnvironmentService:
         _require_same_content(existing, content_hash)
         return existing
 
+    async def claim(self, merchant_slug: str) -> None:
+        """Hold this merchant's benchmark world against every other claimant, until commit.
+
+        The same transaction scoped advisory lock preparation takes, exposed so that starting a
+        run takes it too. Without that, two starts race on the partial unique index instead, and
+        the loser gets whatever the index gives it: an integrity error when it waits, and a
+        cancelled statement when a `lock_timeout` is set. Neither is the ordinary refusal naming
+        the run an operator has to close.
+
+        With it, the loser waits on the lock, reads the winner's committed run, and is refused by
+        name. The index is still what makes the invariant true across processes; this is what
+        makes the answer the same every time.
+        """
+        await self._claim(merchant_slug)
+
     async def _require_unclaimed(
         self, merchant_id: uuid.UUID, *, for_run: uuid.UUID | None
     ) -> None:
