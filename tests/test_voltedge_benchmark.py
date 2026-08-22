@@ -45,8 +45,8 @@ CURRENCY = "INR"
 
 
 async def seeded(session: AsyncSession) -> uuid.UUID:
-    summary, _ = await seed_voltedge(session)
-    return summary.merchant_id
+    prepared, _ = await seed_voltedge(session)
+    return prepared.environment.merchant_id
 
 
 async def test_every_mission_oracle_still_holds_against_the_catalog(
@@ -173,12 +173,14 @@ async def test_the_published_suite_matches_the_definition(session: AsyncSession)
 
 
 async def test_seeding_twice_changes_nothing(session: AsyncSession) -> None:
-    """Convergent in both halves: the catalog and the published suite."""
+    """Convergent in all three: the registration, the catalog and the published suite."""
     first, first_suite = await seed_voltedge(session)
     second, second_suite = await seed_voltedge(session)
 
-    assert first.merchant_id == second.merchant_id
-    assert second.created == 0
+    assert first.environment.id == second.environment.id
+    assert first.catalog.merchant_id == second.catalog.merchant_id
+    assert second.catalog.created == 0
+    assert second.released_holds == 0
     assert first_suite.id == second_suite.id
     assert first_suite.definition_hash == second_suite.definition_hash
 

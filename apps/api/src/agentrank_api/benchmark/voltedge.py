@@ -45,14 +45,14 @@ from agentrank_api.benchmark.definitions import (
     ExpectedOutcome,
     MissionOracle,
 )
+from agentrank_api.benchmark.environment import (
+    BenchmarkEnvironmentService,
+    PreparedEnvironment,
+)
+from agentrank_api.benchmark.fixtures import BenchmarkFixture
 from agentrank_api.benchmark.models import BenchmarkSuite
 from agentrank_api.benchmark.suites import BenchmarkSuiteService
-from agentrank_api.commerce.catalog_fixture import (
-    SeedProduct,
-    SeedSummary,
-    SeedVariant,
-    seed_catalog,
-)
+from agentrank_api.commerce.catalog_fixture import SeedProduct, SeedVariant
 from agentrank_api.constraints.rules import ConstraintOperator
 from agentrank_api.mandates.intent import (
     AllowedCategory,
@@ -66,9 +66,15 @@ from agentrank_api.mandates.intent import (
 MERCHANT_SLUG = "voltedge"
 MERCHANT_NAME = "VoltEdge"
 
+# The workload and the world it is authored against are versioned separately, because they are
+# separate dimensions. Editing a mission changes what is being asked; editing the catalog
+# changes what can be answered, and a run has to record both to be interpretable later.
 SUITE_KEY = "voltedge-core"
 SUITE_VERSION = 1
 SUITE_NAME = "VoltEdge core commerce"
+
+FIXTURE_KEY = "voltedge-catalog"
+FIXTURE_VERSION = 1
 
 CURRENCY = "INR"
 
@@ -454,19 +460,33 @@ SUITE = BenchmarkSuiteDefinition(
     missions=MISSIONS,
 )
 
+FIXTURE = BenchmarkFixture(
+    key=FIXTURE_KEY,
+    version=FIXTURE_VERSION,
+    merchant_slug=MERCHANT_SLUG,
+    merchant_name=MERCHANT_NAME,
+    products=PRODUCTS,
+)
 
-async def seed_voltedge(session: AsyncSession) -> tuple[SeedSummary, BenchmarkSuite]:
-    """Create or refresh the VoltEdge catalog and publish the suite authored against it.
 
-    Both halves in one operation, because a suite whose merchant does not exist cannot be run
-    and a merchant with no suite is not a benchmark. Convergent in both directions: the catalog
-    converges on the definitions above, and publishing an unchanged suite returns the one
-    already published rather than writing a second.
+async def seed_voltedge(session: AsyncSession) -> tuple[PreparedEnvironment, BenchmarkSuite]:
+    """Register the VoltEdge world, prepare it, and publish the suite authored against it.
 
-    Does not commit the catalog. Publishing does commit, which is the service's own boundary,
-    so the caller commits afterwards for the catalog half.
+    Three halves rather than two, and the middle one is what Phase 2B added. Registering marks
+    this merchant as a benchmark target, which is what makes overwriting its catalog something
+    the application is willing to do at all. Preparing puts the catalog back to exactly what
+    the fixture above describes and gives back anything an earlier run was holding. Publishing
+    records the workload.
+
+    Convergent in all three. Registering an unchanged fixture returns the registration that
+    exists, preparing an untouched world rewrites the same values and reports nothing created,
+    and publishing an unchanged suite returns the one already published. Editing either
+    definition without bumping its version is refused rather than applied.
+
+    Each step commits its own work, which is the service boundary in every case.
     """
-    summary = await seed_catalog(session, slug=MERCHANT_SLUG, name=MERCHANT_NAME, products=PRODUCTS)
-    await session.commit()
+    environments = BenchmarkEnvironmentService(session)
+    await environments.register(FIXTURE)
+    prepared = await environments.prepare(FIXTURE)
     suite = await BenchmarkSuiteService(session).publish(SUITE)
-    return summary, suite
+    return prepared, suite

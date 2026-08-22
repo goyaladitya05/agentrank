@@ -155,6 +155,73 @@ class BenchmarkSuite(Base):
         )
 
 
+class BenchmarkEnvironment(Base):
+    """One merchant registered as a benchmark world, prepared from one versioned fixture.
+
+    This row is the answer to two separate questions, and it exists because neither of them
+    had one.
+
+    The first is production safety. Preparing a benchmark world overwrites a merchant's catalog
+    and gives back the stock its missions were holding. That is exactly right for a fixture and
+    catastrophic for a real merchant, so it is refused unless the merchant has been registered
+    here. Registration is a deliberate act with a row behind it, and its absence is a refusal
+    rather than a warning.
+
+    The second is historical identity. A run pins its suite and its catalog hash, and neither
+    says which authored world it was supposed to be measured against. `fixture_key`,
+    `fixture_version` and `fixture_hash` do, and a run points at this row, so a report read a
+    year later can say which target produced it.
+
+    There is no `updated_at` and no status. Like a published suite, this has no lifecycle: it is
+    written once and then only read, and the database refuses UPDATE and DELETE. Changing what a
+    world contains means registering a new fixture version, which leaves every earlier run
+    interpretable rather than rewriting what it was measured against.
+
+    One key and version identify one world globally, not one per merchant. A fixture names the
+    merchant it describes, exactly as a suite names the merchant it was authored against, so
+    the same fixture version applied to two merchants would be two worlds claiming one identity.
+    """
+
+    __tablename__ = "benchmark_environment"
+    __table_args__ = (
+        # One world per key and version, globally. The reproducibility guarantee at the storage
+        # layer: there is nowhere for a second `voltedge-catalog@1` to live, so a historical run
+        # naming one cannot come to mean something else.
+        UniqueConstraint("fixture_key", "fixture_version", name="uq_benchmark_environment_version"),
+        # Redundant against the primary key, and present only as a composite foreign key target.
+        # It is what makes a run's environment provably the run's own merchant rather than
+        # somebody else's world with a plausible identifier.
+        UniqueConstraint("id", "merchant_id", name="uq_benchmark_environment_binding"),
+        CheckConstraint(f"fixture_key ~ '{KEY_PATTERN}'", name="fixture_key_format"),
+        CheckConstraint("fixture_version > 0", name="fixture_version_positive"),
+        CheckConstraint(f"fixture_hash ~ '{HASH_PATTERN}'", name="fixture_hash_format"),
+        # The RESTRICT check when a merchant is deleted. Neither unique constraint above serves
+        # it: one has the fixture key leftmost and the other has the identifier.
+        Index(None, "merchant_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)
+    # RESTRICT. A registered benchmark world is a record about a merchant, and removing the
+    # merchant would leave every run measured against it describing a target nobody can name.
+    merchant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("merchant.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    fixture_key: Mapped[str] = mapped_column(String(MAX_KEY_LENGTH), nullable=False)
+    fixture_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    fixture_hash: Mapped[str] = mapped_column(String(HASH_LENGTH), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    @property
+    def label(self) -> str:
+        return f"{self.fixture_key}@{self.fixture_version}"
+
+
 class BenchmarkMission(Base):
     """One buyer objective and its ground truth, as one row.
 
@@ -354,6 +421,17 @@ class BenchmarkRun(Base):
         # foreign key: a mission run cannot be attributed to another merchant, and it cannot
         # carry a result for a mission from a suite this run never executed.
         UniqueConstraint("id", "merchant_id", "suite_id", name="uq_benchmark_run_binding"),
+        # The world this run was measured against, tied to this run's merchant. Nullable, and
+        # PostgreSQL skips a composite foreign key when any of its columns is null, so a run
+        # against an unregistered merchant simply has no environment to check. When there is
+        # one it provably belongs to the same merchant, so knowing an environment identifier is
+        # worth nothing to anybody else.
+        ForeignKeyConstraint(
+            ["environment_id", "merchant_id"],
+            ["benchmark_environment.id", "benchmark_environment.merchant_id"],
+            name="fk_benchmark_run_environment",
+            ondelete="RESTRICT",
+        ),
         CheckConstraint(f"status IN ({_RUN_STATUS_VALUES})", name="status_known"),
         CheckConstraint(
             "representation_label IS NULL OR length(btrim(representation_label)) > 0",
@@ -380,6 +458,8 @@ class BenchmarkRun(Base):
         # constraint above has id leftmost, so it does not serve either.
         Index(None, "merchant_id"),
         Index(None, "suite_id"),
+        # There is deliberately no index on environment_id. A registered environment cannot be
+        # deleted, so no referential probe ever filters on it, and nothing reads runs by world.
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)
@@ -397,6 +477,10 @@ class BenchmarkRun(Base):
         ForeignKey("benchmark_suite.id", ondelete="RESTRICT"),
         nullable=False,
     )
+    # The registered benchmark world this run was prepared against. Null means the run was not
+    # executed against a registered world, which is what an ad hoc merchant in a test looks
+    # like, and never that the target was fine.
+    environment_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     representation_label: Mapped[str | None] = mapped_column(
         String(MAX_REPRESENTATION_LABEL_LENGTH), nullable=True
     )

@@ -177,6 +177,32 @@ class InventoryReservationRepository:
         )
         return (await self._session.execute(statement)).scalars().all()
 
+    async def list_holding_for_merchant(
+        self, merchant_id: uuid.UUID
+    ) -> Sequence[InventoryReservation]:
+        """Every reservation still holding one merchant's stock, oldest first.
+
+        Holding means ACTIVE or COMMITTED, the same predicate `get_holding_for_checkout` uses,
+        and expiry is deliberately not filtered here for the same reason: whether an ACTIVE
+        reservation is still effective depends on the instant being asked about, and that
+        instant belongs to the caller.
+
+        Merchant scoped rather than global. The one caller is benchmark world preparation,
+        which gives back everything an earlier mission left held so that the next mission sees
+        the stock the fixture describes, and a preparation that could reach across merchants
+        would be a preparation that could free somebody else's inventory.
+        """
+        statement = (
+            select(InventoryReservation)
+            .options(selectinload(InventoryReservation.lines))
+            .where(
+                InventoryReservation.merchant_id == merchant_id,
+                InventoryReservation.status.in_(HOLDING_STATUSES),
+            )
+            .order_by(InventoryReservation.id)
+        )
+        return (await self._session.execute(statement)).scalars().all()
+
     async def lock_variants(
         self, *, merchant_id: uuid.UUID, variant_ids: Sequence[uuid.UUID]
     ) -> dict[uuid.UUID, int]:

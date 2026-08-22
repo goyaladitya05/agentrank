@@ -42,6 +42,7 @@ from agentrank_api.benchmark.evaluation import (
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
 from agentrank_api.benchmark.metrics import BenchmarkMetrics, MissionOutcome, compute_metrics
 from agentrank_api.benchmark.models import (
+    BenchmarkEnvironment,
     BenchmarkMission,
     BenchmarkMissionRun,
     BenchmarkRun,
@@ -95,6 +96,7 @@ class BenchmarkRunService:
         suite_key: str,
         suite_version: int,
         merchant_slug: str,
+        environment: BenchmarkEnvironment | None = None,
         representation_label: str | None = None,
     ) -> BenchmarkRun:
         """Create a run, pin it, and mark it RUNNING.
@@ -105,6 +107,12 @@ class BenchmarkRunService:
         The catalog pin and the evaluator version are written before any mission runs, so they
         describe what the run was actually measured against rather than what the merchant looked
         like when somebody got round to reading the report.
+
+        `environment` is the registered world this run is being measured against, and it is the
+        third pin: the suite says which missions, the catalog hash says what the shelf actually
+        looked like, and this says which authored target it was supposed to be. It is optional
+        because a run against an ad hoc merchant has no registered world, and null then means
+        exactly that rather than that the target was fine.
         """
         merchant = await self._merchants.get_by_slug(merchant_slug)
         if merchant is None:
@@ -117,6 +125,7 @@ class BenchmarkRunService:
         run = await self._runs.create(
             merchant=merchant,
             suite=suite,
+            environment=environment,
             representation_label=representation_label,
             catalog_hash=catalog_content_hash(entries),
             evaluator_version=evaluator_version(),

@@ -54,6 +54,14 @@ CONFLICTS: dict[str, InvariantConflict] = {
         detail="this benchmark suite key and version are already published",
         resource="benchmark_suite",
     ),
+    # One registered benchmark world per fixture key and version. The environment service
+    # reads the existing registration first and refuses a changed fixture by name, and two
+    # registrations of a brand new version can both read that none exists.
+    "uq_benchmark_environment_version": InvariantConflict(
+        reason="environment_already_registered",
+        detail="this benchmark fixture key and version are already registered",
+        resource="benchmark_environment",
+    ),
     # A mandate is qualified once. The service refuses a second constraint set after reading
     # that one exists, and two creations racing can both read that none does.
     "uq_intent_constraint_set_mandate_id": InvariantConflict(

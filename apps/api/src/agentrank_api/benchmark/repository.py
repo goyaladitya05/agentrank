@@ -4,11 +4,15 @@ Definitions are create and read only. There is deliberately no update and no del
 published suite: it is the historical record of a workload, and the database refuses both
 through a trigger, so this is a contract rather than a convention.
 
+Registered benchmark worlds are the same: written once, never updated and never deleted, so a
+historical run's record of which target it was measured against cannot be rewritten.
+
 Runs are written once and then transitioned, and the transitions are held by a trigger too, so
 a recorded mission result cannot be re-classified after the fact.
 
-Both repositories own SQLAlchemy and neither commits. The caller sets the transaction boundary,
-which is what lets a suite and its missions, or a run and its mission runs, be one unit of work.
+Every repository here owns SQLAlchemy and none of them commits. The caller sets the transaction
+boundary, which is what lets a suite and its missions, or a run and its mission runs, be one
+unit of work.
 """
 
 import uuid
@@ -18,9 +22,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from agentrank_api.benchmark.definitions import BenchmarkSuiteDefinition
+from agentrank_api.benchmark.fixtures import BenchmarkFixture
 from agentrank_api.benchmark.identity import CorruptedSuiteDefinitionError, suite_content_hash
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
 from agentrank_api.benchmark.models import (
+    BenchmarkEnvironment,
     BenchmarkMission,
     BenchmarkMissionRun,
     BenchmarkRun,
@@ -122,6 +128,74 @@ class BenchmarkSuiteRepository:
         return list((await self._session.execute(statement)).scalars())
 
 
+class BenchmarkEnvironmentRepository:
+    """Persistence access for registered benchmark worlds.
+
+    Create and read only, like the definition side above and for the same reason: a registered
+    world is what a historical run says it was measured against, and the database refuses both
+    UPDATE and DELETE through a trigger.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create(
+        self, *, merchant: Merchant, fixture: BenchmarkFixture
+    ) -> BenchmarkEnvironment:
+        """Register one merchant as the world one fixture version describes, and flush.
+
+        The merchant is passed as a row rather than an identifier so that its slug can be
+        compared with the one the fixture describes. A fixture is a statement about one
+        merchant's catalog, exactly as a suite is a statement about one merchant's ground
+        truth, and applying it anywhere else would overwrite a catalog nobody authored it for.
+
+        The content hash is computed here rather than accepted from a caller, for the same
+        reason a suite's is: a digest somebody else supplied is a digest that can disagree with
+        what it claims to describe.
+        """
+        if merchant.slug != fixture.merchant_slug:
+            raise ValueError(
+                f"benchmark fixture {fixture.label} describes merchant"
+                f" {fixture.merchant_slug!r} and cannot be registered for {merchant.slug!r}"
+            )
+
+        environment = BenchmarkEnvironment(
+            merchant_id=merchant.id,
+            fixture_key=fixture.key,
+            fixture_version=fixture.version,
+            fixture_hash=fixture.content_hash,
+        )
+        self._session.add(environment)
+        await self._session.flush()
+        return environment
+
+    async def get(self, key: str, version: int) -> BenchmarkEnvironment | None:
+        """One registered world by fixture key and version.
+
+        There is no merchant argument and there is no need for one. A fixture key and version
+        identify one world globally, and which merchant it is is what this row answers.
+        """
+        statement = select(BenchmarkEnvironment).where(
+            BenchmarkEnvironment.fixture_key == key,
+            BenchmarkEnvironment.fixture_version == version,
+        )
+        return (await self._session.execute(statement)).scalar_one_or_none()
+
+    async def list_for_merchant(self, merchant_id: uuid.UUID) -> list[BenchmarkEnvironment]:
+        """Every world registered for one merchant, oldest first.
+
+        The read that answers "may this merchant's catalog be overwritten at all". An empty
+        list is the fail closed answer, and it is the answer for every merchant nobody has
+        deliberately registered.
+        """
+        statement = (
+            select(BenchmarkEnvironment)
+            .where(BenchmarkEnvironment.merchant_id == merchant_id)
+            .order_by(BenchmarkEnvironment.id)
+        )
+        return list((await self._session.execute(statement)).scalars())
+
+
 class BenchmarkRunRepository:
     """Persistence access for benchmark runs and their per mission results.
 
@@ -140,6 +214,7 @@ class BenchmarkRunRepository:
         *,
         merchant: Merchant,
         suite: BenchmarkSuite,
+        environment: BenchmarkEnvironment | None = None,
         representation_label: str | None = None,
         catalog_hash: str | None = None,
         evaluator_version: str | None = None,
@@ -169,9 +244,18 @@ class BenchmarkRunRepository:
                 f" {suite.merchant_slug!r} and cannot be run against {merchant.slug!r}"
             )
 
+        if environment is not None and environment.merchant_id != merchant.id:
+            # Also refused by the composite foreign key. Stated here so a caller gets a message
+            # naming both merchants rather than an integrity error from inside a run.
+            raise ValueError(
+                f"benchmark environment {environment.label} belongs to another merchant"
+                f" and cannot be the world for a run of {merchant.slug!r}"
+            )
+
         run = BenchmarkRun(
             merchant_id=merchant.id,
             suite_id=suite.id,
+            environment_id=None if environment is None else environment.id,
             representation_label=representation_label,
             catalog_hash=catalog_hash,
             evaluator_version=evaluator_version,
