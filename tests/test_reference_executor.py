@@ -1,0 +1,733 @@
+"""The deterministic reference executor: what it can see, what it chooses, and what it does.
+
+Two groups of tests and they answer different questions.
+
+The structural ones assert that the executor cannot reach the oracle or the database. They read
+the module's own imports rather than trusting a docstring, because "the executor does not see the
+oracle" is the property the whole benchmark rests on and a property nothing checks is a comment.
+
+The behavioral ones drive real commerce. Every purchase here goes through the real checkout
+service, the real authorization gates, the real inventory reservation and the real payment
+kernel, so a test that passes is evidence about the system rather than about a mock.
+"""
+
+import ast
+import inspect
+import uuid
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
+
+import pytest
+from benchmark_support import brief
+from sqlalchemy import select as sql_select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from agentrank_api.benchmark import reference_executor
+from agentrank_api.benchmark.buyer import MerchantBuyerSurface
+from agentrank_api.benchmark.definitions import AgentMissionBrief
+from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
+from agentrank_api.benchmark.fixtures import BenchmarkFixture
+from agentrank_api.benchmark.observation import (
+    AbstentionCode,
+    CheckoutRefusal,
+    ErrorOrigin,
+    ObservedResult,
+)
+from agentrank_api.benchmark.reference_executor import (
+    REFERENCE_EXECUTOR,
+    Candidate,
+    ReferenceMissionExecutor,
+    Rejection,
+    assess,
+    idempotency_key,
+    select,
+)
+from agentrank_api.checkout.models import CheckoutSession, CheckoutStatus
+from agentrank_api.commerce.catalog_fixture import SeedProduct, SeedVariant
+from agentrank_api.commerce.repository import CatalogRepository
+from agentrank_api.constraints.rules import ConstraintOperator
+from agentrank_api.errors import ConflictError
+from agentrank_api.inventory.models import InventoryReservation, ReservationStatus
+from agentrank_api.mandates.intent import (
+    AllowedCategory,
+    MaxQuantity,
+    Preference,
+    RequiredAttribute,
+)
+from agentrank_api.payments.fake import FakeOutcome, FakePaymentProvider
+from agentrank_api.payments.models import PaymentAttempt, PaymentAttemptStatus
+
+pytestmark = pytest.mark.anyio
+
+CURRENCY = "INR"
+SLUG = "reference-shop"
+FIXTURE_KEY = "reference-shop-catalog"
+
+BLACK = RequiredAttribute("color", "black", ConstraintOperator.EQ)
+CHARGERS = AllowedCategory("chargers")
+
+
+def cheap(sku: str = "RS-CHG-BLK", *, price: int = 100000, stock: int = 5) -> SeedVariant:
+    return SeedVariant(
+        sku=sku,
+        label="Black",
+        price_amount_minor=price,
+        currency=CURRENCY,
+        inventory_quantity=stock,
+        attributes={"color": "black", "wattage": 65},
+    )
+
+
+def world(*products: SeedProduct, version: int = 1) -> BenchmarkFixture:
+    return BenchmarkFixture(
+        key=FIXTURE_KEY,
+        version=version,
+        merchant_slug=SLUG,
+        merchant_name="Reference Shop",
+        products=products
+        or (
+            SeedProduct(
+                external_id="RS-CHG",
+                title="Charger",
+                description=None,
+                category="chargers",
+                variants=(cheap(),),
+            ),
+        ),
+    )
+
+
+def chargers(*variants: SeedVariant, category: str | None = "chargers") -> SeedProduct:
+    return SeedProduct(
+        external_id="RS-CHG",
+        title="Charger",
+        description=None,
+        category=category,
+        variants=variants,
+    )
+
+
+async def prepared(session: AsyncSession, fixture: BenchmarkFixture) -> uuid.UUID:
+    """A registered, prepared benchmark world, and the merchant that is it."""
+    environments = BenchmarkEnvironmentService(session)
+    await environments.register(fixture)
+    outcome = await environments.prepare(fixture)
+    return outcome.environment.merchant_id
+
+
+def executor(
+    session: AsyncSession,
+    merchant_id: uuid.UUID,
+    *,
+    provider: FakePaymentProvider | None = None,
+) -> ReferenceMissionExecutor:
+    surface = MerchantBuyerSurface(
+        session, merchant_id=merchant_id, provider=provider or FakePaymentProvider()
+    )
+    return ReferenceMissionExecutor(surface)
+
+
+async def stock_of(session: AsyncSession, merchant_id: uuid.UUID, sku: str) -> int:
+    found = await CatalogRepository(session).get_variant_by_sku(merchant_id, sku)
+    assert found is not None
+    return found.inventory_quantity
+
+
+async def reservations(session: AsyncSession) -> list[InventoryReservation]:
+    return list((await session.execute(sql_select(InventoryReservation))).scalars())
+
+
+async def attempts(session: AsyncSession) -> list[PaymentAttempt]:
+    return list((await session.execute(sql_select(PaymentAttempt))).scalars())
+
+
+def candidate(
+    *,
+    sku: str = "RS-1",
+    price: int = 100000,
+    currency: str = CURRENCY,
+    stock: int = 5,
+    category: str | None = "chargers",
+    attributes: dict[str, Any] | None = None,
+) -> Candidate:
+    return Candidate(
+        variant_id=uuid.uuid7(),
+        sku=sku,
+        unit_price_amount_minor=price,
+        currency=currency,
+        inventory_quantity=stock,
+        product_category=category,
+        attributes={"color": "black"} if attributes is None else attributes,
+    )
+
+
+# What the executor is structurally allowed to reach.
+
+
+def _imported_modules(module: object) -> set[str]:
+    """Every module this module's own source imports, at the top level.
+
+    Read from the source rather than from `sys.modules`, because what matters is what this file
+    names. A transitive import through a view model carries no reachable object; a direct one
+    puts a name in this module's namespace.
+    """
+    source = Path(inspect.getfile(module)).read_text(encoding="utf-8")  # type: ignore[arg-type]
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            found.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module is not None:
+            found.add(node.module)
+    return found
+
+
+def test_the_executor_imports_nothing_that_knows_an_oracle_exists() -> None:
+    """The property the whole benchmark rests on, asserted against the source.
+
+    An executor that imported the evaluator, the catalog facts or the run service would have
+    `evaluate_mission`, `satisfies` and every mission definition one attribute access away, and
+    the separation would rest on nobody reaching for them.
+    """
+    imported = _imported_modules(reference_executor)
+
+    forbidden = {
+        "agentrank_api.benchmark.evaluation",
+        "agentrank_api.benchmark.catalog",
+        "agentrank_api.benchmark.runner",
+        "agentrank_api.benchmark.models",
+        "agentrank_api.benchmark.repository",
+        "agentrank_api.benchmark.metrics",
+        "agentrank_api.benchmark.suites",
+        "agentrank_api.benchmark.voltedge",
+        "agentrank_api.benchmark.failures",
+        "agentrank_api.benchmark.lifecycle",
+    }
+    assert imported & forbidden == set()
+
+
+def test_the_executor_imports_nothing_that_can_reach_the_database() -> None:
+    """It is handed a buyer surface, not a session. Nothing here can open one."""
+    imported = _imported_modules(reference_executor)
+
+    assert not any(name.startswith("sqlalchemy") for name in imported)
+    assert not any(name.endswith(".repository") for name in imported)
+    assert not any(name.endswith(".service") for name in imported)
+
+
+def _spelled_names(module: object) -> set[str]:
+    """Every name this module spells: identifiers, attributes, imports and string literals.
+
+    Prose is excluded, because a docstring explaining what an oracle is has no reference to one.
+    A lazy import inside a function, an attribute access and a name looked up by string are all
+    included, which is what this is for.
+    """
+    source = Path(inspect.getfile(module)).read_text(encoding="utf-8")  # type: ignore[arg-type]
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        match node:
+            case ast.Name():
+                found.add(node.id)
+            case ast.Attribute():
+                found.add(node.attr)
+            case ast.alias():
+                found.add(node.name)
+                if node.asname is not None:
+                    found.add(node.asname)
+            case ast.ImportFrom() if node.module is not None:
+                found.add(node.module)
+            case ast.FunctionDef() | ast.AsyncFunctionDef() | ast.ClassDef():
+                found.add(node.name)
+            case ast.Constant() if isinstance(node.value, str):
+                found.add(node.value)
+    return found
+
+
+def test_no_oracle_name_is_spelled_in_the_executor_at_all() -> None:
+    """The import check stops a module being reached. This stops a name being spelled.
+
+    A lazy import inside a function, an attribute access on something that arrived another way,
+    and a name looked up from a string are the three ways the import check alone could be got
+    around, and all three put the name in here.
+    """
+    spelled = _spelled_names(reference_executor)
+
+    forbidden = {
+        "MissionOracle",
+        "ExpectedOutcome",
+        "BenchmarkMissionDefinition",
+        "evaluate_mission",
+        "satisfies",
+        "facts_for",
+        "expected_outcome",
+        "simulated_value_amount_minor",
+        "oracle",
+    }
+    assert spelled & forbidden == set()
+
+
+def test_the_executor_is_called_with_a_brief_and_a_merchant_and_nothing_else() -> None:
+    signature = inspect.signature(ReferenceMissionExecutor.__call__)
+
+    assert list(signature.parameters) == ["self", "brief", "merchant_id"]
+    assert signature.parameters["brief"].annotation is AgentMissionBrief
+
+
+def test_the_executor_declares_a_kind_and_a_version() -> None:
+    """A historical run that cannot say which strategy produced it compares two things."""
+    assert REFERENCE_EXECUTOR.kind == "reference"
+    assert REFERENCE_EXECUTOR.version == 1
+    assert REFERENCE_EXECUTOR.label == "reference-v1"
+    assert ReferenceMissionExecutor.identity is REFERENCE_EXECUTOR
+
+
+# Assessing one candidate.
+
+
+@pytest.mark.parametrize(
+    ("entry", "expected"),
+    [
+        (candidate(currency="EUR"), Rejection.WRONG_CURRENCY),
+        (candidate(category=None), Rejection.UNSTATED),
+        (candidate(attributes={}), Rejection.UNSTATED),
+        (candidate(attributes={"color": 7}), Rejection.UNSTATED),
+        (candidate(category="cables"), Rejection.MISMATCH),
+        (candidate(attributes={"color": "blue"}), Rejection.MISMATCH),
+        (candidate(stock=0), Rejection.OUT_OF_STOCK),
+        (candidate(price=900000), Rejection.OVER_BUDGET),
+        (candidate(), None),
+    ],
+)
+def test_every_way_a_candidate_can_fail_is_told_apart(
+    entry: Candidate, expected: Rejection | None
+) -> None:
+    """Absence, a wrong answer and an unaffordable one are three different findings.
+
+    Collapsing them would make an abstention say nothing about the merchant, which is the whole
+    thing this benchmark measures.
+    """
+    assert assess(brief(constraints=(CHARGERS, BLACK)), entry) is expected
+
+
+def test_a_currency_mismatch_is_reported_before_any_amount_is_compared() -> None:
+    """Comparing 8999 EUR against 500000 INR is meaningless rather than strict."""
+    priced_in_euros = candidate(currency="EUR", price=1)
+
+    assert assess(brief(constraints=(CHARGERS, BLACK)), priced_in_euros) is Rejection.WRONG_CURRENCY
+
+
+def test_quantity_is_multiplied_into_the_budget_check() -> None:
+    """A buyer wanting two units authorized the total, not the unit price."""
+    two = brief(constraints=(), quantity=2, budget_minor=150000)
+
+    assert assess(two, candidate(price=80000)) is Rejection.OVER_BUDGET
+    assert assess(two, candidate(price=70000)) is None
+
+
+def test_stock_is_checked_against_the_quantity_wanted() -> None:
+    two = brief(constraints=(), quantity=2)
+
+    assert assess(two, candidate(stock=1)) is Rejection.OUT_OF_STOCK
+    assert assess(two, candidate(stock=2)) is None
+
+
+# Choosing among candidates.
+
+
+def test_the_cheapest_qualifying_candidate_is_chosen() -> None:
+    """Every candidate here satisfies everything the buyer stated, so they are indifferent."""
+    options = [candidate(sku="RS-2", price=200000), candidate(sku="RS-1", price=100000)]
+
+    assert select(options, quantity=1).sku == "RS-1"
+
+
+def test_a_price_tie_is_broken_by_sku_and_not_by_the_order_they_arrived() -> None:
+    """A benchmark whose selection depends on a query plan is not reproducible."""
+    first = candidate(sku="RS-B")
+    second = candidate(sku="RS-A")
+
+    assert select([first, second], quantity=1).sku == "RS-A"
+    assert select([second, first], quantity=1).sku == "RS-A"
+
+
+def test_selection_compares_totals_rather_than_unit_prices() -> None:
+    """Quantity is in the comparison, because a buyer pays the total."""
+    options = [candidate(sku="RS-1", price=100000), candidate(sku="RS-2", price=90000)]
+
+    assert select(options, quantity=3).sku == "RS-2"
+
+
+def test_selection_ignores_preferences() -> None:
+    """A preference is advisory prose. Promoting one to a tie break invents a requirement."""
+    stated = brief(preferences=(Preference("prefer the expensive one"),))
+    options = [candidate(sku="RS-2", price=200000), candidate(sku="RS-1", price=100000)]
+
+    assert select(options, quantity=stated.quantity).sku == "RS-1"
+
+
+def test_an_idempotency_key_is_derived_from_the_quote_and_nothing_else() -> None:
+    """A retry against one quote resolves to one attempt rather than writing a second."""
+    checkout_id = uuid.uuid7()
+
+    assert idempotency_key(checkout_id) == idempotency_key(checkout_id)
+    assert idempotency_key(checkout_id) != idempotency_key(uuid.uuid7())
+    assert idempotency_key(checkout_id).startswith("ar-benchmark-")
+
+
+# Real purchases.
+
+
+async def test_a_purchase_goes_all_the_way_through_the_real_commerce_path(
+    session: AsyncSession,
+) -> None:
+    """The whole point of the phase, asserted on the rows rather than on the report.
+
+    A payment that succeeded, a quote that is PAID, a reservation that is CONSUMED and stock that
+    fell by exactly the quantity bought.
+    """
+    merchant_id = await prepared(session, world())
+    provider = FakePaymentProvider()
+
+    observed = await executor(session, merchant_id, provider=provider)(
+        brief(constraints=(CHARGERS, BLACK)), merchant_id=merchant_id
+    )
+
+    assert observed.purchased
+    assert observed.selection is not None
+    assert observed.selection.quantity == 1
+    assert observed.checkout is not None and observed.checkout.created
+    assert observed.checkout.total_amount_minor == 100000
+    assert observed.authorization is not None and observed.authorization.allowed
+
+    settled = list((await session.execute(sql_select(CheckoutSession))).scalars())
+    assert [quote.status for quote in settled] == [CheckoutStatus.PAID]
+    assert [held.status for held in await reservations(session)] == [ReservationStatus.CONSUMED]
+    assert [paid.status for paid in await attempts(session)] == [PaymentAttemptStatus.SUCCEEDED]
+    assert await stock_of(session, merchant_id, "RS-CHG-BLK") == 4
+    # One provider operation, not two.
+    assert provider.charges == 1
+
+
+async def test_inventory_falls_by_exactly_the_quantity_bought(session: AsyncSession) -> None:
+    merchant_id = await prepared(session, world(chargers(cheap(stock=9))))
+
+    await executor(session, merchant_id)(
+        brief(constraints=(CHARGERS, BLACK), quantity=2, budget_minor=250000),
+        merchant_id=merchant_id,
+    )
+
+    assert await stock_of(session, merchant_id, "RS-CHG-BLK") == 7
+
+
+async def test_the_same_world_and_the_same_brief_choose_the_same_variant(
+    session: AsyncSession,
+) -> None:
+    """Determinism, asserted across two worlds rather than across two calls in one.
+
+    Two calls in one world would differ anyway, because the first one buys something.
+    """
+    stated = brief(constraints=(CHARGERS, BLACK))
+    two_options = world(
+        chargers(cheap("RS-A", price=100000), cheap("RS-B", price=100000)),
+    )
+
+    merchant_id = await prepared(session, two_options)
+    first = await executor(session, merchant_id)(stated, merchant_id=merchant_id)
+    await BenchmarkEnvironmentService(session).prepare(two_options)
+    second = await executor(session, merchant_id)(stated, merchant_id=merchant_id)
+
+    assert first.selection is not None and second.selection is not None
+    assert first.selection.variant_id == second.selection.variant_id
+    assert first.selection.unit_price_amount_minor == second.selection.unit_price_amount_minor
+
+
+async def test_the_executor_buys_the_cheaper_of_two_acceptable_variants(
+    session: AsyncSession,
+) -> None:
+    merchant_id = await prepared(
+        session, world(chargers(cheap("RS-A", price=200000), cheap("RS-B", price=100000)))
+    )
+
+    observed = await executor(session, merchant_id)(
+        brief(constraints=(CHARGERS, BLACK)), merchant_id=merchant_id
+    )
+
+    assert observed.selection is not None
+    assert observed.selection.unit_price_amount_minor == 100000
+    assert await stock_of(session, merchant_id, "RS-B") == 4
+    assert await stock_of(session, merchant_id, "RS-A") == 5
+
+
+async def test_a_withdrawn_variant_is_never_bought(session: AsyncSession) -> None:
+    """It is visible on the product read and it is not for sale."""
+    withdrawn = replace(cheap("RS-OLD", price=10000), is_active=False)
+    merchant_id = await prepared(session, world(chargers(withdrawn, cheap())))
+
+    observed = await executor(session, merchant_id)(
+        brief(constraints=(CHARGERS, BLACK)), merchant_id=merchant_id
+    )
+
+    assert observed.selection is not None
+    assert observed.selection.unit_price_amount_minor == 100000
+
+
+# Abstaining.
+
+
+@pytest.mark.parametrize(
+    ("fixture", "constraints", "expected"),
+    [
+        pytest.param(
+            world(chargers(cheap(price=900000))),
+            (CHARGERS, BLACK),
+            AbstentionCode.BUDGET_INSUFFICIENT,
+            id="everything fits but the money",
+        ),
+        pytest.param(
+            world(chargers(cheap(), category=None)),
+            (CHARGERS, BLACK),
+            AbstentionCode.MERCHANT_DATA_INSUFFICIENT,
+            id="the merchant never published a category",
+        ),
+        pytest.param(
+            world(chargers(replace(cheap(), attributes={"wattage": 65}))),
+            (CHARGERS, BLACK),
+            AbstentionCode.MERCHANT_DATA_INSUFFICIENT,
+            id="the merchant never published the attribute",
+        ),
+        pytest.param(
+            world(chargers(replace(cheap(), attributes={"color": "blue"}))),
+            (CHARGERS, BLACK),
+            AbstentionCode.NO_COMPLIANT_CANDIDATE,
+            id="the merchant published a different value",
+        ),
+        pytest.param(
+            world(chargers(cheap(stock=0))),
+            (CHARGERS, BLACK),
+            AbstentionCode.NO_COMPLIANT_CANDIDATE,
+            id="out of stock",
+        ),
+    ],
+)
+async def test_the_executor_declines_and_says_what_it_saw(
+    session: AsyncSession,
+    fixture: BenchmarkFixture,
+    constraints: tuple[Any, ...],
+    expected: AbstentionCode,
+) -> None:
+    """Abstaining is a real outcome, and the code records what the executor believed.
+
+    The evaluator never reads the code. It is here so that a person reading a run can see why the
+    executor stopped, and so that "nothing was found" and "nothing qualified" stay apart.
+    """
+    merchant_id = await prepared(session, fixture)
+
+    observed = await executor(session, merchant_id)(
+        brief(constraints=constraints), merchant_id=merchant_id
+    )
+
+    assert observed.abstention is not None
+    assert observed.abstention.code is expected
+    assert observed.selection is None
+    assert observed.checkout is None
+    assert observed.payment is None
+
+
+async def test_an_abstention_writes_no_commerce_state(session: AsyncSession) -> None:
+    """Declining costs the merchant nothing: no mandate, no quote, no hold, no payment."""
+    merchant_id = await prepared(session, world(chargers(cheap(price=900000))))
+
+    await executor(session, merchant_id)(
+        brief(constraints=(CHARGERS, BLACK)), merchant_id=merchant_id
+    )
+
+    assert list((await session.execute(sql_select(CheckoutSession))).scalars()) == []
+    assert await reservations(session) == []
+    assert await attempts(session) == []
+    assert await stock_of(session, merchant_id, "RS-CHG-BLK") == 5
+
+
+async def test_a_withdrawn_product_leaves_nothing_to_find(session: AsyncSession) -> None:
+    """A product the merchant no longer sells is not in the catalog a buyer can browse."""
+    fixture = BenchmarkFixture(
+        key=FIXTURE_KEY,
+        version=1,
+        merchant_slug=SLUG,
+        merchant_name="Reference Shop",
+        products=(
+            SeedProduct(
+                external_id="RS-CHG",
+                title="Charger",
+                description=None,
+                category="chargers",
+                is_active=False,
+                variants=(cheap(),),
+            ),
+        ),
+    )
+    merchant_id = await prepared(session, fixture)
+
+    observed = await executor(session, merchant_id)(
+        brief(constraints=(CHARGERS, BLACK)), merchant_id=merchant_id
+    )
+
+    assert observed.abstention is not None
+    assert observed.abstention.code is AbstentionCode.NO_CANDIDATE_FOUND
+
+
+# Refusals from the merchant.
+
+
+async def test_a_mission_with_no_stated_requirement_is_denied_rather_than_waved_through(
+    session: AsyncSession,
+) -> None:
+    """A mandate with no constraint set has no semantic authorization at all.
+
+    The system's own rule is that absence is not satisfaction, and the honest thing is to let the
+    mission fail on it rather than to invent a requirement so that it can proceed.
+    """
+    merchant_id = await prepared(session, world())
+
+    observed = await executor(session, merchant_id)(brief(constraints=()), merchant_id=merchant_id)
+
+    assert observed.checkout is not None and observed.checkout.created
+    assert observed.authorization is not None
+    assert not observed.authorization.allowed
+    assert "INTENT_CONSTRAINTS_MISSING" in observed.authorization.violations
+    assert observed.payment is None
+    # Denied before anything was held.
+    assert await reservations(session) == []
+    assert await stock_of(session, merchant_id, "RS-CHG-BLK") == 5
+
+
+async def test_a_declined_payment_is_reported_as_a_decline_and_gives_the_stock_back(
+    session: AsyncSession,
+) -> None:
+    merchant_id = await prepared(session, world())
+    provider = FakePaymentProvider(default=FakeOutcome.DECLINE)
+
+    observed = await executor(session, merchant_id, provider=provider)(
+        brief(constraints=(CHARGERS, BLACK)), merchant_id=merchant_id
+    )
+
+    assert observed.payment is not None
+    assert observed.payment.status is PaymentAttemptStatus.FAILED
+    assert not observed.purchased
+    assert [held.status for held in await reservations(session)] == [ReservationStatus.RELEASED]
+    assert await stock_of(session, merchant_id, "RS-CHG-BLK") == 5
+
+
+async def test_an_unresolved_payment_is_not_reported_as_a_decline(
+    session: AsyncSession,
+) -> None:
+    """The payment kernel is built on never calling an unresolved payment a failed one."""
+    merchant_id = await prepared(session, world())
+    provider = FakePaymentProvider(default=FakeOutcome.AMBIGUOUS)
+
+    observed = await executor(session, merchant_id, provider=provider)(
+        brief(constraints=(CHARGERS, BLACK)), merchant_id=merchant_id
+    )
+
+    assert observed.payment is not None
+    assert observed.payment.status is PaymentAttemptStatus.UNKNOWN
+    assert not observed.purchased
+    # Committed rather than released. The stock stays held while the payment may have gone
+    # through, which is the fail closed direction.
+    assert [held.status for held in await reservations(session)] == [ReservationStatus.COMMITTED]
+
+
+async def test_the_executor_refuses_to_shop_at_another_merchant(
+    session: AsyncSession,
+) -> None:
+    """A harness pointed at the wrong merchant is a misconfiguration, not a measurement."""
+    merchant_id = await prepared(session, world())
+
+    with pytest.raises(ValueError, match="shops at merchant"):
+        await executor(session, merchant_id)(brief(), merchant_id=uuid.uuid7())
+
+
+async def test_a_merchant_surface_error_is_reported_as_one(session: AsyncSession) -> None:
+    """A refusal no step expected is the merchant answering with an error rather than an
+    outcome, and it is a finding about the merchant rather than a harness fault."""
+    merchant_id = await prepared(session, world())
+
+    class Refusing(MerchantBuyerSurface):
+        async def search_products(self, request: Any) -> Any:
+            raise ConflictError("catalog_unavailable", "the catalog could not be read")
+
+    surface = Refusing(session, merchant_id=merchant_id, provider=FakePaymentProvider())
+    observed = await ReferenceMissionExecutor(surface)(
+        brief(constraints=(CHARGERS, BLACK)), merchant_id=merchant_id
+    )
+
+    assert observed.error is not None
+    assert observed.error.origin is ErrorOrigin.MERCHANT
+    assert observed.error.detail == "catalog_unavailable"
+    assert observed.selection is None
+
+
+async def test_a_quote_the_merchant_will_not_make_is_recorded_as_a_refusal(
+    session: AsyncSession,
+) -> None:
+    """A refusal to quote is a commerce fact rather than an error, and which one it was matters.
+
+    Unreachable through the ordinary path, because the executor filters on stock before it
+    quotes, so this drives the translation directly through a surface that refuses.
+    """
+    merchant_id = await prepared(session, world())
+
+    class OutOfStock(MerchantBuyerSurface):
+        async def create_checkout(self, request: Any) -> Any:
+            raise ConflictError("insufficient_inventory", "one available, two requested")
+
+    surface = OutOfStock(session, merchant_id=merchant_id, provider=FakePaymentProvider())
+    observed = await ReferenceMissionExecutor(surface)(
+        brief(constraints=(CHARGERS, BLACK)), merchant_id=merchant_id
+    )
+
+    assert observed.checkout is not None
+    assert not observed.checkout.created
+    assert observed.checkout.refusal is CheckoutRefusal.OUT_OF_STOCK
+    assert observed.selection is not None
+
+
+# The mission a quantity ceiling qualifies.
+
+
+async def test_a_quantity_ceiling_travels_into_the_mandate(session: AsyncSession) -> None:
+    """The buyer said at most two, so the authorization permits at most two and never more."""
+    merchant_id = await prepared(session, world(chargers(cheap(stock=9))))
+
+    observed = await executor(session, merchant_id)(
+        AgentMissionBrief(
+            key="two-chargers",
+            objective="Buy two black chargers and no more than two.",
+            budget=brief().budget,
+            quantity=2,
+            hard_constraints=(CHARGERS, BLACK, MaxQuantity(2)),
+        ),
+        merchant_id=merchant_id,
+    )
+
+    assert observed.purchased
+    assert observed.selection is not None and observed.selection.quantity == 2
+    assert await stock_of(session, merchant_id, "RS-CHG-BLK") == 7
+
+
+def test_an_observed_result_never_carries_a_classification() -> None:
+    """The executor reports facts and the evaluator classifies them.
+
+    Asserted on the type rather than on one result, because a field added here later is the way
+    that separation would be lost.
+    """
+    fields = set(ObservedResult.__dataclass_fields__)
+
+    assert fields == {
+        "merchant_id",
+        "selection",
+        "checkout",
+        "authorization",
+        "payment",
+        "abstention",
+        "error",
+    }

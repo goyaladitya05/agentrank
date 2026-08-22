@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from agentrank_api.benchmark.catalog import CatalogEntry, catalog_content_hash
 from agentrank_api.benchmark.definitions import AgentMissionBrief, ExpectedOutcome
 from agentrank_api.benchmark.evaluation import evaluator_version
+from agentrank_api.benchmark.execution import ExecutorIdentity
 from agentrank_api.benchmark.failures import FailureReason
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
 from agentrank_api.benchmark.observation import (
@@ -454,19 +455,25 @@ async def test_the_executor_is_handed_briefs_and_never_an_oracle(
     )
     seen: list[AgentMissionBrief] = []
 
-    async def record(brief: AgentMissionBrief, *, merchant_id: uuid.UUID) -> ObservedResult:
-        del merchant_id
-        seen.append(brief)
-        return ObservedResult(
-            merchant_id=built.merchant_id,
-            abstention=ObservedAbstention(code=AbstentionCode.NO_COMPLIANT_CANDIDATE),
-        )
+    class Recording:
+        identity = ExecutorIdentity(kind="recording", version=1)
+
+        async def __call__(
+            self, brief: AgentMissionBrief, *, merchant_id: uuid.UUID
+        ) -> ObservedResult:
+            del merchant_id
+            seen.append(brief)
+            return ObservedResult(
+                merchant_id=built.merchant_id,
+                abstention=ObservedAbstention(code=AbstentionCode.NO_COMPLIANT_CANDIDATE),
+            )
 
     await BenchmarkRunService(session).run_suite(
-        record, suite_key="test-suite", suite_version=1, merchant_slug=SLUG
+        Recording(), suite_key="test-suite", suite_version=1, merchant_slug=SLUG
     )
 
     assert len(seen) == 1
+    assert isinstance(seen[0], AgentMissionBrief)
     fields = set(AgentMissionBrief.__dataclass_fields__)
     assert "expected_outcome" not in fields
     assert "simulated_value_amount_minor" not in fields

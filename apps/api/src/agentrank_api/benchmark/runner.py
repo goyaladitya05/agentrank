@@ -2,9 +2,10 @@
 
 This is a runner, not a buyer. It knows how to start a run, hand an executor one mission brief
 at a time, mark what comes back and close the run. It has no opinion about how a mission is
-carried out, no LLM, no prompt and no model identifier, and the seam it offers is one async
-callable that turns a brief into an `ObservedResult`. The buyer agent that eventually sits
-behind that seam is Phase 4 and nothing here anticipates its shape.
+carried out, no LLM, no prompt and no model identifier, and the seam it offers is
+`MissionExecutor`, which lives in `agentrank_api.benchmark.execution` rather than here. That
+separation is deliberate: this module imports the evaluator and the mission definitions, and an
+executor importing its own protocol from here would have both one attribute access away.
 
 Four things happen here that could not happen in the pure evaluator, and each is why this module
 exists at all rather than being a loop somebody writes twice.
@@ -25,9 +26,8 @@ the same workload the same way.
 """
 
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Protocol
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,6 +39,7 @@ from agentrank_api.benchmark.evaluation import (
     evaluate_mission,
     evaluator_version,
 )
+from agentrank_api.benchmark.execution import ExecutorIdentity, MissionExecutor
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
 from agentrank_api.benchmark.metrics import BenchmarkMetrics, MissionOutcome, compute_metrics
 from agentrank_api.benchmark.models import (
@@ -56,24 +57,6 @@ from agentrank_api.errors import ConflictError, NotFoundError
 from agentrank_api.payments.models import PaymentAttempt, PaymentAttemptStatus
 
 RUN_RESOURCE = "benchmark_run"
-
-
-class MissionExecutor(Protocol):
-    """Whatever carries a mission out.
-
-    One method, and it receives a brief rather than a mission, so an executor cannot reach the
-    oracle even by accident. The merchant is passed alongside because an executor has to know
-    which catalog it is shopping, and nothing else is: no suite, no run identifier, no other
-    mission, and nothing about what any earlier mission did.
-
-    Deliberately minimal. A scripted runner, a fixture that replays prepared results and a
-    future LLM buyer all satisfy this, and none of them can tell from the signature which of the
-    others it is standing beside.
-    """
-
-    def __call__(
-        self, brief: AgentMissionBrief, *, merchant_id: uuid.UUID
-    ) -> Awaitable[ObservedResult]: ...
 
 
 class BenchmarkRunService:
@@ -434,27 +417,37 @@ def _outcome(result: BenchmarkMissionRun) -> MissionOutcome:
     )
 
 
-def executor_from(
-    results: dict[str, ObservedResult],
-) -> Callable[..., Awaitable[ObservedResult]]:
+class ReplayExecutor:
     """An executor that replays prepared observed results, keyed by mission.
 
-    The deterministic runner this phase actually has. It is not a buyer agent and does not
-    pretend to be one: it carries out no commerce, makes no decision and reaches nothing
-    external. What it is for is exercising the run machinery end to end without an LLM, and for
-    letting a test state exactly what an executor reported and assert exactly what that meant.
+    It is not a buyer and does not pretend to be one: it carries out no commerce, makes no
+    decision and reaches nothing external. What it is for is exercising the run machinery
+    without a merchant, and for letting a test state exactly what an executor reported and
+    assert exactly what that meant.
 
-    A mission with no prepared result raises, rather than being quietly skipped, because a
+    It declares its own identity, so a run driven by it is historically distinguishable from a
+    run driven by something that actually shopped. A replayed run whose executor identity said
+    `reference-v1` would be a result claiming to have been produced by work nobody did.
+
+    A mission with no prepared result raises rather than being quietly skipped, because a
     silently skipped mission is a run with a smaller denominator than the suite it claims.
     """
 
-    async def execute(brief: AgentMissionBrief, *, merchant_id: uuid.UUID) -> ObservedResult:
-        del merchant_id
-        if brief.key not in results:
-            raise KeyError(f"no prepared result for mission {brief.key!r}")
-        return results[brief.key]
+    identity = ExecutorIdentity(kind="replay", version=1)
 
-    return execute
+    def __init__(self, results: dict[str, ObservedResult]) -> None:
+        self._results = results
+
+    async def __call__(self, brief: AgentMissionBrief, *, merchant_id: uuid.UUID) -> ObservedResult:
+        del merchant_id
+        if brief.key not in self._results:
+            raise KeyError(f"no prepared result for mission {brief.key!r}")
+        return self._results[brief.key]
+
+
+def executor_from(results: dict[str, ObservedResult]) -> ReplayExecutor:
+    """A replay executor over these prepared results."""
+    return ReplayExecutor(results)
 
 
 def outcomes_of(mission_runs: Sequence[BenchmarkMissionRun]) -> list[MissionOutcome]:
