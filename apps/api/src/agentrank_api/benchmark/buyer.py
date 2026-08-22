@@ -66,6 +66,7 @@ from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from agentrank_api.benchmark.mutation import BenchmarkRunCapability
 from agentrank_api.checkout.execution import CheckoutExecutionService
 from agentrank_api.checkout.schemas import (
     CheckoutView,
@@ -149,6 +150,7 @@ class MerchantBuyerSurface:
         *,
         merchant_id: uuid.UUID,
         provider: PaymentProvider,
+        benchmark_capability: BenchmarkRunCapability | None = None,
     ) -> None:
         if isinstance(sessions, AsyncSession):  # type: ignore[unreachable]
             # The arrangement this class was changed to prevent, refused where it is made rather
@@ -162,10 +164,21 @@ class MerchantBuyerSurface:
         self._sessions = sessions
         self._merchant_id = merchant_id
         self._provider = provider
+        self._benchmark_capability = benchmark_capability
 
     @property
     def merchant_id(self) -> uuid.UUID:
         return self._merchant_id
+
+    def bind_benchmark_run(self, capability: BenchmarkRunCapability) -> None:
+        """Bind this trusted surface to the run that owns its merchant for this execution."""
+        if capability.merchant_id != self._merchant_id:
+            raise ValueError("a benchmark capability must name this buyer surface's merchant")
+        # The trusted reference surface is reusable across sequential runs in tests and in the
+        # operator command.  The runner calls this only after the previous run is terminal and
+        # before the next executor invocation, so replacing a completed run's capability does
+        # not give two live runs one authority.
+        self._benchmark_capability = capability
 
     async def search_products(self, request: ProductSearchRequest) -> ProductSearchResponse:
         """Browse this merchant's catalog, with the filters the request states.
@@ -195,9 +208,9 @@ class MerchantBuyerSurface:
     async def authorize_spending(self, request: CreateMandateRequest) -> MandateView:
         """Create the single purchase authorization this buyer will spend under."""
         async with self._sessions() as session:
-            mandate = await MandateService(session).create_mandate(
-                request.to_command(self._merchant_id)
-            )
+            mandate = await MandateService(
+                session, benchmark_capability=self._benchmark_capability
+            ).create_mandate(request.to_command(self._merchant_id))
             return MandateView.from_model(mandate)
 
     async def state_requirements(
@@ -210,9 +223,9 @@ class MerchantBuyerSurface:
         with two homes is a ceiling that can disagree with itself.
         """
         async with self._sessions() as session:
-            constraint_set = await IntentConstraintService(session).create_constraints(
-                request.to_command(mandate_id, self._merchant_id)
-            )
+            constraint_set = await IntentConstraintService(
+                session, benchmark_capability=self._benchmark_capability
+            ).create_constraints(request.to_command(mandate_id, self._merchant_id))
             return IntentConstraintSetView.from_model(constraint_set)
 
     async def create_checkout(self, request: CreateCheckoutRequest) -> CheckoutView:
@@ -223,9 +236,9 @@ class MerchantBuyerSurface:
         one: a total above what the mandate permits is quoted successfully and denied later.
         """
         async with self._sessions() as session:
-            checkout = await CheckoutService(session).create_checkout(
-                request.to_command(self._merchant_id)
-            )
+            checkout = await CheckoutService(
+                session, benchmark_capability=self._benchmark_capability
+            ).create_checkout(request.to_command(self._merchant_id))
             return CheckoutView.from_model(checkout)
 
     async def get_checkout(self, checkout_id: uuid.UUID) -> CheckoutView:
@@ -244,9 +257,9 @@ class MerchantBuyerSurface:
         cannot tell them apart is an executor that retries the same request.
         """
         async with self._sessions() as session:
-            readiness = await CheckoutExecutionService(session).prepare_execution(
-                checkout_id, merchant_id=self._merchant_id
-            )
+            readiness = await CheckoutExecutionService(
+                session, benchmark_capability=self._benchmark_capability
+            ).prepare_execution(checkout_id, merchant_id=self._merchant_id)
             return ExecutionPreparationView.from_readiness(readiness)
 
     async def complete_checkout(
@@ -259,7 +272,7 @@ class MerchantBuyerSurface:
         through that attempt. A refusal reaches no provider at all.
         """
         async with self._sessions() as session:
-            result = await PaymentService(session, self._provider).pay(
-                checkout_id, merchant_id=self._merchant_id, idempotency_key=request.resolve_key()
-            )
+            result = await PaymentService(
+                session, self._provider, benchmark_capability=self._benchmark_capability
+            ).pay(checkout_id, merchant_id=self._merchant_id, idempotency_key=request.resolve_key())
             return PaymentView.from_admission(result.admission, result.attempt)

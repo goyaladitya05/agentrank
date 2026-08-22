@@ -69,6 +69,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from agentrank_api.benchmark.mutation import BenchmarkMutationGuard, BenchmarkRunCapability
 from agentrank_api.checkout.authorization import authorize_checkout
 from agentrank_api.checkout.execution_authorization import (
     CheckoutExecutionAuthorization,
@@ -193,8 +194,12 @@ class CheckoutExecutionService:
     except the readiness answer itself, which is the point.
     """
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self, session: AsyncSession, *, benchmark_capability: BenchmarkRunCapability | None = None
+    ) -> None:
         self._session = session
+        self._benchmark_capability = benchmark_capability
+        self._mutation = BenchmarkMutationGuard(session)
         self._checkouts = CheckoutRepository(session)
         self._mandates = MandateRepository(session)
         self._constraints = IntentConstraintRepository(session)
@@ -297,6 +302,7 @@ class CheckoutExecutionService:
         together. Preparing again while that reservation is still effective returns the same
         one and writes nothing further.
         """
+        await self._mutation.require_allowed(merchant_id, capability=self._benchmark_capability)
         admission = await self.authorize_under_locks(checkout_id, merchant_id=merchant_id, at=at)
         if not admission.admitted:
             # Nothing has been written. An authorization denial returns before any catalog
@@ -401,6 +407,7 @@ class CheckoutExecutionService:
         Nothing here decides whether a purchase happened. This is a claim on stock being
         withdrawn, and no payment exists in this application to have withdrawn it.
         """
+        await self._mutation.require_allowed(merchant_id, capability=self._benchmark_capability)
         checkout = await self._checkouts.get_for_update(checkout_id, merchant_id=merchant_id)
         if checkout is None:
             raise NotFoundError("checkout", str(checkout_id))

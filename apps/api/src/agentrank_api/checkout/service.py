@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentrank_api.audit.models import ActorType
 from agentrank_api.audit.repository import AuditRepository
+from agentrank_api.benchmark.mutation import BenchmarkMutationGuard, BenchmarkRunCapability
 from agentrank_api.checkout.authorization import (
     CheckoutAuthorizationDecision,
     authorize_checkout,
@@ -116,8 +117,12 @@ class NewCheckout:
 
 
 class CheckoutService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self, session: AsyncSession, *, benchmark_capability: BenchmarkRunCapability | None = None
+    ) -> None:
         self._session = session
+        self._benchmark_capability = benchmark_capability
+        self._mutation = BenchmarkMutationGuard(session)
         self._merchants = MerchantRepository(session)
         self._mandates = MandateRepository(session)
         self._catalog = CatalogRepository(session)
@@ -145,6 +150,9 @@ class CheckoutService:
         than in the request body, because over HTTP the route builds the command from the
         principal and there is no field a caller could put a different one in.
         """
+        await self._mutation.require_allowed(
+            request.merchant_id, capability=self._benchmark_capability
+        )
         merchant = await self._merchants.get_by_id(request.merchant_id)
         if merchant is None:
             raise NotFoundError("merchant", str(request.merchant_id))
@@ -310,6 +318,7 @@ class CheckoutService:
         rewrite what was quoted, and the trigger on the table refuses any attempt to do
         both at once.
         """
+        await self._mutation.require_allowed(merchant_id, capability=self._benchmark_capability)
         checkout = await self._locked(checkout_id, merchant_id=merchant_id)
         await self._require_cancellable(checkout)
         if await self._checkouts.cancel(checkout):

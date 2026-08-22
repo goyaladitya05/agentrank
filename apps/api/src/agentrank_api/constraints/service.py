@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentrank_api.audit.models import ActorType
 from agentrank_api.audit.repository import AuditRepository
+from agentrank_api.benchmark.mutation import BenchmarkMutationGuard, BenchmarkRunCapability
 from agentrank_api.commerce.repository import MerchantRepository
 from agentrank_api.conflicts import translated_conflicts
 from agentrank_api.constraints.models import IntentConstraintSet
@@ -139,8 +140,12 @@ class NewIntentConstraints:
 
 
 class IntentConstraintService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self, session: AsyncSession, *, benchmark_capability: BenchmarkRunCapability | None = None
+    ) -> None:
         self._session = session
+        self._benchmark_capability = benchmark_capability
+        self._mutation = BenchmarkMutationGuard(session)
         self._merchants = MerchantRepository(session)
         self._mandates = MandateRepository(session)
         self._constraints = IntentConstraintRepository(session)
@@ -165,6 +170,9 @@ class IntentConstraintService:
         prevents the second set, and it is translated into the same refusal the read would
         have given, so a caller cannot tell whether it lost a race.
         """
+        await self._mutation.require_allowed(
+            request.merchant_id, capability=self._benchmark_capability
+        )
         merchant = await self._merchants.get_by_id(request.merchant_id)
         if merchant is None:
             raise NotFoundError("merchant", str(request.merchant_id))

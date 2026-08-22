@@ -56,12 +56,13 @@ from agentrank_api.benchmark.buyer import MerchantBuyerSurface
 from agentrank_api.benchmark.endpoint import (
     LocalCommerceEndpoint,
     RequestLedger,
-    issued_credential,
+    issued_benchmark_credential,
 )
 from agentrank_api.benchmark.isolation import IsolatedMissionExecutor
 from agentrank_api.benchmark.lifecycle import MissionRunStatus
 from agentrank_api.benchmark.metrics import BenchmarkMetrics
 from agentrank_api.benchmark.models import BenchmarkMissionRun, BenchmarkRun
+from agentrank_api.benchmark.mutation import BenchmarkRunCapability
 from agentrank_api.benchmark.reference_executor import ReferenceMissionExecutor
 from agentrank_api.benchmark.runner import BenchmarkRunService
 from agentrank_api.benchmark.tools import MeasuredBuyerSurface, ToolLedger
@@ -309,23 +310,30 @@ async def _isolated_run(
     must not be compared with one as though it were.
     """
     served = RequestLedger()
-    async with (
-        LocalCommerceEndpoint(settings, provider=provider, observer=served) as endpoint,
-        issued_credential(
-            MerchantCredentialService(session),
-            merchant_id=merchant_id,
-            marker=TokenMarker.of(settings.environment),
-        ) as token,
-    ):
-        executor = IsolatedMissionExecutor(base_url=endpoint.base_url, token=token, served=served)
-        return await service.run_suite(
-            executor,
+    async with LocalCommerceEndpoint(settings, provider=provider, observer=served) as endpoint:
+        started = await service.start_suite(
             suite_key=world.suite.key,
             suite_version=world.suite.version,
             fixture=world.fixture,
-            witness=executor,
+            executor=IsolatedMissionExecutor.identity,
             representation_label=arguments.representation_label,
         )
+        capability = BenchmarkRunCapability(merchant_id=merchant_id, run_id=started.id)
+        async with issued_benchmark_credential(
+            MerchantCredentialService(session),
+            capability=capability,
+            marker=TokenMarker.of(settings.environment),
+        ) as token:
+            executor = IsolatedMissionExecutor(
+                base_url=endpoint.base_url, token=token, served=served
+            )
+            return await service.execute_started_suite(
+                started.id,
+                executor,
+                merchant_id=merchant_id,
+                fixture=world.fixture,
+                witness=executor,
+            )
 
 
 async def show(

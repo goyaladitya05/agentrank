@@ -19,7 +19,7 @@ from typing import Any
 
 from fastapi import APIRouter, status
 
-from agentrank_api.dependencies import MerchantDep, SessionDep
+from agentrank_api.dependencies import MerchantDep, MutationDep, SessionDep
 from agentrank_api.errors import ErrorResponse
 from agentrank_api.mandates.schemas import (
     CreateMandateRequest,
@@ -46,7 +46,7 @@ NOT_FOUND: dict[int | str, dict[str, Any]] = UNAUTHENTICATED | {
     responses=NOT_FOUND,
 )
 async def create_mandate(
-    request: CreateMandateRequest, session: SessionDep, merchant: MerchantDep
+    request: CreateMandateRequest, session: SessionDep, merchant: MerchantDep, mutation: MutationDep
 ) -> MandateView:
     """Authorize spending with one merchant, within an amount and a validity window.
 
@@ -56,9 +56,10 @@ async def create_mandate(
     The merchant is the authenticated one and the body cannot name one, so a caller cannot
     create a financial authorization against somebody else's shop.
     """
-    mandate = await MandateService(session).create_mandate(
-        request.to_command(merchant.merchant_id), credential_id=merchant.credential_id
-    )
+    del mutation
+    mandate = await MandateService(
+        session, benchmark_capability=merchant.benchmark_capability
+    ).create_mandate(request.to_command(merchant.merchant_id), credential_id=merchant.credential_id)
     return MandateView.from_model(mandate)
 
 
@@ -100,7 +101,7 @@ async def validate_mandate(
 
 @router.post("/{mandate_id}/revoke", response_model=MandateView, responses=NOT_FOUND)
 async def revoke_mandate(
-    mandate_id: uuid.UUID, session: SessionDep, merchant: MerchantDep
+    mandate_id: uuid.UUID, session: SessionDep, merchant: MerchantDep, mutation: MutationDep
 ) -> MandateView:
     """Withdraw a mandate.
 
@@ -108,7 +109,10 @@ async def revoke_mandate(
     and records no second event. Revocation is terminal, so there is no counterpart that
     brings one back.
     """
-    mandate = await MandateService(session).revoke_mandate(
+    del mutation
+    mandate = await MandateService(
+        session, benchmark_capability=merchant.benchmark_capability
+    ).revoke_mandate(
         mandate_id, merchant_id=merchant.merchant_id, credential_id=merchant.credential_id
     )
     return MandateView.from_model(mandate)

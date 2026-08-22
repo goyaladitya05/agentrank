@@ -38,6 +38,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from agentrank_api.benchmark.mutation import BenchmarkMutationGuard, BenchmarkRunCapability
 from agentrank_api.errors import AgentRankError, ConflictError, NotFoundError
 from agentrank_api.payments.admission import PaymentAdmission, PaymentAdmissionService
 from agentrank_api.payments.execution import PaymentExecutionService, PaymentOutcome
@@ -75,10 +76,22 @@ class PaymentResult:
 class PaymentService:
     """The one entry point a caller asking to pay comes through."""
 
-    def __init__(self, session: AsyncSession, provider: PaymentProvider) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        provider: PaymentProvider,
+        *,
+        benchmark_capability: BenchmarkRunCapability | None = None,
+    ) -> None:
         self._session = session
-        self._admission = PaymentAdmissionService(session)
-        self._execution = PaymentExecutionService(session, provider)
+        self._benchmark_capability = benchmark_capability
+        self._mutation = BenchmarkMutationGuard(session)
+        self._admission = PaymentAdmissionService(
+            session, benchmark_capability=benchmark_capability
+        )
+        self._execution = PaymentExecutionService(
+            session, provider, benchmark_capability=benchmark_capability
+        )
         self._attempts = PaymentAttemptRepository(session)
         self._operations = PaymentOperationsService(session)
 
@@ -216,6 +229,10 @@ class PaymentService:
         what makes it the wrong operation for an ADMITTED attempt. That one is refused by name
         and is `resume`'s business.
         """
+        attempt = await self.get_attempt(attempt_id)
+        await self._mutation.require_allowed(
+            attempt.merchant_id, capability=self._benchmark_capability
+        )
         return await self._execution.reconcile(attempt_id)
 
     async def reconcile_unresolved(self, *, limit: int = DEFAULT_UNRESOLVED_LIMIT) -> PaymentSweep:
@@ -322,4 +339,8 @@ class PaymentService:
         finish. It is the same reasoning `dispatch` already documents, and it is why this
         delegates there rather than to `pay`.
         """
+        attempt = await self.get_attempt(attempt_id)
+        await self._mutation.require_allowed(
+            attempt.merchant_id, capability=self._benchmark_capability
+        )
         return await self._execution.dispatch(attempt_id)

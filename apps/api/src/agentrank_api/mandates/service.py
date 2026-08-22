@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentrank_api.audit.models import ActorType
 from agentrank_api.audit.repository import AuditRepository
+from agentrank_api.benchmark.mutation import BenchmarkMutationGuard, BenchmarkRunCapability
 from agentrank_api.commerce.repository import MerchantRepository
 from agentrank_api.errors import NotFoundError
 from agentrank_api.mandates.intent import BuyerIntent
@@ -73,8 +74,12 @@ class NewMandate:
 
 
 class MandateService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self, session: AsyncSession, *, benchmark_capability: BenchmarkRunCapability | None = None
+    ) -> None:
         self._session = session
+        self._benchmark_capability = benchmark_capability
+        self._mutation = BenchmarkMutationGuard(session)
         self._merchants = MerchantRepository(session)
         self._mandates = MandateRepository(session)
         self._audit = AuditRepository(session)
@@ -95,6 +100,9 @@ class MandateService:
         than in the request body, because over HTTP the route builds the command from the
         principal and there is no field a caller could put a different one in.
         """
+        await self._mutation.require_allowed(
+            request.merchant_id, capability=self._benchmark_capability
+        )
         merchant = await self._merchants.get_by_id(request.merchant_id)
         if merchant is None:
             raise NotFoundError("merchant", str(request.merchant_id))
@@ -174,6 +182,7 @@ class MandateService:
         waits for it. There is no schedule where a revocation commits and a preparation
         then succeeds on an active reading taken before it.
         """
+        await self._mutation.require_allowed(merchant_id, capability=self._benchmark_capability)
         mandate = await self._locked(mandate_id, merchant_id=merchant_id)
         if await self._mandates.revoke(mandate):
             await self._append(

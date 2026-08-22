@@ -437,6 +437,10 @@ class BenchmarkRun(Base):
 
     __tablename__ = "benchmark_run"
     __table_args__ = (
+        # A credential bound to a benchmark run must also prove it belongs to the run's merchant.
+        # The primary key proves the first fact; this redundant target lets a composite foreign
+        # key prove both at the storage boundary.
+        UniqueConstraint("id", "merchant_id", name="uq_benchmark_run_merchant_binding"),
         # Redundant against the primary key, and present only as a composite foreign key
         # target. Carrying the suite as well as the merchant is what makes two invariants one
         # foreign key: a mission run cannot be attributed to another merchant, and it cannot

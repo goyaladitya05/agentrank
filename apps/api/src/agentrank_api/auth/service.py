@@ -34,6 +34,7 @@ from agentrank_api.auth.tokens import (
     parse_token,
     verify_secret,
 )
+from agentrank_api.benchmark.mutation import BenchmarkMutationGuard, BenchmarkRunCapability
 from agentrank_api.commerce.repository import MerchantRepository
 from agentrank_api.errors import NotFoundError
 
@@ -142,6 +143,38 @@ class MerchantCredentialService:
             token=format_token(credential.id, secret, marker=marker),
         )
 
+    async def issue_for_benchmark(
+        self, *, capability: BenchmarkRunCapability, label: str, marker: TokenMarker
+    ) -> IssuedCredential:
+        """Mint a credential that may mutate only the run currently owning this world.
+
+        The run capability is checked against the durable RUNNING row before the credential is
+        written.  Its database foreign key then proves the bound run belongs to this merchant;
+        ordinary credential issuance has no parameter that can set this binding.
+        """
+        await BenchmarkMutationGuard(self._session).require_active(capability)
+        merchant = await self._merchants.get_by_id(capability.merchant_id)
+        if merchant is None:
+            raise NotFoundError("merchant", str(capability.merchant_id))
+
+        secret = generate_secret()
+        credential = await self._credentials.create(
+            merchant_id=capability.merchant_id,
+            secret_hash=hash_secret(secret),
+            label=validate_label(label),
+            benchmark_run_id=capability.run_id,
+        )
+        await self._append(
+            credential,
+            CREDENTIAL_ISSUED,
+            {"label": credential.label, "benchmark_run_id": str(capability.run_id)},
+        )
+        await self._session.commit()
+        return IssuedCredential(
+            credential=credential,
+            token=format_token(credential.id, secret, marker=marker),
+        )
+
     async def list_for_merchant(self, merchant_id: uuid.UUID) -> Sequence[MerchantApiCredential]:
         """Every credential one merchant holds, revoked ones included.
 
@@ -222,6 +255,14 @@ class MerchantCredentialService:
         return AuthenticatedMerchant(
             merchant_id=credential.merchant_id,
             credential_id=credential.id,
+            benchmark_capability=(
+                None
+                if credential.benchmark_run_id is None
+                else BenchmarkRunCapability(
+                    merchant_id=credential.merchant_id,
+                    run_id=credential.benchmark_run_id,
+                )
+            ),
         )
 
     async def _append(

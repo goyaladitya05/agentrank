@@ -26,6 +26,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     String,
     Uuid,
@@ -64,6 +65,15 @@ class MerchantApiCredential(Base):
     __table_args__ = (
         CheckConstraint(f"secret_hash ~ '{HASH_PATTERN}'", name="secret_hash_format"),
         CheckConstraint("length(btrim(label)) > 0", name="label_not_blank"),
+        # A benchmark credential may name only a run belonging to the same merchant.  The
+        # nullable column is otherwise empty for an ordinary merchant credential.
+        ForeignKeyConstraint(
+            ["benchmark_run_id", "merchant_id"],
+            ["benchmark_run.id", "benchmark_run.merchant_id"],
+            name="fk_merchant_api_credential_benchmark_run",
+            ondelete="RESTRICT",
+        ),
+        Index(None, "benchmark_run_id"),
         # One secret, one credential. Two rows carrying one verifier would mean one key
         # authenticating as two merchants, which is the one thing this table exists to make
         # impossible. Unreachable by chance at 256 bits, and this is what makes it unreachable
@@ -81,6 +91,7 @@ class MerchantApiCredential(Base):
         ForeignKey("merchant.id", ondelete="RESTRICT"),
         nullable=False,
     )
+    benchmark_run_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     secret_hash: Mapped[str] = mapped_column(String(SECRET_HASH_LENGTH), nullable=False)
     label: Mapped[str] = mapped_column(String(MAX_LABEL_LENGTH), nullable=False)
     created_at: Mapped[datetime] = mapped_column(

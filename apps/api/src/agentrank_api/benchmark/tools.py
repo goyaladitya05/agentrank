@@ -65,6 +65,7 @@ from agentrank_api.benchmark.faults import (
     ExecutionFault,
     FaultOrigin,
 )
+from agentrank_api.benchmark.mutation import BenchmarkRunCapability
 from agentrank_api.checkout.schemas import (
     CheckoutView,
     CreateCheckoutRequest,
@@ -258,6 +259,12 @@ class MeasuredBuyerSurface:
     @property
     def merchant_id(self) -> uuid.UUID:
         return self._inner.merchant_id
+
+    def bind_benchmark_run(self, capability: BenchmarkRunCapability) -> None:
+        """Forward trusted run authority to the wrapped in-process buyer surface."""
+        binder = getattr(self._inner, "bind_benchmark_run", None)
+        if binder is not None:
+            binder(capability)
 
     async def search_products(self, request: ProductSearchRequest) -> ProductSearchResponse:
         self._given(BuyerOperation.SEARCH_PRODUCTS, request, ProductSearchRequest)

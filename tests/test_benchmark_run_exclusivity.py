@@ -26,6 +26,8 @@ from sqlalchemy import delete, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from agentrank_api.auth.service import MerchantCredentialService
+from agentrank_api.auth.tokens import TokenMarker
 from agentrank_api.benchmark.buyer import MerchantBuyerSurface
 from agentrank_api.benchmark.definitions import (
     AgentMissionBrief,
@@ -38,17 +40,24 @@ from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
 from agentrank_api.benchmark.fixtures import BenchmarkFixture
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus
 from agentrank_api.benchmark.models import BenchmarkRun
+from agentrank_api.benchmark.mutation import BenchmarkMutationGuard, BenchmarkRunCapability
 from agentrank_api.benchmark.reference_executor import ReferenceMissionExecutor
 from agentrank_api.benchmark.repository import BenchmarkRunRepository, BenchmarkSuiteRepository
 from agentrank_api.benchmark.runner import BenchmarkRunService
 from agentrank_api.benchmark.suites import BenchmarkSuiteService
+from agentrank_api.checkout.service import CheckoutService
 from agentrank_api.commerce.catalog_fixture import SeedProduct, SeedVariant
 from agentrank_api.commerce.repository import MerchantRepository
 from agentrank_api.conflicts import translated_conflicts
 from agentrank_api.constraints.rules import ConstraintOperator
 from agentrank_api.errors import ConflictError
 from agentrank_api.mandates.intent import AllowedCategory, MaxTotalAmount, RequiredAttribute
-from agentrank_api.payments.fake import FakePaymentProvider
+from agentrank_api.payments.execution import PaymentExecutionService
+from agentrank_api.payments.fake import FakeOutcome, FakePaymentProvider
+from agentrank_api.payments.models import OutcomeSource
+from agentrank_api.payments.provider import ProviderOutcome, ProviderResult
+from agentrank_api.payments.recovery import AbandonmentReason, PaymentRecoveryService
+from agentrank_api.payments.service import PaymentService
 
 pytestmark = pytest.mark.anyio
 
@@ -347,6 +356,100 @@ async def test_preparing_another_merchants_world_is_never_blocked(session: Async
     elsewhere = await BenchmarkEnvironmentService(session).prepare(OTHER_WORLD)
 
     assert elsewhere.environment.merchant_slug == OTHER_SLUG
+
+
+async def test_operator_payment_recovery_cannot_change_an_active_benchmark_world(
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """An active world rejects external recovery but accepts only its run-bound capability.
+
+    The real buyer creates an UNKNOWN attempt through the capability and therefore leaves a
+    reservation holding stock.  Both abandonment and the global reconciliation sweep are
+    attempted with no capability, so this is a mechanism test rather than a route convention:
+    neither can release the hold or resolve the payment while the run owns the merchant.
+    """
+    merchant_id = await prepared(session)
+    run = await started(session)
+    capability = BenchmarkRunCapability(merchant_id=merchant_id, run_id=run.id)
+    provider = FakePaymentProvider(default=FakeOutcome.AMBIGUOUS)
+    report = await ReferenceMissionExecutor(
+        MerchantBuyerSurface(
+            factory,
+            merchant_id=merchant_id,
+            provider=provider,
+            benchmark_capability=capability,
+        )
+    )(suite_of(SLUG, "buyer").missions[0].brief, merchant_id=merchant_id)
+    assert report.payment is not None
+    assert report.checkout is not None
+    assert report.checkout.checkout_id is not None
+    attempt_id = report.payment.attempt_id
+    checkout_id = report.checkout.checkout_id
+
+    with pytest.raises(ConflictError) as cancellation_refused:
+        await CheckoutService(session).cancel_checkout(checkout_id, merchant_id=merchant_id)
+    assert cancellation_refused.value.reason == "benchmark_world_active"
+
+    with pytest.raises(ConflictError) as abandoned:
+        await PaymentRecoveryService(session).abandon_payment_attempt(
+            attempt_id, reason=AbandonmentReason.PROVIDER_UNREACHABLE
+        )
+    assert abandoned.value.reason == "benchmark_world_active"
+
+    with pytest.raises(ConflictError) as external_outcome:
+        await PaymentExecutionService(session, FakePaymentProvider()).apply_provider_observation(
+            attempt_id,
+            ProviderResult(outcome=ProviderOutcome.SUCCEEDED),
+            source=OutcomeSource.INTERACTIVE,
+        )
+    assert external_outcome.value.reason == "benchmark_world_active"
+
+    sweep = await PaymentService(session, FakePaymentProvider()).reconcile_unresolved()
+    assert len(sweep.items) == 1
+    assert sweep.items[0].result.value == "refused"
+    assert sweep.items[0].detail == "benchmark_world_active"
+
+    await BenchmarkRunService(session).abort_run(capability.run_id, merchant_id=merchant_id)
+    recovered = await PaymentRecoveryService(session).abandon_payment_attempt(
+        attempt_id, reason=AbandonmentReason.PROVIDER_UNREACHABLE
+    )
+    assert recovered.changed
+    cancelled_checkout = await CheckoutService(session).cancel_checkout(
+        checkout_id, merchant_id=merchant_id
+    )
+    assert cancelled_checkout.cancelled_at is not None
+
+
+async def test_a_closed_runs_credential_cannot_mutate_the_next_run(session: AsyncSession) -> None:
+    """A credential names one persisted run, not a reusable benchmark bypass."""
+    merchant_id = await prepared(session)
+    first = await started(session)
+    issued = await MerchantCredentialService(session).issue_for_benchmark(
+        capability=BenchmarkRunCapability(merchant_id=merchant_id, run_id=first.id),
+        label="test benchmark worker",
+        marker=TokenMarker.DEVELOPMENT,
+    )
+    principal = await MerchantCredentialService(session).authenticate(issued.token)
+    assert principal is not None
+    assert principal.benchmark_capability is not None
+
+    await BenchmarkRunService(session).abort_run(first.id, merchant_id=merchant_id)
+
+    with pytest.raises(ConflictError) as closed:
+        await BenchmarkMutationGuard(session).require_allowed(
+            merchant_id, capability=principal.benchmark_capability
+        )
+    assert closed.value.reason == "benchmark_run_not_active"
+    assert closed.value.identifier == str(first.id)
+
+    second = await started(session)
+
+    with pytest.raises(ConflictError) as refused:
+        await BenchmarkMutationGuard(session).require_allowed(
+            merchant_id, capability=principal.benchmark_capability
+        )
+    assert refused.value.reason == "benchmark_world_active"
+    assert refused.value.identifier == str(second.id)
 
 
 # What a claim survives, and what releases it.

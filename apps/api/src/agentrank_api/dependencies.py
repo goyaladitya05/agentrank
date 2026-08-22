@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.auth.principal import AuthenticatedMerchant
 from agentrank_api.auth.service import MerchantCredentialService
+from agentrank_api.benchmark.mutation import BenchmarkMutationGuard
 from agentrank_api.config import RazorpayCredentials, Settings
 from agentrank_api.errors import AuthenticationError
 from agentrank_api.payments.provider import PaymentProvider
@@ -125,9 +126,10 @@ async def require_merchant(
     documented property of the audit trail. Ending the read here means the service opens its own
     transaction, exactly as it does when the command line calls it. See docs/decisions.md.
 
-    Rolling back is safe because what is returned is two plain UUIDs. A principal built out of
-    the credential row would be expired by this, and expired again by every deliberate rollback
-    the services perform on a refusal.
+    Rolling back is safe because what is returned is stable identifiers and, where appropriate,
+    a small immutable benchmark-run capability. A principal built out of the credential row
+    would be expired by this, and expired again by every deliberate rollback the services perform
+    on a refusal.
     """
     if presented is None:
         raise AuthenticationError()
@@ -141,3 +143,13 @@ async def require_merchant(
 
 
 MerchantDep = Annotated[AuthenticatedMerchant, Depends(require_merchant)]
+
+
+async def require_mutation_permission(session: SessionDep, merchant: MerchantDep) -> None:
+    """Refuse an ordinary credential changing a merchant an active run owns."""
+    await BenchmarkMutationGuard(session).require_allowed(
+        merchant.merchant_id, capability=merchant.benchmark_capability
+    )
+
+
+MutationDep = Annotated[None, Depends(require_mutation_permission)]

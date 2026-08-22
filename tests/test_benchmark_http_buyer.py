@@ -271,7 +271,12 @@ async def test_a_credential_is_scoped_to_one_merchant_and_says_nothing_wider(
 
     assert authenticated is not None
     assert authenticated.merchant_id == merchant_id
-    assert {field.name for field in fields(authenticated)} == {"merchant_id", "credential_id"}
+    assert {field.name for field in fields(authenticated)} == {
+        "merchant_id",
+        "credential_id",
+        "benchmark_capability",
+    }
+    assert authenticated.benchmark_capability is None
 
 
 # What a surface that does not answer looks like.

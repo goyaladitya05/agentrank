@@ -74,6 +74,7 @@ from agentrank_api.benchmark.models import (
     BenchmarkMissionRun,
     BenchmarkRun,
 )
+from agentrank_api.benchmark.mutation import BenchmarkRunCapability
 from agentrank_api.benchmark.observation import ObservedResult
 from agentrank_api.benchmark.report import ExecutorReport
 from agentrank_api.benchmark.repository import BenchmarkRunRepository, BenchmarkSuiteRepository
@@ -254,19 +255,77 @@ class BenchmarkRunService:
         all, which is honest: with nothing watching, there is nothing to attribute from, and the
         alternative is believing the executor.
         """
+        run = await self.start_suite(
+            suite_key=suite_key,
+            suite_version=suite_version,
+            fixture=fixture,
+            executor=executor.identity,
+            representation_label=representation_label,
+        )
+        return await self.execute_started_suite(
+            run.id,
+            executor,
+            merchant_id=run.merchant_id,
+            fixture=fixture,
+            witness=witness,
+        )
+
+    async def start_suite(
+        self,
+        *,
+        suite_key: str,
+        suite_version: int,
+        fixture: BenchmarkFixture,
+        executor: ExecutorIdentity,
+        representation_label: str | None = None,
+    ) -> BenchmarkRun:
+        """Prepare a benchmark world and persist its RUNNING claim before a buyer is provisioned.
+
+        The split from ``run_suite`` lets the loopback path mint its short lived merchant
+        credential only after a specific run owns the world.  That credential is then bound to
+        this run in the database, rather than being an ordinary key that happens to be used
+        while a benchmark is active.
+        """
         environment = await self._environments.prepare(fixture)
-        run = await self.start_run(
+        return await self.start_run(
             suite_key=suite_key,
             suite_version=suite_version,
             merchant_slug=fixture.merchant_slug,
             environment=environment.environment,
-            executor=executor.identity,
+            executor=executor,
             representation_label=representation_label,
         )
+
+    async def execute_started_suite(
+        self,
+        run_id: uuid.UUID,
+        executor: MissionExecutor,
+        *,
+        merchant_id: uuid.UUID,
+        fixture: BenchmarkFixture,
+        witness: ExecutionWitness | None = None,
+    ) -> BenchmarkRun:
+        """Execute the still-running suite whose world was prepared by ``start_suite``.
+
+        This is deliberately not a general resume operation.  It is called immediately by the
+        same trusted orchestration that started the run, and it only accepts a RUNNING row whose
+        registered environment is the fixture supplied.  A process crash still leaves the run
+        RUNNING and requires the existing explicit abort and recovery path.
+        """
+        run = await self._loaded_run(run_id, merchant_id=merchant_id)
+        self._require_running(run)
+        environment = await self._environments.require_registered(fixture)
+        if run.environment_id != environment.id or run.merchant_id != environment.merchant_id:
+            raise ConflictError(
+                "run_environment_mismatch",
+                f"benchmark run {run.id} was not started for fixture {fixture.label}",
+                resource=RUN_RESOURCE,
+                identifier=str(run.id),
+            )
         suite = await self._suites.get_by_id(run.suite_id)
         assert suite is not None  # start_run resolved it a moment ago
         merchant_id = run.merchant_id
-        run_id = run.id
+        _bind_benchmark_run(executor, BenchmarkRunCapability(merchant_id, run.id))
 
         for mission in suite.missions:
             await self._environments.prepare(fixture, for_run=run_id)
@@ -328,7 +387,7 @@ class BenchmarkRunService:
                 },
             )
 
-        finished = await self.complete_run(run_id, merchant_id=merchant_id)
+        finished = await self.complete_run(run.id, merchant_id=merchant_id)
         # Counts, at the end, and never per mission. What a mission was marked as is the oracle
         # decoded: an abstention with a reason means the ground truth said a purchase was
         # available and one without means it said none was. Logged per mission, an in process
@@ -919,6 +978,20 @@ def executor_from(results: dict[str, ExecutorReport]) -> ReplayExecutor:
     claiming a payment nothing produced is marked exactly as an executor claiming one would be.
     """
     return ReplayExecutor(results)
+
+
+def _bind_benchmark_run(executor: MissionExecutor, capability: BenchmarkRunCapability) -> None:
+    """Hand a trusted in-process buyer its persisted mutation capability, when it has one.
+
+    The optional method is intentionally absent from ``MissionExecutor``.  An executor only
+    needs the mission brief protocol; the trusted reference surface is the sole implementation
+    that opens application services directly and therefore the sole one that needs this binding.
+    An isolated worker receives the same authority through its database-bound merchant
+    credential instead.
+    """
+    binder = getattr(executor, "bind_benchmark_run", None)
+    if binder is not None:
+        binder(capability)
 
 
 def outcomes_of(mission_runs: Sequence[BenchmarkMissionRun]) -> list[MissionOutcome]:

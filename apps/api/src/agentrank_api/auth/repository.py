@@ -28,7 +28,12 @@ class MerchantCredentialRepository:
         self._session = session
 
     async def create(
-        self, *, merchant_id: uuid.UUID, secret_hash: str, label: str
+        self,
+        *,
+        merchant_id: uuid.UUID,
+        secret_hash: str,
+        label: str,
+        benchmark_run_id: uuid.UUID | None = None,
     ) -> MerchantApiCredential:
         """Write a credential and flush so that its generated columns are set.
 
@@ -43,6 +48,7 @@ class MerchantCredentialRepository:
             merchant_id=merchant_id,
             secret_hash=secret_hash,
             label=label,
+            benchmark_run_id=benchmark_run_id,
         )
         self._session.add(credential)
         await self._session.flush()

@@ -32,7 +32,7 @@ from typing import Any
 
 from fastapi import APIRouter, status
 
-from agentrank_api.dependencies import MerchantDep, ProviderDep, SessionDep
+from agentrank_api.dependencies import MerchantDep, MutationDep, ProviderDep, SessionDep
 from agentrank_api.errors import ErrorResponse
 from agentrank_api.payments.schemas import (
     CreatePaymentRequest,
@@ -67,6 +67,7 @@ async def pay_checkout(
     session: SessionDep,
     provider: ProviderDep,
     merchant: MerchantDep,
+    mutation: MutationDep,
 ) -> PaymentView:
     """Pay for this checkout, or say exactly why it may not be paid for.
 
@@ -104,7 +105,10 @@ async def pay_checkout(
     one checkout is one payment. Because a checkout belongs to one merchant, two merchants using
     the same key string are two payments and neither can retrieve the other's.
     """
-    result = await PaymentService(session, provider).pay(
+    del mutation
+    result = await PaymentService(
+        session, provider, benchmark_capability=merchant.benchmark_capability
+    ).pay(
         checkout_id,
         merchant_id=merchant.merchant_id,
         idempotency_key=request.resolve_key(),
@@ -139,7 +143,11 @@ async def get_payment(
     responses=NOT_FOUND_OR_CONFLICT,
 )
 async def reconcile_payment(
-    attempt_id: uuid.UUID, session: SessionDep, provider: ProviderDep, merchant: MerchantDep
+    attempt_id: uuid.UUID,
+    session: SessionDep,
+    provider: ProviderDep,
+    merchant: MerchantDep,
+    mutation: MutationDep,
 ) -> ReconciliationView:
     """Ask the provider what happened to a payment whose result is unresolved.
 
@@ -157,7 +165,8 @@ async def reconcile_payment(
     provider is never questioned, so this route cannot be used to make this application probe a
     processor about a payment the caller has nothing to do with.
     """
-    outcome = await PaymentService(session, provider).reconcile_for_merchant(
-        attempt_id, merchant_id=merchant.merchant_id
-    )
+    del mutation
+    outcome = await PaymentService(
+        session, provider, benchmark_capability=merchant.benchmark_capability
+    ).reconcile_for_merchant(attempt_id, merchant_id=merchant.merchant_id)
     return ReconciliationView.from_outcome(outcome)

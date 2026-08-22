@@ -48,6 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentrank_api.audit.models import ActorType
 from agentrank_api.audit.repository import AuditRepository
+from agentrank_api.benchmark.mutation import BenchmarkMutationGuard, BenchmarkRunCapability
 from agentrank_api.checkout.execution import CheckoutExecutionService, LockedAuthorization
 from agentrank_api.checkout.execution_authorization import CheckoutExecutionAuthorization
 from agentrank_api.checkout.models import CheckoutSession, CheckoutStatus
@@ -134,9 +135,15 @@ class PaymentAdmission:
 class PaymentAdmissionService:
     """Admit one payment, in one transaction, or refuse it having written nothing."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self, session: AsyncSession, *, benchmark_capability: BenchmarkRunCapability | None = None
+    ) -> None:
         self._session = session
-        self._execution = CheckoutExecutionService(session)
+        self._benchmark_capability = benchmark_capability
+        self._mutation = BenchmarkMutationGuard(session)
+        self._execution = CheckoutExecutionService(
+            session, benchmark_capability=benchmark_capability
+        )
         self._attempts = PaymentAttemptRepository(session)
         self._reservations = InventoryReservationRepository(session)
         self._inventory = InventoryReservationService(session)
@@ -192,6 +199,7 @@ class PaymentAdmissionService:
         """
         validate_idempotency_key(idempotency_key)
 
+        await self._mutation.require_allowed(merchant_id, capability=self._benchmark_capability)
         authorization = await self._execution.authorize_under_locks(
             checkout_id, merchant_id=merchant_id, at=at
         )

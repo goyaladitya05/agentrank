@@ -69,6 +69,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentrank_api.audit.models import ActorType
 from agentrank_api.audit.repository import AuditRepository
+from agentrank_api.benchmark.mutation import BenchmarkMutationGuard, BenchmarkRunCapability
 from agentrank_api.checkout.models import CheckoutSession
 from agentrank_api.checkout.repository import CheckoutRepository
 from agentrank_api.errors import ConflictError, NotFoundError
@@ -175,9 +176,17 @@ class PaymentExecutionService:
     tested against a decline.
     """
 
-    def __init__(self, session: AsyncSession, provider: PaymentProvider) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        provider: PaymentProvider,
+        *,
+        benchmark_capability: BenchmarkRunCapability | None = None,
+    ) -> None:
         self._session = session
         self._provider = provider
+        self._benchmark_capability = benchmark_capability
+        self._mutation = BenchmarkMutationGuard(session)
         self._attempts = PaymentAttemptRepository(session)
         self._checkouts = CheckoutRepository(session)
         self._mandates = MandateRepository(session)
@@ -206,6 +215,7 @@ class PaymentExecutionService:
         first, so a crash after this point leaves an attempt that must be reconciled rather
         than one something might re-send.
         """
+        await self._require_mutation_authority(attempt_id)
         attempt = await self._dispatchable(attempt_id)
         instruction = _instruction(attempt)
 
@@ -267,6 +277,9 @@ class PaymentExecutionService:
         attempt = await self._attempts.get(attempt_id)
         if attempt is None:
             raise NotFoundError("payment_attempt", str(attempt_id))
+        await self._mutation.require_allowed(
+            attempt.merchant_id, capability=self._benchmark_capability
+        )
         if attempt.is_terminal:
             # Nothing to learn. Deliberately not an error: a reconciliation sweep that meets an
             # attempt somebody else already resolved has done its job.
@@ -327,6 +340,9 @@ class PaymentExecutionService:
         attempt = await self._attempts.get_for_update(attempt_id)
         if attempt is None:
             raise NotFoundError("payment_attempt", str(attempt_id))
+        await self._mutation.require_allowed(
+            attempt.merchant_id, capability=self._benchmark_capability
+        )
         if attempt.status is PaymentAttemptStatus.ADMITTED:
             await self._attempts.mark_in_flight(attempt)
         await self._session.commit()
@@ -351,6 +367,7 @@ class PaymentExecutionService:
         `source` is the caller's to state, because only the caller knows how it learned. An
         interactive checkout passes INTERACTIVE.
         """
+        await self._require_mutation_authority(attempt_id)
         recorded = await self._record(attempt_id, result, source=source)
         return PaymentOutcome(
             attempt=recorded.attempt,
@@ -390,6 +407,20 @@ class PaymentExecutionService:
             },
         )
         await self._session.commit()
+
+    async def _require_mutation_authority(self, attempt_id: uuid.UUID) -> None:
+        """Require the active benchmark's capability before a payment state transition.
+
+        The execution kernel is shared by autonomous payments and the interactive provider
+        bridge. Keeping this guard here prevents an external callback from bypassing the active
+        benchmark-world claim without changing that bridge's public surface.
+        """
+        attempt = await self._attempts.get(attempt_id)
+        if attempt is None:
+            raise NotFoundError("payment_attempt", str(attempt_id))
+        await self._mutation.require_allowed(
+            attempt.merchant_id, capability=self._benchmark_capability
+        )
 
     async def _dispatchable(self, attempt_id: uuid.UUID) -> PaymentAttempt:
         """Mark one attempt as dispatched and commit, or refuse to dispatch it.

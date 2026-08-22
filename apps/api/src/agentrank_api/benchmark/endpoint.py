@@ -14,12 +14,11 @@ routes on it: publishing a suite, starting a run and reading a result are operat
 have deliberately never been endpoints, so nothing an executor can reach over this can touch a
 run, an oracle or a mission definition.
 
-`issued_credential` is the key. An ordinary merchant API credential, scoped to the one
-merchant the world describes, issued before the run and revoked after it whatever happens. It is
-not a superuser token and there is no such thing here: authentication answers with a merchant
-identifier and nothing else, so what this credential can do is exactly what that merchant's own
-integration can do. Cross merchant calls answer 404 with no side effect, which is the property
-Phase 1H built and which this deliberately does not extend.
+`issued_benchmark_credential` is the key. It is issued only after the run has a durable RUNNING
+claim and is structurally bound to that run as well as its merchant. It is still not a superuser
+token: authentication reconstructs only that run's narrow mutation capability, so it cannot
+authorize a different merchant or a later run. Cross merchant calls answer 404 with no side
+effect, which is the property Phase 1H built and which this deliberately does not extend.
 
 The token exists in one string and never reaches a log, an argument vector or an environment
 variable. It is handed to the client that presents it and to nothing else. Revoking it is in a
@@ -49,6 +48,7 @@ from agentrank_api.benchmark.evidence import (
     payment_from_body,
     preparation_from_body,
 )
+from agentrank_api.benchmark.mutation import BenchmarkRunCapability
 from agentrank_api.config import Settings
 from agentrank_api.main import create_app
 from agentrank_api.payments.provider import PaymentProvider
@@ -361,6 +361,28 @@ async def issued_credential(
     is bounded here by the run being over.
     """
     issued = await service.issue(merchant_id=merchant_id, label=CREDENTIAL_LABEL, marker=marker)
+    try:
+        yield issued.token
+    finally:
+        await service.revoke(issued.credential.id)
+
+
+@asynccontextmanager
+async def issued_benchmark_credential(
+    service: MerchantCredentialService,
+    *,
+    capability: BenchmarkRunCapability,
+    marker: TokenMarker,
+) -> AsyncIterator[str]:
+    """Issue a loopback credential structurally bound to the active benchmark run.
+
+    This is separate from ``issued_credential`` because an ordinary credential must never gain
+    run authority by a caller adding a flag.  The service checks the durable RUNNING claim as it
+    creates the row; authentication later reconstructs the same capability only from that row.
+    """
+    issued = await service.issue_for_benchmark(
+        capability=capability, label=CREDENTIAL_LABEL, marker=marker
+    )
     try:
         yield issued.token
     finally:

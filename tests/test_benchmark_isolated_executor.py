@@ -46,11 +46,14 @@ from agentrank_api.benchmark.failures import FailureReason
 from agentrank_api.benchmark.faults import FaultOrigin
 from agentrank_api.benchmark.fixtures import BenchmarkFixture
 from agentrank_api.benchmark.isolation import (
+    DEFAULT_TIMEOUT,
     ISOLATED_REFERENCE,
     WORKER_MODULE,
     IsolatedMissionExecutor,
 )
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
+from agentrank_api.benchmark.models import BenchmarkRun
+from agentrank_api.benchmark.mutation import BenchmarkRunCapability
 from agentrank_api.benchmark.reference_executor import REFERENCE_EXECUTOR
 from agentrank_api.benchmark.runner import BenchmarkRunService
 from agentrank_api.benchmark.suites import BenchmarkSuiteService
@@ -168,6 +171,49 @@ async def credential(session: AsyncSession, merchant_id: uuid.UUID) -> str:
         merchant_id=merchant_id, label=CREDENTIAL_LABEL, marker=TokenMarker.DEVELOPMENT
     )
     return issued.token
+
+
+async def run_bound_suite(
+    session: AsyncSession,
+    *,
+    endpoint: LocalCommerceEndpoint,
+    served: RequestLedger,
+    merchant_id: uuid.UUID,
+    base_url: str | None = None,
+    worker_timeout: float | None = None,
+    interpreter: str | None = None,
+) -> tuple[BenchmarkRun, IsolatedMissionExecutor]:
+    """Run the real worker through a credential bound to the run's durable world claim."""
+    service = BenchmarkRunService(session)
+    started = await service.start_suite(
+        suite_key=SUITE_KEY,
+        suite_version=1,
+        fixture=WORLD,
+        executor=IsolatedMissionExecutor.identity,
+    )
+    issued = await MerchantCredentialService(session).issue_for_benchmark(
+        capability=BenchmarkRunCapability(merchant_id=merchant_id, run_id=started.id),
+        label=CREDENTIAL_LABEL,
+        marker=TokenMarker.DEVELOPMENT,
+    )
+    executor = IsolatedMissionExecutor(
+        base_url=endpoint.base_url if base_url is None else base_url,
+        token=issued.token,
+        served=served,
+        timeout=DEFAULT_TIMEOUT if worker_timeout is None else worker_timeout,
+        interpreter=interpreter,
+    )
+    try:
+        finished = await service.execute_started_suite(
+            started.id,
+            executor,
+            merchant_id=merchant_id,
+            fixture=WORLD,
+            witness=executor,
+        )
+    finally:
+        await MerchantCredentialService(session).revoke(issued.credential.id)
+    return finished, executor
 
 
 def worker(
@@ -693,15 +739,8 @@ async def test_a_whole_suite_runs_through_the_isolated_boundary(
     """
     merchant_id = await prepared(session)
     await BenchmarkSuiteService(session).publish(suite_of("first", "unaffordable", "second"))
-    token = await credential(session, merchant_id)
-    executor = IsolatedMissionExecutor(base_url=endpoint.base_url, token=token, served=served)
-
-    finished = await BenchmarkRunService(session).run_suite(
-        executor,
-        suite_key=SUITE_KEY,
-        suite_version=1,
-        fixture=WORLD,
-        witness=executor,
+    finished, _ = await run_bound_suite(
+        session, endpoint=endpoint, served=served, merchant_id=merchant_id
     )
 
     assert finished.status is BenchmarkRunStatus.COMPLETED
@@ -726,20 +765,12 @@ async def test_an_actual_isolated_worker_timeout_is_persisted_as_lost_agent_dema
     """
     merchant_id = await prepared(session)
     await BenchmarkSuiteService(session).publish(suite_of("timeout"))
-    token = await credential(session, merchant_id)
-    executor = IsolatedMissionExecutor(
-        base_url=endpoint.base_url,
-        token=token,
+    finished, _ = await run_bound_suite(
+        session,
+        endpoint=endpoint,
         served=served,
-        timeout=0.001,
-    )
-
-    finished = await BenchmarkRunService(session).run_suite(
-        executor,
-        suite_key=SUITE_KEY,
-        suite_version=1,
-        fixture=WORLD,
-        witness=executor,
+        merchant_id=merchant_id,
+        worker_timeout=0.001,
     )
     metrics = await BenchmarkRunService(session).metrics(finished.id, merchant_id=merchant_id)
     demand = metrics.simulated_demand.single_currency()
@@ -755,24 +786,18 @@ async def test_an_actual_isolated_worker_timeout_is_persisted_as_lost_agent_dema
 
 
 async def test_an_isolated_harness_startup_failure_is_persisted_as_not_measured(
-    session: AsyncSession, served: RequestLedger
+    session: AsyncSession, endpoint: LocalCommerceEndpoint, served: RequestLedger
 ) -> None:
     """Only a failure the runner can positively identify as its own becomes ERRORED."""
     merchant_id = await prepared(session)
     await BenchmarkSuiteService(session).publish(suite_of("startup"))
-    executor = IsolatedMissionExecutor(
-        base_url="http://127.0.0.1:1",
-        token="ar_dev_" + "0" * 32 + "_" + "0" * 64,
+    finished, _ = await run_bound_suite(
+        session,
+        endpoint=endpoint,
         served=served,
+        merchant_id=merchant_id,
+        base_url="http://127.0.0.1:1",
         interpreter="/nonexistent/python",
-    )
-
-    finished = await BenchmarkRunService(session).run_suite(
-        executor,
-        suite_key=SUITE_KEY,
-        suite_version=1,
-        fixture=WORLD,
-        witness=executor,
     )
     metrics = await BenchmarkRunService(session).metrics(finished.id, merchant_id=merchant_id)
     demand = metrics.simulated_demand.single_currency()
@@ -799,11 +824,8 @@ async def test_every_mission_gets_a_process_that_knows_nothing_about_the_last_on
     """
     merchant_id = await prepared(session)
     await BenchmarkSuiteService(session).publish(suite_of("first", "second"))
-    token = await credential(session, merchant_id)
-    executor = IsolatedMissionExecutor(base_url=endpoint.base_url, token=token, served=served)
-
-    finished = await BenchmarkRunService(session).run_suite(
-        executor, suite_key=SUITE_KEY, suite_version=1, fixture=WORLD, witness=executor
+    finished, executor = await run_bound_suite(
+        session, endpoint=endpoint, served=served, merchant_id=merchant_id
     )
 
     # The witness was reset before each mission, so what it holds now describes the last one

@@ -30,7 +30,7 @@ from agentrank_api.constraints.schemas import (
     IntentConstraintSetView,
 )
 from agentrank_api.constraints.service import IntentConstraintService
-from agentrank_api.dependencies import MerchantDep, SessionDep
+from agentrank_api.dependencies import MerchantDep, MutationDep, SessionDep
 from agentrank_api.errors import ErrorResponse
 
 router = APIRouter(prefix="/api/v1/commerce", tags=["intent constraints"])
@@ -58,6 +58,7 @@ async def create_intent_constraints(
     request: CreateIntentConstraintsRequest,
     session: SessionDep,
     merchant: MerchantDep,
+    mutation: MutationDep,
 ) -> IntentConstraintSetView:
     """Qualify a mandate with the hard constraints a purchase must satisfy.
 
@@ -74,9 +75,10 @@ async def create_intent_constraints(
     what that mandate may buy.
     """
     command = request.to_command(mandate_id, merchant.merchant_id)
-    constraint_set = await IntentConstraintService(session).create_constraints(
-        command, credential_id=merchant.credential_id
-    )
+    del mutation
+    constraint_set = await IntentConstraintService(
+        session, benchmark_capability=merchant.benchmark_capability
+    ).create_constraints(command, credential_id=merchant.credential_id)
     return IntentConstraintSetView.from_model(constraint_set)
 
 

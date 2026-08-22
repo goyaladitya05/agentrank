@@ -11,8 +11,9 @@ session factory, and anything holding it can open a session with one call, so "t
 cannot reach the database" rests on nobody reaching for it. Over HTTP there is nothing to reach:
 the process on the other end has a base URL, a bearer token and a merchant identifier, and every
 answer it gets is a serialized view model. Authentication and merchant scoping are the ones Phase
-1H built, unchanged, so a benchmark credential is an ordinary merchant credential and a call for
-somebody else's resource is a 404 exactly as it is for anybody.
+1H built, and the benchmark credential is additionally bound to the one durable run that issued
+it. A call for somebody else's resource is a 404 exactly as it is for anybody, and a mutation in
+an active world is permitted only when that run binding still matches.
 
 Translation back into this application's own exception types is the load bearing part, and it is
 deliberately the inverse of the handlers `create_app` installs:

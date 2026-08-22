@@ -44,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentrank_api.audit.models import ActorType
 from agentrank_api.audit.repository import AuditRepository
+from agentrank_api.benchmark.mutation import BenchmarkMutationGuard, BenchmarkRunCapability
 from agentrank_api.errors import ConflictError, NotFoundError
 from agentrank_api.inventory.repository import InventoryReservationRepository
 from agentrank_api.inventory.service import InventoryReservationService, ReleaseReason
@@ -140,8 +141,12 @@ class PaymentRecoveryService:
     asking, so that nothing in it can quietly become a second dispatch.
     """
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self, session: AsyncSession, *, benchmark_capability: BenchmarkRunCapability | None = None
+    ) -> None:
         self._session = session
+        self._benchmark_capability = benchmark_capability
+        self._mutation = BenchmarkMutationGuard(session)
         self._attempts = PaymentAttemptRepository(session)
         self._reservations = InventoryReservationRepository(session)
         self._inventory = InventoryReservationService(session)
@@ -185,6 +190,9 @@ class PaymentRecoveryService:
         attempt = await self._attempts.get(attempt_id)
         if attempt is None:
             raise NotFoundError(PAYMENT_RESOURCE, str(attempt_id))
+        await self._mutation.require_allowed(
+            attempt.merchant_id, capability=self._benchmark_capability
+        )
 
         # The locks the release will need, in the documented order and no further down than it
         # reaches. No mandate and no checkout: neither changes here. No variant rows: releasing

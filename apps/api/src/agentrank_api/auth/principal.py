@@ -7,10 +7,12 @@ without any of them importing the others.
 import uuid
 from dataclasses import dataclass
 
+from agentrank_api.benchmark.mutation import BenchmarkRunCapability
+
 
 @dataclass(frozen=True, slots=True)
 class AuthenticatedMerchant:
-    """One authenticated caller, as the two identifiers that matter and nothing else.
+    """One authenticated caller, with stable identity and an optional benchmark capability.
 
     Frozen, and deliberately two plain UUIDs rather than the credential row it came from. Three
     reasons, and each of them is a bug that would otherwise be possible:
@@ -28,7 +30,12 @@ class AuthenticatedMerchant:
     `credential_id` is evidence, not identity. It says which key authorized a request. It does
     not say who holds that key, and nothing in this system claims it does: a credential is a
     machine credential and a machine credential is not a person. See docs/security.md.
+
+    `benchmark_capability` exists only when the authenticated credential was issued by the
+    benchmark runner for the currently persisted run. It carries no mutable credential state and
+    lets mutation services distinguish the active run's own worker from an external caller.
     """
 
     merchant_id: uuid.UUID
     credential_id: uuid.UUID
+    benchmark_capability: BenchmarkRunCapability | None = None

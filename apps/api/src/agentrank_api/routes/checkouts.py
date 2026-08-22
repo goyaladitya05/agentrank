@@ -34,7 +34,7 @@ from agentrank_api.checkout.schemas import (
     ExecutionPreparationView,
 )
 from agentrank_api.checkout.service import CheckoutService
-from agentrank_api.dependencies import MerchantDep, SessionDep
+from agentrank_api.dependencies import MerchantDep, MutationDep, SessionDep
 from agentrank_api.errors import ErrorResponse
 
 router = APIRouter(prefix="/api/v1/commerce/checkouts", tags=["checkouts"])
@@ -58,7 +58,10 @@ NOT_FOUND_OR_CONFLICT: dict[int | str, dict[str, Any]] = NOT_FOUND | {
     responses=NOT_FOUND_OR_CONFLICT,
 )
 async def create_checkout(
-    request: CreateCheckoutRequest, session: SessionDep, merchant: MerchantDep
+    request: CreateCheckoutRequest,
+    session: SessionDep,
+    merchant: MerchantDep,
+    mutation: MutationDep,
 ) -> CheckoutView:
     """Quote a selection of variants against a mandate.
 
@@ -72,7 +75,10 @@ async def create_checkout(
     anybody else answers 404, so a caller cannot quote against an authorization that is not
     theirs even knowing its identifier.
     """
-    checkout = await CheckoutService(session).create_checkout(
+    del mutation
+    checkout = await CheckoutService(
+        session, benchmark_capability=merchant.benchmark_capability
+    ).create_checkout(
         request.to_command(merchant.merchant_id), credential_id=merchant.credential_id
     )
     return CheckoutView.from_model(checkout)
@@ -145,7 +151,7 @@ async def read_execution_authorization(
     responses=NOT_FOUND,
 )
 async def prepare_execution(
-    checkout_id: uuid.UUID, session: SessionDep, merchant: MerchantDep
+    checkout_id: uuid.UUID, session: SessionDep, merchant: MerchantDep, mutation: MutationDep
 ) -> ExecutionPreparationView:
     """Make this checkout safe to attempt, or say exactly why it is not.
 
@@ -163,15 +169,16 @@ async def prepare_execution(
     Nothing here pays. Ready means a payment could be attempted, and no payment provider
     exists to attempt one.
     """
-    readiness = await CheckoutExecutionService(session).prepare_execution(
-        checkout_id, merchant_id=merchant.merchant_id
-    )
+    del mutation
+    readiness = await CheckoutExecutionService(
+        session, benchmark_capability=merchant.benchmark_capability
+    ).prepare_execution(checkout_id, merchant_id=merchant.merchant_id)
     return ExecutionPreparationView.from_readiness(readiness)
 
 
 @router.post("/{checkout_id}/cancel", response_model=CheckoutView, responses=NOT_FOUND)
 async def cancel_checkout(
-    checkout_id: uuid.UUID, session: SessionDep, merchant: MerchantDep
+    checkout_id: uuid.UUID, session: SessionDep, merchant: MerchantDep, mutation: MutationDep
 ) -> CheckoutView:
     """Withdraw a quote.
 
@@ -179,7 +186,10 @@ async def cancel_checkout(
     and records no second event. Cancellation is terminal, so there is no counterpart that
     reopens one.
     """
-    checkout = await CheckoutService(session).cancel_checkout(
+    del mutation
+    checkout = await CheckoutService(
+        session, benchmark_capability=merchant.benchmark_capability
+    ).cancel_checkout(
         checkout_id, merchant_id=merchant.merchant_id, credential_id=merchant.credential_id
     )
     return CheckoutView.from_model(checkout)
