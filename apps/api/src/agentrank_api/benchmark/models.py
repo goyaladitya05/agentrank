@@ -61,6 +61,7 @@ from agentrank_api.benchmark.definitions import (
     ExpectedOutcome,
     MissionOracle,
 )
+from agentrank_api.benchmark.execution import ExecutorIdentity
 from agentrank_api.benchmark.failures import FailureReason
 from agentrank_api.benchmark.identity import HASH_LENGTH, HASH_PATTERN
 from agentrank_api.benchmark.lifecycle import (
@@ -445,6 +446,18 @@ class BenchmarkRun(Base):
             f"evaluator_version IS NULL OR evaluator_version ~ '{HASH_PATTERN}'",
             name="evaluator_version_format",
         ),
+        # A kind without a version names a strategy nobody can pin down, and a version without a
+        # kind names nothing at all. Either both or neither.
+        CheckConstraint(
+            "(executor_kind IS NULL) = (executor_version IS NULL)", name="executor_identity_shape"
+        ),
+        CheckConstraint(
+            f"executor_kind IS NULL OR executor_kind ~ '{KEY_PATTERN}'",
+            name="executor_kind_format",
+        ),
+        CheckConstraint(
+            "executor_version IS NULL OR executor_version > 0", name="executor_version_positive"
+        ),
         # A run that has not started has no start instant, and one that has finished has both.
         CheckConstraint("(status = 'PENDING') = (started_at IS NULL)", name="started_at_matches"),
         CheckConstraint(
@@ -486,6 +499,12 @@ class BenchmarkRun(Base):
     )
     catalog_hash: Mapped[str | None] = mapped_column(String(HASH_LENGTH), nullable=True)
     evaluator_version: Mapped[str | None] = mapped_column(String(HASH_LENGTH), nullable=True)
+    # Which strategy produced this run's results, and which version of it. Two columns rather
+    # than one label, so a report can group by strategy and still tell two versions of it apart.
+    # There is no model identifier and no provider beside them, because neither exists and a
+    # column for one would be a guess at the shape of an agent that has not been built.
+    executor_kind: Mapped[str | None] = mapped_column(String(MAX_KEY_LENGTH), nullable=True)
+    executor_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # No server default, for the same reason as everywhere else in this schema: an insert that
     # does not state a status is a bug.
     status: Mapped[BenchmarkRunStatus] = mapped_column(BENCHMARK_RUN_STATUS, nullable=False)
@@ -509,6 +528,18 @@ class BenchmarkRun(Base):
     @property
     def is_terminal(self) -> bool:
         return self.status in TERMINAL_RUN_STATUSES
+
+    @property
+    def executor_label(self) -> str | None:
+        """How this run's executor is named in a report, or None when nobody recorded one.
+
+        None is honest and is not the same as a default. A run with no executor identity was
+        produced by something nobody wrote down, and a report has to say that rather than
+        assuming which strategy it was.
+        """
+        if self.executor_kind is None or self.executor_version is None:
+            return None
+        return ExecutorIdentity(kind=self.executor_kind, version=self.executor_version).label
 
 
 class BenchmarkMissionRun(Base):

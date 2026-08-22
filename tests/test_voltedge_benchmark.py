@@ -29,6 +29,7 @@ from agentrank_api.benchmark.observation import (
 from agentrank_api.benchmark.runner import BenchmarkRunService, executor_from
 from agentrank_api.benchmark.suites import BenchmarkSuiteService
 from agentrank_api.benchmark.voltedge import (
+    FIXTURE,
     MERCHANT_SLUG,
     MISSIONS,
     SUITE,
@@ -233,7 +234,7 @@ async def test_a_perfect_run_completes_every_purchasable_mission(
         executor_from(prepared),
         suite_key=SUITE_KEY,
         suite_version=SUITE_VERSION,
-        merchant_slug=MERCHANT_SLUG,
+        fixture=FIXTURE,
         representation_label="baseline",
     )
     metrics = await service.metrics(run.id, merchant_id=merchant_id)

@@ -15,6 +15,8 @@ from agentrank_api.benchmark.definitions import (
     ExpectedOutcome,
     MissionOracle,
 )
+from agentrank_api.benchmark.fixtures import BenchmarkFixture
+from agentrank_api.commerce.catalog_fixture import SeedProduct, SeedVariant
 from agentrank_api.constraints.rules import ConstraintOperator
 from agentrank_api.mandates.intent import (
     AllowedCategory,
@@ -114,3 +116,42 @@ def suite(
 # A constraint that differs from BLACK only in its operator, for the identity tests: an
 # operator that dropped out of the hash would otherwise be invisible.
 NOT_BLACK = RequiredAttribute("color", "black", ConstraintOperator.NE)
+
+
+# The world the suites above are authored against. `run_suite` requires a fixture, because the
+# whole point of the orchestrated path is that every mission observes a world somebody described
+# rather than whatever was left behind, so a test that runs a suite has to say what that world is.
+FIXTURE_KEY = "test-merchant-catalog"
+
+BLACK_CHARGER = SeedVariant(
+    sku="TEST-MERCHANT-BLACK",
+    label="Black",
+    price_amount_minor=VALUE,
+    currency=CURRENCY,
+    inventory_quantity=3,
+    attributes={"color": "black"},
+)
+
+
+def fixture(
+    *variants: SeedVariant,
+    key: str = FIXTURE_KEY,
+    version: int = 1,
+    merchant_slug: str = MERCHANT_SLUG,
+) -> BenchmarkFixture:
+    """The catalog `build_shop` would have built, as an authored benchmark world."""
+    return BenchmarkFixture(
+        key=key,
+        version=version,
+        merchant_slug=merchant_slug,
+        merchant_name=merchant_slug,
+        products=(
+            SeedProduct(
+                external_id="test-merchant-1",
+                title="Charger",
+                description=None,
+                category="chargers",
+                variants=variants or (BLACK_CHARGER,),
+            ),
+        ),
+    )

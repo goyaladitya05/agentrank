@@ -3,12 +3,13 @@
 import uuid
 
 import pytest
-from benchmark_support import BLACK, CURRENCY, VALUE, mission, suite
+from benchmark_support import BLACK, CURRENCY, VALUE, fixture, mission, suite
 from commerce_support import PRICE, admit, build_shop, quote
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentrank_api.benchmark.catalog import CatalogEntry, catalog_content_hash
 from agentrank_api.benchmark.definitions import AgentMissionBrief, ExpectedOutcome
+from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
 from agentrank_api.benchmark.evaluation import evaluator_version
 from agentrank_api.benchmark.execution import ExecutorIdentity
 from agentrank_api.benchmark.failures import FailureReason
@@ -32,11 +33,23 @@ pytestmark = pytest.mark.anyio
 
 SLUG = "test-merchant"
 
+# The world every orchestrated run in this file is executed against.
+WORLD = fixture()
+
 
 async def shop(session: AsyncSession, *, price: int = PRICE, inventory: int = 3) -> uuid.UUID:
     """A merchant whose slug is the one `benchmark_support` authors suites against."""
     built = await build_shop(session, SLUG, price=price, inventory=inventory)
     return built.merchant_id
+
+
+async def registered(session: AsyncSession) -> None:
+    """Mark this merchant as the benchmark world `WORLD` describes.
+
+    `run_suite` refuses to execute against a merchant nobody registered, which is the production
+    safety rule rather than a test inconvenience: the orchestrated path overwrites a catalog.
+    """
+    await BenchmarkEnvironmentService(session).register(WORLD)
 
 
 def selection(variant_id: uuid.UUID, *, quantity: int = 1, price: int = PRICE) -> ObservedSelection:
@@ -385,6 +398,7 @@ async def test_a_whole_suite_runs_in_order_and_reports(session: AsyncSession) ->
             outcome=ExpectedOutcome.NO_ACCEPTABLE_PURCHASE,
         ),
     )
+    await registered(session)
     service = BenchmarkRunService(session)
 
     run = await service.run_suite(
@@ -400,7 +414,7 @@ async def test_a_whole_suite_runs_in_order_and_reports(session: AsyncSession) ->
         ),
         suite_key="test-suite",
         suite_version=1,
-        merchant_slug=SLUG,
+        fixture=WORLD,
         representation_label="baseline",
     )
     metrics = await service.metrics(run.id, merchant_id=built.merchant_id)
@@ -430,12 +444,14 @@ async def test_an_executor_with_no_result_for_a_mission_stops_the_run(
         mission("two", budget_minor=PRICE, constraints=(BLACK,)),
     )
 
+    await registered(session)
+
     with pytest.raises(KeyError, match="two"):
         await BenchmarkRunService(session).run_suite(
             executor_from({"one": purchase(built.variant_id, built.merchant_id)}),
             suite_key="test-suite",
             suite_version=1,
-            merchant_slug=SLUG,
+            fixture=WORLD,
         )
 
 
@@ -468,8 +484,10 @@ async def test_the_executor_is_handed_briefs_and_never_an_oracle(
                 abstention=ObservedAbstention(code=AbstentionCode.NO_COMPLIANT_CANDIDATE),
             )
 
+    await registered(session)
+
     await BenchmarkRunService(session).run_suite(
-        Recording(), suite_key="test-suite", suite_version=1, merchant_slug=SLUG
+        Recording(), suite_key="test-suite", suite_version=1, fixture=WORLD
     )
 
     assert len(seen) == 1

@@ -21,10 +21,32 @@ The commerce artifacts are resolved. A recorded variant, quote or payment refere
 merchant really has, because the composite foreign keys refuse anything else and this looks them
 up rather than writing what an executor claimed.
 
-And the whole thing is ordered. Missions run in suite order, one at a time, so a rerun presents
-the same workload the same way.
+And the whole thing is ordered and isolated. Missions run in suite order, one at a time, and the
+merchant's world is put back to what the fixture describes before the run and before every
+mission. That is what makes a mission's outcome independent of what ran before it, a second run
+independent of the first, and a suite's result independent of the order its missions happened to
+be presented in.
+
+Sequential on purpose. Parallel execution would add resource races on one shelf, inventory
+interactions between missions that are supposed to be independent, and a recovery story nobody
+needs yet. Nothing here forbids parallel execution later; it is simply not built.
+
+Crash recovery is deliberately narrow and is stated rather than implied:
+
+```text
+mission PENDING     never started, no commerce side effect from it exists
+mission RUNNING     started, and what it did is unknown. Never replayed
+run RUNNING         finish it with complete_run if every mission is terminal,
+                    otherwise close it honestly with abort_run
+```
+
+There is no automatic resume, and the reason is money. A mission left RUNNING may have created a
+quote, held stock and dispatched a payment, and re-executing it blindly is how a benchmark buys
+something twice. Recovery is an operator reading the run and deciding, and the operator's tool is
+the command line.
 """
 
+import logging
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -34,12 +56,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentrank_api.benchmark.catalog import CatalogEntry, catalog_content_hash, facts_for
 from agentrank_api.benchmark.definitions import AgentMissionBrief
+from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
 from agentrank_api.benchmark.evaluation import (
     MissionEvaluation,
     evaluate_mission,
     evaluator_version,
 )
 from agentrank_api.benchmark.execution import ExecutorIdentity, MissionExecutor
+from agentrank_api.benchmark.fixtures import BenchmarkFixture
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
 from agentrank_api.benchmark.metrics import BenchmarkMetrics, MissionOutcome, compute_metrics
 from agentrank_api.benchmark.models import (
@@ -58,6 +82,12 @@ from agentrank_api.payments.models import PaymentAttempt, PaymentAttemptStatus
 
 RUN_RESOURCE = "benchmark_run"
 
+# Structured fields only, and deliberately no oracle. A log line carries which run, which
+# mission run and which mission key, all of which a person needs to find a row again. What a
+# mission's ground truth was is the evaluator's and stays out of an operational log, because a
+# log that prints the answer is a log an executor's author can read.
+log = logging.getLogger(__name__)
+
 
 class BenchmarkRunService:
     """The one path a benchmark run goes through.
@@ -72,6 +102,7 @@ class BenchmarkRunService:
         self._merchants = MerchantRepository(session)
         self._suites = BenchmarkSuiteRepository(session)
         self._runs = BenchmarkRunRepository(session)
+        self._environments = BenchmarkEnvironmentService(session)
 
     async def start_run(
         self,
@@ -80,6 +111,7 @@ class BenchmarkRunService:
         suite_version: int,
         merchant_slug: str,
         environment: BenchmarkEnvironment | None = None,
+        executor: ExecutorIdentity | None = None,
         representation_label: str | None = None,
     ) -> BenchmarkRun:
         """Create a run, pin it, and mark it RUNNING.
@@ -96,6 +128,11 @@ class BenchmarkRunService:
         looked like, and this says which authored target it was supposed to be. It is optional
         because a run against an ad hoc merchant has no registered world, and null then means
         exactly that rather than that the target was fine.
+
+        `executor` is the fourth, and it is the one nothing else can stand in for. Two runs of one
+        suite against one world can still differ because the thing doing the shopping changed, and
+        without this they would be compared as though they had not. Also optional, and null there
+        means the same thing every other null pin means: nobody recorded it.
         """
         merchant = await self._merchants.get_by_slug(merchant_slug)
         if merchant is None:
@@ -109,6 +146,7 @@ class BenchmarkRunService:
             merchant=merchant,
             suite=suite,
             environment=environment,
+            executor=executor,
             representation_label=representation_label,
             catalog_hash=catalog_content_hash(entries),
             evaluator_version=evaluator_version(),
@@ -116,6 +154,18 @@ class BenchmarkRunService:
         run.status = BenchmarkRunStatus.RUNNING
         run.started_at = datetime.now(UTC)
         await self._session.commit()
+        log.info(
+            "benchmark run started",
+            extra={
+                "benchmark_run_id": str(run.id),
+                "suite": suite.label,
+                "merchant_id": str(merchant.id),
+                "executor": None if executor is None else executor.label,
+                "environment": None if environment is None else environment.label,
+                "catalog_hash": run.catalog_hash,
+                "missions": len(suite.missions),
+            },
+        )
         return run
 
     async def run_suite(
@@ -124,32 +174,116 @@ class BenchmarkRunService:
         *,
         suite_key: str,
         suite_version: int,
-        merchant_slug: str,
+        fixture: BenchmarkFixture,
         representation_label: str | None = None,
     ) -> BenchmarkRun:
-        """Start a run, execute every mission in suite order, and complete it.
+        """Prepare the world, execute every mission in suite order, and complete the run.
 
-        The catalog is read once per mission rather than once per run, because a mission can
-        change it: buying the last unit of something is exactly the kind of thing this benchmark
-        is for, and marking a later mission against stock an earlier one consumed would be
-        marking it against a catalog that no longer exists. The pin on the run is still taken at
-        the start, and it describes where the run began.
+        The fixture is required and is the whole difference between this and a loop. Every
+        mission is executed against a world that has just been put back to exactly what the
+        fixture describes, so a mission's outcome does not depend on what ran before it, a
+        second run does not inherit the first one's stock, and the order the missions happen to
+        be presented in changes nothing.
+
+        The world is prepared once before the run as well, so the catalog pin taken with the run
+        describes the intended initial state rather than whatever was left over.
+
+        The catalog is read once per mission, *before* the mission executes, and that reading is
+        what the mission is marked against. Reading it afterwards would mark a mission against a
+        catalog the mission itself had just changed, which for a mission that bought the last
+        unit of something would report a stale oracle that was never stale.
+
+        A mission is committed as RUNNING before the executor is handed anything. Nothing reads
+        that state during an ordinary run, and it is the only thing a crash leaves behind that
+        distinguishes "this never started" from "this started and what it did is unknown". The
+        second must never be replayed, and without the transition there would be no way to tell.
+
+        Anything the executor raises propagates, having left the mission RUNNING. That is
+        deliberate: a runner that swallowed an exception and carried on would produce a
+        COMPLETED run with a mission nobody executed, and the honest close for a run that
+        stopped is `abort_run`.
         """
+        environment = await self._environments.prepare(fixture)
         run = await self.start_run(
             suite_key=suite_key,
             suite_version=suite_version,
-            merchant_slug=merchant_slug,
+            merchant_slug=fixture.merchant_slug,
+            environment=environment.environment,
+            executor=executor.identity,
             representation_label=representation_label,
         )
         suite = await self._suites.get_by_id(run.suite_id)
         assert suite is not None  # start_run resolved it a moment ago
+        merchant_id = run.merchant_id
+        run_id = run.id
 
         for mission in suite.missions:
+            await self._environments.prepare(fixture)
+            entries = await self.catalog(merchant_id)
             brief = mission.to_brief()
-            observed = await executor(brief, merchant_id=run.merchant_id)
-            await self.record_result(run.id, brief.key, observed, merchant_id=run.merchant_id)
+            started = await self.start_mission(run_id, brief.key, merchant_id=merchant_id)
+            log.info(
+                "benchmark mission started",
+                extra={
+                    "benchmark_run_id": str(run_id),
+                    "mission_run_id": str(started),
+                    "mission_key": brief.key,
+                },
+            )
+            observed = await executor(brief, merchant_id=merchant_id)
+            result = await self.record_result(
+                run_id, brief.key, observed, merchant_id=merchant_id, catalog=entries
+            )
+            log.info(
+                "benchmark mission recorded",
+                extra={
+                    "benchmark_run_id": str(run_id),
+                    "mission_run_id": str(result.id),
+                    "mission_key": brief.key,
+                    "status": result.status.value,
+                    "primary_failure_reason": (
+                        None
+                        if result.primary_failure_reason is None
+                        else result.primary_failure_reason.value
+                    ),
+                },
+            )
 
-        return await self.complete_run(run.id, merchant_id=run.merchant_id)
+        return await self.complete_run(run_id, merchant_id=merchant_id)
+
+    async def start_mission(
+        self, run_id: uuid.UUID, mission_key: str, *, merchant_id: uuid.UUID
+    ) -> uuid.UUID:
+        """Mark one mission as started, and commit that before anything is handed an executor.
+
+        The commit is the point. Nothing in an ordinary run reads this state, and it costs one
+        statement; what it buys is that a crash leaves a mission in one of two distinguishable
+        states rather than one ambiguous one. PENDING means the executor was never called and
+        nothing it would have done exists. RUNNING means it was called and what it did is
+        unknown, which is the state that must never be replayed because it may have paid for
+        something.
+
+        Refuses a mission that has already produced a result, exactly as recording one does.
+        Starting an already started mission is allowed and changes nothing, because that is what
+        a retry after a crash looks like and refusing it would be refusing to describe the state
+        it is in.
+        """
+        run = await self._locked_run(run_id, merchant_id=merchant_id)
+        self._require_running(run)
+        result = await self._mission_run(run, mission_key, merchant_id=merchant_id)
+        if result.is_terminal:
+            raise ConflictError(
+                "mission_already_recorded",
+                f"mission {mission_key} in run {run.id} has already been executed",
+                resource=RUN_RESOURCE,
+                identifier=str(run.id),
+            )
+        if result.status is MissionRunStatus.PENDING:
+            result.status = MissionRunStatus.RUNNING
+            result.started_at = datetime.now(UTC)
+        result_id = result.id
+        await self._session.commit()
+        return result_id
 
     async def record_result(
         self,
@@ -158,27 +292,29 @@ class BenchmarkRunService:
         observed: ObservedResult,
         *,
         merchant_id: uuid.UUID,
+        catalog: Sequence[CatalogEntry] | None = None,
     ) -> BenchmarkMissionRun:
         """Mark one mission and write the result, in one transaction.
 
         The mission run is locked before anything is decided, so two executors reporting the
         same mission queue rather than both reading PENDING. The database refuses the second
         write either way; the lock is what turns that into an ordinary refusal.
+
+        `catalog` is the merchant's data as the mission found it, and passing it is what makes
+        the oracle recomputation honest. A mission that bought the last unit of something has
+        changed the catalog by the time it reports, and reading the catalog here would compare
+        the mission's own ground truth against a shelf the mission itself emptied. `run_suite`
+        reads it before executing and passes it down. Reading it here is the fallback for a
+        caller assembling a run by hand, and it is the older, weaker behavior.
         """
         run = await self._locked_run(run_id, merchant_id=merchant_id)
-        if run.status is not BenchmarkRunStatus.RUNNING:
-            raise ConflictError(
-                "run_not_running",
-                f"benchmark run {run.id} is {run.status.value.lower()} and records nothing",
-                resource=RUN_RESOURCE,
-                identifier=str(run.id),
-            )
+        self._require_running(run)
 
         mission = await self._mission(run.suite_id, mission_key)
         result = await self._runs.get_mission_run(run.id, mission.id, merchant_id=merchant_id)
         if result is None:
             raise NotFoundError("benchmark_mission_run", mission_key)
-        if result.status is not MissionRunStatus.PENDING:
+        if result.is_terminal:
             raise ConflictError(
                 "mission_already_recorded",
                 f"mission {mission_key} in run {run.id} has already been executed",
@@ -186,7 +322,7 @@ class BenchmarkRunService:
                 identifier=str(run.id),
             )
 
-        entries = await self.catalog(merchant_id)
+        entries = await self.catalog(merchant_id) if catalog is None else catalog
         evaluation = evaluate_mission(
             mission.to_definition(),
             observed,
@@ -196,10 +332,13 @@ class BenchmarkRunService:
 
         # RUNNING first, because the lifecycle is a transition whitelist and an outcome is
         # produced by a transition rather than written. Both statements are in one transaction,
-        # so nothing observes the intermediate state.
+        # so nothing observes the intermediate state. A mission `start_mission` already
+        # transitioned keeps the instant it was started at, which the guard requires: a start
+        # time that moved would be a run rewriting when its own work began.
         now = datetime.now(UTC)
-        result.status = MissionRunStatus.RUNNING
-        result.started_at = now
+        if result.status is MissionRunStatus.PENDING:
+            result.status = MissionRunStatus.RUNNING
+            result.started_at = now
         await self._session.flush()
 
         # References before the outcome, and the order is load bearing. Resolving them issues
@@ -217,11 +356,15 @@ class BenchmarkRunService:
         Refuses otherwise. A run reported as COMPLETED is the only one whose numbers describe
         the whole workload, and a partial run presented as a complete one would report a rate
         over a denominator nobody chose. The honest close for that is `abort_run`.
+
+        Every mission has to be terminal, which includes ERRORED. A run in which the harness
+        failed on one mission still attempted and persisted every mission, so it describes the
+        whole workload and completes; the errored mission is reported beside every rate and is
+        never folded into one. A mission still RUNNING is not terminal and refuses here, because
+        what it did is unknown.
         """
         run = await self._loaded_run(run_id, merchant_id=merchant_id)
-        unfinished = [
-            result.id for result in run.mission_runs if result.status is MissionRunStatus.PENDING
-        ]
+        unfinished = [result.id for result in run.mission_runs if not result.is_terminal]
         if unfinished:
             raise ConflictError(
                 "run_incomplete",
@@ -240,6 +383,14 @@ class BenchmarkRunService:
         """
         run = await self._loaded_run(run_id, merchant_id=merchant_id)
         return await self._finish(run, BenchmarkRunStatus.ABORTED)
+
+    async def load(self, run_id: uuid.UUID, *, merchant_id: uuid.UUID) -> BenchmarkRun:
+        """One merchant's run with its mission runs and their definitions, raising if absent.
+
+        The read a report is built from. Merchant scoped like every other read here, so a run
+        identifier is worth nothing to anybody who is not its merchant.
+        """
+        return await self._loaded_run(run_id, merchant_id=merchant_id)
 
     async def metrics(self, run_id: uuid.UUID, *, merchant_id: uuid.UUID) -> BenchmarkMetrics:
         """Count one merchant's run.
@@ -315,6 +466,31 @@ class BenchmarkRunService:
         if run is None:
             raise NotFoundError(RUN_RESOURCE, str(run_id))
         return run
+
+    def _require_running(self, run: BenchmarkRun) -> None:
+        """Refuse to record anything against a run that is not executing.
+
+        A closed run is closed. Its numbers were reported over the denominator it had, and a
+        result arriving afterwards would change what a report already said.
+        """
+        if run.status is BenchmarkRunStatus.RUNNING:
+            return
+        raise ConflictError(
+            "run_not_running",
+            f"benchmark run {run.id} is {run.status.value.lower()} and records nothing",
+            resource=RUN_RESOURCE,
+            identifier=str(run.id),
+        )
+
+    async def _mission_run(
+        self, run: BenchmarkRun, mission_key: str, *, merchant_id: uuid.UUID
+    ) -> BenchmarkMissionRun:
+        """One mission's result row within one merchant's run, held until commit."""
+        mission = await self._mission(run.suite_id, mission_key)
+        result = await self._runs.get_mission_run(run.id, mission.id, merchant_id=merchant_id)
+        if result is None:
+            raise NotFoundError("benchmark_mission_run", mission_key)
+        return result
 
     async def _mission(self, suite_id: uuid.UUID, mission_key: str) -> BenchmarkMission:
         suite = await self._suites.get_by_id(suite_id)

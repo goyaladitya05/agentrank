@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from agentrank_api.benchmark.definitions import BenchmarkSuiteDefinition
+from agentrank_api.benchmark.execution import ExecutorIdentity
 from agentrank_api.benchmark.fixtures import BenchmarkFixture
 from agentrank_api.benchmark.identity import CorruptedSuiteDefinitionError, suite_content_hash
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
@@ -215,6 +216,7 @@ class BenchmarkRunRepository:
         merchant: Merchant,
         suite: BenchmarkSuite,
         environment: BenchmarkEnvironment | None = None,
+        executor: ExecutorIdentity | None = None,
         representation_label: str | None = None,
         catalog_hash: str | None = None,
         evaluator_version: str | None = None,
@@ -256,6 +258,8 @@ class BenchmarkRunRepository:
             merchant_id=merchant.id,
             suite_id=suite.id,
             environment_id=None if environment is None else environment.id,
+            executor_kind=None if executor is None else executor.kind,
+            executor_version=None if executor is None else executor.version,
             representation_label=representation_label,
             catalog_hash=catalog_hash,
             evaluator_version=evaluator_version,
