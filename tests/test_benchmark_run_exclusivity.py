@@ -241,12 +241,12 @@ async def test_aborting_a_run_releases_the_world(session: AsyncSession) -> None:
 
 
 async def test_a_finished_suite_leaves_the_world_free_for_the_next_run(
-    session: AsyncSession,
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
 ) -> None:
     """A whole run through `run_suite`, twice. The second one is what the claim must not block."""
     merchant_id = await prepared(session)
     service = BenchmarkRunService(session)
-    surface = MerchantBuyerSurface(session, merchant_id=merchant_id, provider=FakePaymentProvider())
+    surface = MerchantBuyerSurface(factory, merchant_id=merchant_id, provider=FakePaymentProvider())
 
     first = await service.run_suite(
         ReferenceMissionExecutor(surface),

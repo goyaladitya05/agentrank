@@ -39,7 +39,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any, TextIO
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.cli.exits import ExitCode
 from agentrank_api.cli.output import write_json
@@ -229,6 +229,7 @@ def _add_json(parser: argparse.ArgumentParser) -> None:
 
 async def list_unresolved(
     session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
     provider: PaymentProvider,
     arguments: argparse.Namespace,
     out: TextIO,
@@ -245,6 +246,7 @@ async def list_unresolved(
 
 async def show(
     session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
     provider: PaymentProvider,
     arguments: argparse.Namespace,
     out: TextIO,
@@ -263,6 +265,7 @@ async def show(
 
 async def status(
     session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
     provider: PaymentProvider,
     arguments: argparse.Namespace,
     out: TextIO,
@@ -279,6 +282,7 @@ async def status(
 
 async def reconcile(
     session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
     provider: PaymentProvider,
     arguments: argparse.Namespace,
     out: TextIO,
@@ -315,6 +319,7 @@ async def reconcile(
 
 async def reconcile_unresolved(
     session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
     provider: PaymentProvider,
     arguments: argparse.Namespace,
     out: TextIO,
@@ -338,6 +343,7 @@ async def reconcile_unresolved(
 
 async def resume(
     session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
     provider: PaymentProvider,
     arguments: argparse.Namespace,
     out: TextIO,
@@ -372,6 +378,7 @@ async def resume(
 
 async def abandon(
     session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
     provider: PaymentProvider,
     arguments: argparse.Namespace,
     out: TextIO,

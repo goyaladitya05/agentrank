@@ -26,7 +26,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.benchmark.buyer import MerchantBuyerSurface
 from agentrank_api.benchmark.catalog import catalog_content_hash
@@ -244,12 +244,17 @@ class Reference:
     provider: FakePaymentProvider
 
 
-async def executed(session: AsyncSession) -> Reference:
-    """One complete reference run of `voltedge-core@1` against the world it was authored for."""
+async def executed(session: AsyncSession, factory: async_sessionmaker[AsyncSession]) -> Reference:
+    """One complete reference run of `voltedge-core@2` against the world it was authored for.
+
+    The run service records on this test's session and the buyer opens one of its own per
+    operation, which is the ownership the running system has. A reference result produced with
+    one shared transaction would not be the result the operator command line produces.
+    """
     prepared, _ = await seed_voltedge(session)
     merchant_id = prepared.environment.merchant_id
     provider = FakePaymentProvider()
-    surface = MerchantBuyerSurface(session, merchant_id=merchant_id, provider=provider)
+    surface = MerchantBuyerSurface(factory, merchant_id=merchant_id, provider=provider)
     finished = await BenchmarkRunService(session).run_suite(
         ReferenceMissionExecutor(surface),
         suite_key=SUITE_KEY,
@@ -457,10 +462,10 @@ def test_the_expected_totals_are_what_the_suite_says_each_sale_is_worth() -> Non
 
 
 async def test_the_reference_run_produces_the_expected_outcome_for_every_mission(
-    session: AsyncSession,
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
 ) -> None:
     """Fourteen missions against fourteen answers nobody computed with the code under test."""
-    reference = await executed(session)
+    reference = await executed(session, factory)
     loaded = await BenchmarkRunService(session).load(
         reference.run_id, merchant_id=reference.merchant_id
     )
@@ -482,9 +487,11 @@ async def test_the_reference_run_produces_the_expected_outcome_for_every_mission
         assert quantity == expected_quantity, defined.key
 
 
-async def test_the_reference_run_metrics_are_the_expected_ones(session: AsyncSession) -> None:
+async def test_the_reference_run_metrics_are_the_expected_ones(
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
+) -> None:
     """The counts and the simulated demand, as literals rather than as whatever came out."""
-    reference = await executed(session)
+    reference = await executed(session, factory)
     service = BenchmarkRunService(session)
     loaded = await service.load(reference.run_id, merchant_id=reference.merchant_id)
     metrics = await service.metrics(reference.run_id, merchant_id=reference.merchant_id)
@@ -514,7 +521,7 @@ async def test_the_reference_run_metrics_are_the_expected_ones(session: AsyncSes
 
 
 async def test_every_purchase_reached_a_real_payment_and_a_real_quote(
-    session: AsyncSession,
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
 ) -> None:
     """A success here is money that moved through the payment kernel, not a report of one.
 
@@ -523,7 +530,7 @@ async def test_every_purchase_reached_a_real_payment_and_a_real_quote(
     is SUCCEEDED for this merchant, and this reads the attempts back anyway, because a reference
     that exists and a payment that settled are two claims and only one of them is about money.
     """
-    reference = await executed(session)
+    reference = await executed(session, factory)
     loaded = await BenchmarkRunService(session).load(
         reference.run_id, merchant_id=reference.merchant_id
     )
@@ -549,7 +556,7 @@ async def test_every_purchase_reached_a_real_payment_and_a_real_quote(
 
 
 async def test_every_purchase_was_charged_the_amount_the_pin_says(
-    session: AsyncSession,
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
 ) -> None:
     """The money, compared against the hand written table rather than against itself.
 
@@ -557,7 +564,7 @@ async def test_every_purchase_was_charged_the_amount_the_pin_says(
     totalled a unit price instead of a line total would leave the whole pin green, because both
     the two unit missions still succeed and simulated demand is authored rather than measured.
     """
-    reference = await executed(session)
+    reference = await executed(session, factory)
     loaded = await BenchmarkRunService(session).load(
         reference.run_id, merchant_id=reference.merchant_id
     )
@@ -583,7 +590,7 @@ async def test_every_purchase_was_charged_the_amount_the_pin_says(
 
 
 async def test_the_executor_declines_each_control_mission_for_the_expected_reason(
-    session: AsyncSession,
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
 ) -> None:
     """The abstention code is diagnostic and is not persisted, so it is checked at the executor.
 
@@ -601,7 +608,7 @@ async def test_the_executor_declines_each_control_mission_for_the_expected_reaso
             continue
         await environments.prepare(FIXTURE)
         surface = MerchantBuyerSurface(
-            session, merchant_id=merchant_id, provider=FakePaymentProvider()
+            factory, merchant_id=merchant_id, provider=FakePaymentProvider()
         )
         observed = await ReferenceMissionExecutor(surface)(defined.brief, merchant_id=merchant_id)
 
@@ -609,9 +616,11 @@ async def test_the_executor_declines_each_control_mission_for_the_expected_reaso
         assert observed.abstention.code is entry.abstention, f"{defined.key}: {entry.why}"
 
 
-async def test_the_run_is_against_the_registered_voltedge_world(session: AsyncSession) -> None:
+async def test_the_run_is_against_the_registered_voltedge_world(
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
+) -> None:
     """Every pin the run carries, so a historical comparison knows what it is comparing."""
-    reference = await executed(session)
+    reference = await executed(session, factory)
     loaded = await BenchmarkRunService(session).load(
         reference.run_id, merchant_id=reference.merchant_id
     )

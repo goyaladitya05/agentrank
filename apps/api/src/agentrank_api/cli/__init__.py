@@ -184,13 +184,17 @@ async def _run(
     than kept. The session is the same object a route would hand a service, which is what makes
     the command path the real path: the transaction boundaries, the locks and the commits are
     the service's, exactly as they are over HTTP.
+
+    The factory is handed down beside it rather than kept private, so that a command needing a
+    second independent session gets one on this engine instead of building an engine of its own.
+    One command needs that and the rest ignore it.
     """
     engine = create_engine(settings)
     try:
         factory = create_session_factory(engine)
         async with factory() as session:
             command: Command = arguments.command
-            return await command(session, provider, arguments, out, settings)
+            return await command(session, factory, provider, arguments, out, settings)
     finally:
         await engine.dispose()
 

@@ -13,7 +13,7 @@ import argparse
 from collections.abc import Awaitable
 from typing import Protocol, TextIO
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.config import Settings
 from agentrank_api.payments.provider import PaymentProvider
@@ -26,11 +26,19 @@ class Command(Protocol):
     building its own of any of them. A command that could construct a provider could be pointed
     at one the application is not running with, and a command that read configuration itself
     could be pointed at a different database than the one the runner opened.
+
+    Two ways to reach the database and the difference between them is the point. `session` is the
+    command's own, opened by the runner and closed by it, and it is what a command does its own
+    work on. `sessions` opens an independent one on the same engine, for the one case where a
+    command has to drive two things that must not share a transaction: a benchmark run's own
+    bookkeeping and the commerce a buyer carries out inside it. A command that needs one session
+    ignores the factory, which every command but one does.
     """
 
     def __call__(
         self,
         session: AsyncSession,
+        sessions: async_sessionmaker[AsyncSession],
         provider: PaymentProvider,
         arguments: argparse.Namespace,
         out: TextIO,

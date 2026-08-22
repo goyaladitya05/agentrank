@@ -37,7 +37,7 @@ import argparse
 import uuid
 from typing import Any, TextIO
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.benchmark.buyer import MerchantBuyerSurface
 from agentrank_api.benchmark.fixtures import BenchmarkFixture
@@ -146,13 +146,14 @@ def _add_json(parser: argparse.ArgumentParser) -> None:
 
 async def seed(
     session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
     provider: PaymentProvider,
     arguments: argparse.Namespace,
     out: TextIO,
     settings: Settings,
 ) -> int:
     """Register the world, put it back, and publish the suite."""
-    del provider, settings
+    del sessions, provider, settings
     prepared, suite = await seed_voltedge(session)
     payload = {
         "environment": prepared.environment.label,
@@ -189,6 +190,7 @@ async def seed(
 
 async def run(
     session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
     provider: PaymentProvider,
     arguments: argparse.Namespace,
     out: TextIO,
@@ -199,11 +201,17 @@ async def run(
     The provider is the one the application is wired with and is handed in rather than built
     here, which is the same rule every other command follows: a command that could construct a
     provider could be pointed at one the application is not running with.
+
+    Two session owners, and this is the only command with two. The run service records what
+    happened on this command's own session. The buyer surface opens one of its own per
+    operation, exactly as an HTTP route does, so the commerce a mission carries out is not part
+    of the run's transaction sequence and an executor cannot leave the run unable to record what
+    it just did.
     """
     del settings
     merchant_id = await _benchmark_merchant(session)
     service = BenchmarkRunService(session)
-    surface = MerchantBuyerSurface(session, merchant_id=merchant_id, provider=provider)
+    surface = MerchantBuyerSurface(sessions, merchant_id=merchant_id, provider=provider)
     finished = await service.run_suite(
         ReferenceMissionExecutor(surface),
         suite_key=SUITE_KEY,
@@ -216,13 +224,14 @@ async def run(
 
 async def show(
     session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
     provider: PaymentProvider,
     arguments: argparse.Namespace,
     out: TextIO,
     settings: Settings,
 ) -> int:
     """One run, its pins, its metrics and every mission outcome."""
-    del provider, settings
+    del sessions, provider, settings
     service = BenchmarkRunService(session)
     merchant_id = await _benchmark_merchant(session)
     return await _report(service, arguments.run_id, merchant_id, arguments, out)
@@ -230,13 +239,14 @@ async def show(
 
 async def abort(
     session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
     provider: PaymentProvider,
     arguments: argparse.Namespace,
     out: TextIO,
     settings: Settings,
 ) -> int:
     """Close a run that stopped, and say what state it is being closed in."""
-    del provider, settings
+    del sessions, provider, settings
     service = BenchmarkRunService(session)
     merchant_id = await _benchmark_merchant(session)
     before = await service.load(arguments.run_id, merchant_id=merchant_id)

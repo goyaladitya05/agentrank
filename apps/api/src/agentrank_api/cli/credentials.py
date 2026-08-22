@@ -42,7 +42,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any, TextIO
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.auth.models import MerchantApiCredential
 from agentrank_api.auth.service import MerchantCredentialService, validate_label
@@ -179,6 +179,7 @@ async def _resolve_merchant(session: AsyncSession, arguments: argparse.Namespace
 
 async def create(
     session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
     provider: PaymentProvider,
     arguments: argparse.Namespace,
     out: TextIO,
@@ -224,6 +225,7 @@ async def create(
 
 async def index(
     session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
     provider: PaymentProvider,
     arguments: argparse.Namespace,
     out: TextIO,
@@ -264,6 +266,7 @@ async def index(
 
 async def revoke(
     session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
     provider: PaymentProvider,
     arguments: argparse.Namespace,
     out: TextIO,

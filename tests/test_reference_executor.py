@@ -23,7 +23,7 @@ from typing import Any
 import pytest
 from benchmark_support import brief
 from sqlalchemy import select as sql_select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.benchmark.buyer import MerchantBuyerSurface
 from agentrank_api.benchmark.definitions import AgentMissionBrief
@@ -120,28 +120,38 @@ async def prepared(session: AsyncSession, fixture: BenchmarkFixture) -> uuid.UUI
 
 
 def executor(
-    session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
     merchant_id: uuid.UUID,
     *,
     provider: FakePaymentProvider | None = None,
 ) -> ReferenceMissionExecutor:
+    """The reference executor over a buyer surface with its own sessions.
+
+    A factory rather than this test's session, because that is what the surface takes: every
+    buyer operation opens and closes one, exactly as an HTTP route does. It also means the work
+    below genuinely commits on another connection, so an assertion made on this test's session
+    is reading what the database holds rather than what one transaction is holding open.
+    """
     surface = MerchantBuyerSurface(
-        session, merchant_id=merchant_id, provider=provider or FakePaymentProvider()
+        sessions, merchant_id=merchant_id, provider=provider or FakePaymentProvider()
     )
     return ReferenceMissionExecutor(surface)
 
 
 async def stock_of(session: AsyncSession, merchant_id: uuid.UUID, sku: str) -> int:
+    session.expire_all()
     found = await CatalogRepository(session).get_variant_by_sku(merchant_id, sku)
     assert found is not None
     return found.inventory_quantity
 
 
 async def reservations(session: AsyncSession) -> list[InventoryReservation]:
+    session.expire_all()
     return list((await session.execute(sql_select(InventoryReservation))).scalars())
 
 
 async def attempts(session: AsyncSession) -> list[PaymentAttempt]:
+    session.expire_all()
     return list((await session.execute(sql_select(PaymentAttempt))).scalars())
 
 
@@ -442,6 +452,7 @@ def test_an_idempotency_key_is_derived_from_the_quote_and_nothing_else() -> None
 
 async def test_a_purchase_goes_all_the_way_through_the_real_commerce_path(
     session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """The whole point of the phase, asserted on the rows rather than on the report.
 
@@ -451,7 +462,7 @@ async def test_a_purchase_goes_all_the_way_through_the_real_commerce_path(
     merchant_id = await prepared(session, world())
     provider = FakePaymentProvider()
 
-    observed = await executor(session, merchant_id, provider=provider)(
+    observed = await executor(factory, merchant_id, provider=provider)(
         brief(constraints=(CHARGERS, BLACK)), merchant_id=merchant_id
     )
 
@@ -471,10 +482,12 @@ async def test_a_purchase_goes_all_the_way_through_the_real_commerce_path(
     assert provider.charges == 1
 
 
-async def test_inventory_falls_by_exactly_the_quantity_bought(session: AsyncSession) -> None:
+async def test_inventory_falls_by_exactly_the_quantity_bought(
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
+) -> None:
     merchant_id = await prepared(session, world(chargers(cheap(stock=9))))
 
-    await executor(session, merchant_id)(
+    await executor(factory, merchant_id)(
         brief(constraints=(CHARGERS, BLACK), quantity=2, budget_minor=250000),
         merchant_id=merchant_id,
     )
@@ -484,6 +497,7 @@ async def test_inventory_falls_by_exactly_the_quantity_bought(session: AsyncSess
 
 async def test_the_same_world_and_the_same_brief_choose_the_same_variant(
     session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """Determinism, asserted across two worlds rather than across two calls in one.
 
@@ -495,9 +509,9 @@ async def test_the_same_world_and_the_same_brief_choose_the_same_variant(
     )
 
     merchant_id = await prepared(session, two_options)
-    first = await executor(session, merchant_id)(stated, merchant_id=merchant_id)
+    first = await executor(factory, merchant_id)(stated, merchant_id=merchant_id)
     await BenchmarkEnvironmentService(session).prepare(two_options)
-    second = await executor(session, merchant_id)(stated, merchant_id=merchant_id)
+    second = await executor(factory, merchant_id)(stated, merchant_id=merchant_id)
 
     assert first.selection is not None and second.selection is not None
     assert first.selection.variant_id == second.selection.variant_id
@@ -511,12 +525,13 @@ async def test_the_same_world_and_the_same_brief_choose_the_same_variant(
 
 async def test_the_executor_buys_the_cheaper_of_two_acceptable_variants(
     session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
 ) -> None:
     merchant_id = await prepared(
         session, world(chargers(cheap("RS-A", price=200000), cheap("RS-B", price=100000)))
     )
 
-    observed = await executor(session, merchant_id)(
+    observed = await executor(factory, merchant_id)(
         brief(constraints=(CHARGERS, BLACK)), merchant_id=merchant_id
     )
 
@@ -526,12 +541,14 @@ async def test_the_executor_buys_the_cheaper_of_two_acceptable_variants(
     assert await stock_of(session, merchant_id, "RS-A") == 5
 
 
-async def test_a_withdrawn_variant_is_never_bought(session: AsyncSession) -> None:
+async def test_a_withdrawn_variant_is_never_bought(
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
+) -> None:
     """It is visible on the product read and it is not for sale."""
     withdrawn = replace(cheap("RS-OLD", price=10000), is_active=False)
     merchant_id = await prepared(session, world(chargers(withdrawn, cheap())))
 
-    observed = await executor(session, merchant_id)(
+    observed = await executor(factory, merchant_id)(
         brief(constraints=(CHARGERS, BLACK)), merchant_id=merchant_id
     )
 
@@ -579,6 +596,7 @@ async def test_a_withdrawn_variant_is_never_bought(session: AsyncSession) -> Non
 )
 async def test_the_executor_declines_and_says_what_it_saw(
     session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
     fixture: BenchmarkFixture,
     constraints: tuple[Any, ...],
     expected: AbstentionCode,
@@ -590,7 +608,7 @@ async def test_the_executor_declines_and_says_what_it_saw(
     """
     merchant_id = await prepared(session, fixture)
 
-    observed = await executor(session, merchant_id)(
+    observed = await executor(factory, merchant_id)(
         brief(constraints=constraints), merchant_id=merchant_id
     )
 
@@ -601,11 +619,13 @@ async def test_the_executor_declines_and_says_what_it_saw(
     assert observed.payment is None
 
 
-async def test_an_abstention_writes_no_commerce_state(session: AsyncSession) -> None:
+async def test_an_abstention_writes_no_commerce_state(
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
+) -> None:
     """Declining costs the merchant nothing: no mandate, no quote, no hold, no payment."""
     merchant_id = await prepared(session, world(chargers(cheap(price=900000))))
 
-    await executor(session, merchant_id)(
+    await executor(factory, merchant_id)(
         brief(constraints=(CHARGERS, BLACK)), merchant_id=merchant_id
     )
 
@@ -615,7 +635,9 @@ async def test_an_abstention_writes_no_commerce_state(session: AsyncSession) -> 
     assert await stock_of(session, merchant_id, "RS-CHG-BLK") == 5
 
 
-async def test_a_withdrawn_product_leaves_nothing_to_find(session: AsyncSession) -> None:
+async def test_a_withdrawn_product_leaves_nothing_to_find(
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
+) -> None:
     """A product the merchant no longer sells is not in the catalog a buyer can browse."""
     fixture = BenchmarkFixture(
         key=FIXTURE_KEY,
@@ -635,7 +657,7 @@ async def test_a_withdrawn_product_leaves_nothing_to_find(session: AsyncSession)
     )
     merchant_id = await prepared(session, fixture)
 
-    observed = await executor(session, merchant_id)(
+    observed = await executor(factory, merchant_id)(
         brief(constraints=(CHARGERS, BLACK)), merchant_id=merchant_id
     )
 
@@ -648,6 +670,7 @@ async def test_a_withdrawn_product_leaves_nothing_to_find(session: AsyncSession)
 
 async def test_a_mission_with_no_stated_requirement_is_denied_rather_than_waved_through(
     session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """A mandate with no constraint set has no semantic authorization at all.
 
@@ -656,7 +679,7 @@ async def test_a_mission_with_no_stated_requirement_is_denied_rather_than_waved_
     """
     merchant_id = await prepared(session, world())
 
-    observed = await executor(session, merchant_id)(brief(constraints=()), merchant_id=merchant_id)
+    observed = await executor(factory, merchant_id)(brief(constraints=()), merchant_id=merchant_id)
 
     assert observed.checkout is not None and observed.checkout.created
     assert observed.authorization is not None
@@ -670,11 +693,12 @@ async def test_a_mission_with_no_stated_requirement_is_denied_rather_than_waved_
 
 async def test_a_declined_payment_is_reported_as_a_decline_and_gives_the_stock_back(
     session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
 ) -> None:
     merchant_id = await prepared(session, world())
     provider = FakePaymentProvider(default=FakeOutcome.DECLINE)
 
-    observed = await executor(session, merchant_id, provider=provider)(
+    observed = await executor(factory, merchant_id, provider=provider)(
         brief(constraints=(CHARGERS, BLACK)), merchant_id=merchant_id
     )
 
@@ -687,12 +711,13 @@ async def test_a_declined_payment_is_reported_as_a_decline_and_gives_the_stock_b
 
 async def test_an_unresolved_payment_is_not_reported_as_a_decline(
     session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """The payment kernel is built on never calling an unresolved payment a failed one."""
     merchant_id = await prepared(session, world())
     provider = FakePaymentProvider(default=FakeOutcome.AMBIGUOUS)
 
-    observed = await executor(session, merchant_id, provider=provider)(
+    observed = await executor(factory, merchant_id, provider=provider)(
         brief(constraints=(CHARGERS, BLACK)), merchant_id=merchant_id
     )
 
@@ -706,15 +731,18 @@ async def test_an_unresolved_payment_is_not_reported_as_a_decline(
 
 async def test_the_executor_refuses_to_shop_at_another_merchant(
     session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """A harness pointed at the wrong merchant is a misconfiguration, not a measurement."""
     merchant_id = await prepared(session, world())
 
     with pytest.raises(ValueError, match="shops at merchant"):
-        await executor(session, merchant_id)(brief(), merchant_id=uuid.uuid7())
+        await executor(factory, merchant_id)(brief(), merchant_id=uuid.uuid7())
 
 
-async def test_a_merchant_surface_error_is_reported_as_one(session: AsyncSession) -> None:
+async def test_a_merchant_surface_error_is_reported_as_one(
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
+) -> None:
     """A refusal no step expected is the merchant answering with an error rather than an
     outcome, and it is a finding about the merchant rather than a harness fault."""
     merchant_id = await prepared(session, world())
@@ -723,7 +751,7 @@ async def test_a_merchant_surface_error_is_reported_as_one(session: AsyncSession
         async def search_products(self, request: Any) -> Any:
             raise ConflictError("catalog_unavailable", "the catalog could not be read")
 
-    surface = Refusing(session, merchant_id=merchant_id, provider=FakePaymentProvider())
+    surface = Refusing(factory, merchant_id=merchant_id, provider=FakePaymentProvider())
     observed = await ReferenceMissionExecutor(surface)(
         brief(constraints=(CHARGERS, BLACK)), merchant_id=merchant_id
     )
@@ -736,6 +764,7 @@ async def test_a_merchant_surface_error_is_reported_as_one(session: AsyncSession
 
 async def test_a_quote_the_merchant_will_not_make_is_recorded_as_a_refusal(
     session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """A refusal to quote is a commerce fact rather than an error, and which one it was matters.
 
@@ -748,7 +777,7 @@ async def test_a_quote_the_merchant_will_not_make_is_recorded_as_a_refusal(
         async def create_checkout(self, request: Any) -> Any:
             raise ConflictError("insufficient_inventory", "one available, two requested")
 
-    surface = OutOfStock(session, merchant_id=merchant_id, provider=FakePaymentProvider())
+    surface = OutOfStock(factory, merchant_id=merchant_id, provider=FakePaymentProvider())
     observed = await ReferenceMissionExecutor(surface)(
         brief(constraints=(CHARGERS, BLACK)), merchant_id=merchant_id
     )
@@ -762,11 +791,13 @@ async def test_a_quote_the_merchant_will_not_make_is_recorded_as_a_refusal(
 # The mission a quantity ceiling qualifies.
 
 
-async def test_a_quantity_ceiling_travels_into_the_mandate(session: AsyncSession) -> None:
+async def test_a_quantity_ceiling_travels_into_the_mandate(
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
+) -> None:
     """The buyer said at most two, so the authorization permits at most two and never more."""
     merchant_id = await prepared(session, world(chargers(cheap(stock=9))))
 
-    observed = await executor(session, merchant_id)(
+    observed = await executor(factory, merchant_id)(
         AgentMissionBrief(
             key="two-chargers",
             objective="Buy two black chargers and no more than two.",
@@ -806,6 +837,7 @@ def test_an_observed_result_never_carries_a_classification() -> None:
 
 async def test_a_refusal_after_a_payment_keeps_the_payment_in_the_report(
     session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """Money moving is the most consequential thing this executor observes.
 
@@ -820,7 +852,7 @@ async def test_a_refusal_after_a_payment_keeps_the_payment_in_the_report(
         async def get_checkout(self, checkout_id: uuid.UUID) -> Any:
             raise ConflictError("checkout_unreadable", "the quote could not be read back")
 
-    surface = LosingTheReceipt(session, merchant_id=merchant_id, provider=FakePaymentProvider())
+    surface = LosingTheReceipt(factory, merchant_id=merchant_id, provider=FakePaymentProvider())
     observed = await ReferenceMissionExecutor(surface)(
         brief(constraints=(CHARGERS, BLACK)), merchant_id=merchant_id
     )
@@ -836,6 +868,7 @@ async def test_a_refusal_after_a_payment_keeps_the_payment_in_the_report(
 
 async def test_a_refusal_while_reading_the_catalog_is_the_merchants(
     session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """Before this execution has created anything, a refusal is the merchant answering badly."""
     merchant_id = await prepared(session, world())
@@ -844,7 +877,7 @@ async def test_a_refusal_while_reading_the_catalog_is_the_merchants(
         async def get_product(self, product_id: uuid.UUID) -> Any:
             raise ConflictError("product_unreadable", "the product could not be read")
 
-    surface = Refusing(session, merchant_id=merchant_id, provider=FakePaymentProvider())
+    surface = Refusing(factory, merchant_id=merchant_id, provider=FakePaymentProvider())
     observed = await ReferenceMissionExecutor(surface)(
         brief(constraints=(CHARGERS, BLACK)), merchant_id=merchant_id
     )
@@ -856,6 +889,7 @@ async def test_a_refusal_while_reading_the_catalog_is_the_merchants(
 
 async def test_a_missing_mandate_is_not_reported_as_a_variant_the_merchant_does_not_sell(
     session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """`INVALID_VARIANT` counts as an attempt outside what the buyer authorized.
 
@@ -868,7 +902,7 @@ async def test_a_missing_mandate_is_not_reported_as_a_variant_the_merchant_does_
         async def create_checkout(self, request: Any) -> Any:
             raise NotFoundError("mandate", str(uuid.uuid7()))
 
-    surface = MandateVanished(session, merchant_id=merchant_id, provider=FakePaymentProvider())
+    surface = MandateVanished(factory, merchant_id=merchant_id, provider=FakePaymentProvider())
     observed = await ReferenceMissionExecutor(surface)(
         brief(constraints=(CHARGERS, BLACK)), merchant_id=merchant_id
     )
@@ -878,14 +912,16 @@ async def test_a_missing_mandate_is_not_reported_as_a_variant_the_merchant_does_
     assert observed.error.origin is ErrorOrigin.HARNESS
 
 
-async def test_a_missing_variant_is_still_reported_as_one(session: AsyncSession) -> None:
+async def test_a_missing_variant_is_still_reported_as_one(
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
+) -> None:
     merchant_id = await prepared(session, world())
 
     class VariantVanished(MerchantBuyerSurface):
         async def create_checkout(self, request: Any) -> Any:
             raise NotFoundError("variant", str(uuid.uuid7()))
 
-    surface = VariantVanished(session, merchant_id=merchant_id, provider=FakePaymentProvider())
+    surface = VariantVanished(factory, merchant_id=merchant_id, provider=FakePaymentProvider())
     observed = await ReferenceMissionExecutor(surface)(
         brief(constraints=(CHARGERS, BLACK)), merchant_id=merchant_id
     )
@@ -897,6 +933,7 @@ async def test_a_missing_variant_is_still_reported_as_one(session: AsyncSession)
 
 async def test_a_product_withdrawn_after_the_search_is_not_selected(
     session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """The search excludes withdrawn products, so this is a narrow race and still a real one.
 
@@ -910,7 +947,7 @@ async def test_a_product_withdrawn_after_the_search_is_not_selected(
             product = await super().get_product(product_id)
             return product.model_copy(update={"is_active": False})
 
-    surface = WithdrawnOnOpen(session, merchant_id=merchant_id, provider=FakePaymentProvider())
+    surface = WithdrawnOnOpen(factory, merchant_id=merchant_id, provider=FakePaymentProvider())
     observed = await ReferenceMissionExecutor(surface)(
         brief(constraints=(CHARGERS, BLACK)), merchant_id=merchant_id
     )
@@ -922,6 +959,7 @@ async def test_a_product_withdrawn_after_the_search_is_not_selected(
 
 async def test_the_reported_authorization_is_the_one_the_payment_was_admitted_under(
     session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """Preparation and admission are two transactions at two instants.
 
@@ -930,7 +968,7 @@ async def test_the_reported_authorization_is_the_one_the_payment_was_admitted_un
     """
     merchant_id = await prepared(session, world())
 
-    observed = await executor(session, merchant_id)(
+    observed = await executor(factory, merchant_id)(
         brief(constraints=(CHARGERS, BLACK)), merchant_id=merchant_id
     )
 
