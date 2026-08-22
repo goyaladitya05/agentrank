@@ -141,6 +141,8 @@ class BenchmarkRunRepository:
         merchant: Merchant,
         suite: BenchmarkSuite,
         representation_label: str | None = None,
+        catalog_hash: str | None = None,
+        evaluator_version: str | None = None,
     ) -> BenchmarkRun:
         """Write a PENDING run and one PENDING mission run per mission, and flush.
 
@@ -153,6 +155,10 @@ class BenchmarkRunRepository:
         compared with the one the suite was authored against. A mission oracle is a statement
         about one catalog, and running the suite anywhere else would produce a perfectly well
         formed result marked against ground truth nobody ever established there.
+
+        The two pins are written with the row rather than updated onto it afterwards. They are
+        in the run guard's immutable list, so an update would be refused, which is the behavior
+        a pin should have: what a run was measured against is decided when it is created.
 
         Requires `suite.missions` to be loaded. `lazy="raise_on_sql"` makes an unloaded
         collection raise here rather than quietly producing a run with no missions to execute.
@@ -167,6 +173,8 @@ class BenchmarkRunRepository:
             merchant_id=merchant.id,
             suite_id=suite.id,
             representation_label=representation_label,
+            catalog_hash=catalog_hash,
+            evaluator_version=evaluator_version,
             status=BenchmarkRunStatus.PENDING,
         )
         run.mission_runs = [

@@ -39,6 +39,7 @@ abstaining is recorded and never classified from, because marking a mission from
 under test said about its own reasoning is not measurement.
 """
 
+import hashlib
 import uuid
 from dataclasses import dataclass
 
@@ -48,11 +49,13 @@ from agentrank_api.benchmark.definitions import (
     ExpectedOutcome,
 )
 from agentrank_api.benchmark.failures import (
+    FAILURE_PRECEDENCE,
     UNAUTHORIZED_SELECTION_REASONS,
     UNVERIFIABLE_SELECTION_REASONS,
     FailureReason,
     in_precedence,
 )
+from agentrank_api.benchmark.identity import HASH_ALGORITHM, canonical_json
 from agentrank_api.benchmark.lifecycle import MissionRunStatus
 from agentrank_api.benchmark.observation import (
     CheckoutRefusal,
@@ -484,3 +487,27 @@ def _progress_reasons(observed: ObservedResult) -> set[FailureReason]:
         # built on never calling an unresolved payment a failed one.
         reasons.add(FailureReason.PAYMENT_UNRESOLVED)
     return reasons
+
+
+def evaluator_version() -> str:
+    """A labelled digest of the vocabulary and the ordering this evaluator marks with.
+
+    Recorded on every run so that two runs marked by different rules can be told apart. Change
+    the failure vocabulary, the precedence order or either safety set, and every stored
+    classification keeps the words it was written with while new runs of the same suite version
+    are marked differently. Nothing else on a run would show that.
+
+    Honest about its limits, and the limit is the point of saying so: this covers the
+    vocabulary and the ordering, not the body of `evaluate_mission`. A change to how the budget
+    is compared or to which stage a reason is raised at moves the marking without moving this.
+    It is a version stamp rather than a proof, and docs/shortcomings.md says so.
+    """
+    payload = {
+        "reasons": [reason.value for reason in FailureReason],
+        "precedence": [reason.value for reason in FAILURE_PRECEDENCE],
+        "unauthorized": sorted(reason.value for reason in UNAUTHORIZED_SELECTION_REASONS),
+        "unverifiable": sorted(reason.value for reason in UNVERIFIABLE_SELECTION_REASONS),
+        "statuses": [status.value for status in MissionRunStatus],
+    }
+    digest = hashlib.sha256(canonical_json(payload).encode("utf-8"))
+    return f"{HASH_ALGORITHM}:{digest.hexdigest()}"

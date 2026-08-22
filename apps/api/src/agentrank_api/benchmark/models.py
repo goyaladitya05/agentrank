@@ -332,6 +332,19 @@ class BenchmarkRun(Base):
     so there is no content identity for a merchant representation to record, and this column must
     never be read as one: it holds whatever an operator called the representation, which is
     enough to tell a baseline run from a later one and is not evidence that anything changed.
+
+    `catalog_hash` is the identity the label is not. It pins what the merchant's authoritative
+    data looked like when the run started, which is the half of ground truth the suite hash
+    cannot cover. Two runs whose pins differ were measured against different merchants, and any
+    difference between them is jointly caused by whatever was changed on purpose and by whatever
+    else moved at the same time. A before and after comparison across two different pins is not
+    a controlled comparison and must not be presented as one.
+
+    `evaluator_version` records the vocabulary and ordering the results were marked with, so
+    that two runs marked by different rules are not compared as if they were not.
+
+    Both are nullable, and null means the run predates the column rather than that everything
+    was fine.
     """
 
     __tablename__ = "benchmark_run"
@@ -345,6 +358,14 @@ class BenchmarkRun(Base):
         CheckConstraint(
             "representation_label IS NULL OR length(btrim(representation_label)) > 0",
             name="representation_label_not_blank",
+        ),
+        CheckConstraint(
+            f"catalog_hash IS NULL OR catalog_hash ~ '{HASH_PATTERN}'",
+            name="catalog_hash_format",
+        ),
+        CheckConstraint(
+            f"evaluator_version IS NULL OR evaluator_version ~ '{HASH_PATTERN}'",
+            name="evaluator_version_format",
         ),
         # A run that has not started has no start instant, and one that has finished has both.
         CheckConstraint("(status = 'PENDING') = (started_at IS NULL)", name="started_at_matches"),
@@ -379,6 +400,8 @@ class BenchmarkRun(Base):
     representation_label: Mapped[str | None] = mapped_column(
         String(MAX_REPRESENTATION_LABEL_LENGTH), nullable=True
     )
+    catalog_hash: Mapped[str | None] = mapped_column(String(HASH_LENGTH), nullable=True)
+    evaluator_version: Mapped[str | None] = mapped_column(String(HASH_LENGTH), nullable=True)
     # No server default, for the same reason as everywhere else in this schema: an insert that
     # does not state a status is a bug.
     status: Mapped[BenchmarkRunStatus] = mapped_column(BENCHMARK_RUN_STATUS, nullable=False)
