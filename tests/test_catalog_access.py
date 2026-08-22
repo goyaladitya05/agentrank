@@ -227,7 +227,7 @@ def test_the_whole_commerce_namespace_declares_the_bearer_scheme(
     # A positive count beside the negative assertion, so an empty set cannot pass as clean.
     # Nineteen since Phase 1I added the two Razorpay checkout preparation paths, which are
     # merchant scoped like everything else in this namespace.
-    assert len(commerce) == 19
+    assert len(commerce) == 20
     assert unprotected == []
 
 

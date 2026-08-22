@@ -118,11 +118,21 @@ class OutcomeSource(StrEnum):
         provider may yet reveal that money moved. It is its own value rather than borrowed
         from RECONCILIATION because the authoritative row must not claim a provider said
         something no provider said. See `agentrank_api.payments.recovery`.
+
+    INTERACTIVE
+        A customer completed a provider hosted checkout, the callback was signature verified,
+        and the provider was then asked what the payment actually did. Its own value for the
+        same reason OPERATOR is: this application never dispatched anything, so EXECUTION would
+        claim a dispatch that never happened, and RECONCILIATION would describe a payment
+        settled in seconds by a browser as one recovered afterwards from an ambiguous result.
+        The two are different operational facts and an operator reading this column needs to
+        tell them apart. See `agentrank_api.razorpay.verification`.
     """
 
     EXECUTION = "EXECUTION"
     RECONCILIATION = "RECONCILIATION"
     OPERATOR = "OPERATOR"
+    INTERACTIVE = "INTERACTIVE"
 
 
 # Stored as text with a check constraint rather than as a native PostgreSQL enum, for the

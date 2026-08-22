@@ -303,6 +303,62 @@ class PaymentExecutionService:
             provider_record=found.record,
         )
 
+    async def record_external_dispatch(self, attempt_id: uuid.UUID) -> PaymentAttempt:
+        """Commit that a provider operation exists for this attempt, before asking what it did.
+
+        The interactive counterpart of the dispatch mark, and it exists because an interactive
+        checkout inverts who performs the payment. This application never sends one: a customer
+        completes a provider hosted form and the callback is the first this side hears of it. By
+        the time a signature verified callback arrives, "a provider request may have been
+        dispatched" is not a hedge, it is certainly true, which is exactly what IN_FLIGHT means.
+
+        Committed before the confirmation query, for the same reason `dispatch` commits before
+        the network call. A crash after this point leaves an attempt that must be asked about
+        rather than one something might settle autonomously, and the doubt stays on the side
+        that cannot charge anybody twice.
+
+        Tolerant of every state rather than refusing them, which is the opposite of
+        `_dispatchable` and is deliberate. This does not authorize anything; it records a fact
+        that has already happened somewhere else. An attempt already IN_FLIGHT is a repeated
+        callback, an UNKNOWN one is a callback arriving after somebody asked, and a terminal one
+        is a callback arriving after the payment settled. All three are ordinary, and none of
+        them is a reason to refuse to look at what the provider now says.
+        """
+        attempt = await self._attempts.get_for_update(attempt_id)
+        if attempt is None:
+            raise NotFoundError("payment_attempt", str(attempt_id))
+        if attempt.status is PaymentAttemptStatus.ADMITTED:
+            await self._attempts.mark_in_flight(attempt)
+        await self._session.commit()
+        return attempt
+
+    async def apply_provider_observation(
+        self, attempt_id: uuid.UUID, result: ProviderResult, *, source: OutcomeSource
+    ) -> PaymentOutcome:
+        """Record an outcome learned somewhere other than a dispatch or a reconciliation query.
+
+        The seam an interactive provider integration converges on, and it is deliberately a seam
+        rather than a second implementation. Everything below it is the machinery a dispatch
+        already uses: the same locks in the same documented order, the same atomic transaction
+        that marks the attempt, marks the checkout PAID, consumes the hold, decrements the stock
+        and appends the trail, the same idempotence when an outcome is already recorded, and the
+        same typed conflict when two definitive answers disagree.
+
+        A Razorpay Standard Checkout that succeeds and a fake provider that succeeds therefore
+        produce identical business truth, because they produce it through identical code. There
+        is no second definition of paid anywhere in this application.
+
+        `source` is the caller's to state, because only the caller knows how it learned. An
+        interactive checkout passes INTERACTIVE.
+        """
+        recorded = await self._record(attempt_id, result, source=source)
+        return PaymentOutcome(
+            attempt=recorded.attempt,
+            changed=recorded.changed,
+            provider_called=True,
+            conflict=recorded.conflict,
+        )
+
     async def _append_reconciled(self, attempt_id: uuid.UUID, found: ProviderQueryResult) -> None:
         """Record that somebody asked, and what the provider said when they did.
 

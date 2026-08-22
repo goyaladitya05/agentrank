@@ -21,12 +21,24 @@ import uuid
 from datetime import datetime
 from typing import Self
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from agentrank_api.payments.admission import AdmissionRefusal, PaymentAdmission
 from agentrank_api.payments.schemas import PaymentAttemptView
 from agentrank_api.razorpay.models import RazorpayCheckoutStatus
 from agentrank_api.razorpay.service import PreparedCheckout
+from agentrank_api.razorpay.translation import ObservedState
+from agentrank_api.razorpay.verification import CheckoutCallback, VerifiedPayment
+
+# Razorpay identifiers are short prefixed strings. Bounded and restricted to characters that
+# survive a URL, a header and a log without escaping, because a value that has to be encoded
+# differently in two places is two values. Deliberately not a pattern asserting the vendor's
+# prefixes: this is a safety bound on untrusted input, not a guess about their identifier
+# scheme, and rejecting a valid identifier because they changed a prefix would break payments.
+PROVIDER_IDENTIFIER = r"^[A-Za-z0-9_-]{1,64}$"
+
+# A hex encoded SHA-256 digest, which is what Razorpay documents the payment signature as.
+SIGNATURE = r"^[0-9a-f]{64}$"
 
 
 class RazorpayCheckoutView(BaseModel):
@@ -133,4 +145,71 @@ class RazorpayPreparationView(BaseModel):
             refusal=None,
             attempt=PaymentAttemptView.from_model(attempt),
             razorpay=checkout,
+        )
+
+
+class RazorpayCallbackRequest(BaseModel):
+    """The three fields Standard Checkout hands back, treated as hostile until proven otherwise.
+
+    Every one of them arrives from a customer's browser. None is trusted, none selects anything,
+    and none decides an amount. `razorpay_order_id` in particular is not what the signature is
+    verified against: the stored order identifier is, and this field is compared to it and
+    refused on a mismatch. A payload verified against itself proves nothing.
+
+    Bounded here so that a value which cannot possibly be a Razorpay identifier is refused as a
+    422 before it reaches a comparison, a log line or an audit payload. The signature bound is
+    the documented digest shape rather than a guess.
+
+    There is no amount here, no currency, no order status and no merchant. Every one of them
+    comes from authoritative state, and a field a browser could set is a field a browser could
+    set wrongly.
+    """
+
+    razorpay_payment_id: str = Field(pattern=PROVIDER_IDENTIFIER)
+    razorpay_order_id: str = Field(pattern=PROVIDER_IDENTIFIER)
+    razorpay_signature: str = Field(pattern=SIGNATURE)
+
+    def to_callback(self) -> CheckoutCallback:
+        return CheckoutCallback(
+            payment_id=self.razorpay_payment_id,
+            order_id=self.razorpay_order_id,
+            signature=self.razorpay_signature,
+        )
+
+
+class RazorpayVerificationView(BaseModel):
+    """What one verified callback produced, in this application's own words.
+
+    `confirmed` is the only field that says money moved, and it is true only when Razorpay
+    reported the payment captured and the AgentRank outcome was applied. `changed` says whether
+    this call is what moved it, which is what makes a repeated callback observably idempotent.
+
+    `provider_state` is this application's reading of the provider payment rather than the
+    vendor's status string. A caller sees PENDING or REVERSED and never `authorized` or
+    `refunded`, because a vendor's vocabulary in these responses is a vendor's vocabulary in a
+    buyer agent's parser, and it changes without notice.
+
+    `attempt` is the authoritative record and the only thing a caller should act on. Confirmed
+    and `attempt.status == "SUCCEEDED"` say the same thing, and the attempt is the one that says
+    it about the payment rather than about this request.
+    """
+
+    confirmed: bool
+    changed: bool
+    conflicted: bool
+    provider_state: ObservedState
+    checkout_id: uuid.UUID
+    razorpay_status: RazorpayCheckoutStatus
+    attempt: PaymentAttemptView
+
+    @classmethod
+    def from_verification(cls, verified: VerifiedPayment) -> Self:
+        return cls(
+            confirmed=verified.confirmed,
+            changed=verified.changed,
+            conflicted=verified.conflicted,
+            provider_state=verified.state,
+            checkout_id=verified.attempt.checkout_id,
+            razorpay_status=verified.binding.status,
+            attempt=PaymentAttemptView.from_model(verified.attempt),
         )

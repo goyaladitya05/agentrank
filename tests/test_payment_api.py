@@ -475,16 +475,17 @@ async def test_a_payment_without_a_key_is_admitted_under_a_generated_one(
 async def test_the_payment_routes_expose_no_provider_operations(
     catalog_settings: Settings,
 ) -> None:
-    """Four operations and deliberately not a fifth.
+    """Five operations and deliberately not a sixth.
 
     Refund, capture, void and a webhook receiver are all absent because nothing exists behind
     the provider interface to serve them, and an endpoint with nothing behind it is a promise.
 
-    The fourth is the Razorpay checkout preparation added in Phase 1I. It is not a provider
-    operation in the sense this test is about: it creates an order for a customer to pay
-    against and moves no money, and it exists because Standard Checkout is interactive and
-    cannot be performed by a server. The payment it prepares still resolves through the same
-    three operations above.
+    The last two are the Razorpay checkout bridge added in Phase 1I. Neither is a provider
+    operation in the sense this test is about. Preparation creates an order for a customer to
+    pay against and moves no money. Verification receives what the customer's browser reports,
+    proves it, asks Razorpay what actually happened, and converges on exactly the same outcome
+    machinery the first three use. Both exist because Standard Checkout is interactive and
+    cannot be performed by a server.
 
     The schema is public and needs no credential to read, which is what lets a client be
     generated before one is issued.
@@ -498,4 +499,5 @@ async def test_the_payment_routes_expose_no_provider_operations(
         "/api/v1/commerce/payments/{attempt_id}",
         "/api/v1/commerce/payments/{attempt_id}/reconcile",
         "/api/v1/commerce/payments/{attempt_id}/razorpay-checkout",
+        "/api/v1/commerce/payments/{attempt_id}/razorpay-checkout/verify",
     }
