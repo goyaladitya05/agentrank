@@ -82,6 +82,22 @@ def test_a_multi_unit_mission_is_priced_by_the_line_not_the_unit() -> None:
     assert satisfies(stated, entry(price=200000)) is True
 
 
+def test_a_multi_unit_mission_is_stocked_by_the_line_not_the_unit() -> None:
+    """One unit left is not enough for a mission that wants two.
+
+    Found by an independent review, which noticed that the budget comparison beside this one
+    already multiplied by the quantity and this one did not. The consequence was not a smaller
+    number: a mission whose only qualifying variant had one unit left was reported as
+    satisfiable here and declined by the executor, so the executor was marked down for a
+    discovery failure it never had a chance at while the oracle check reported no disagreement
+    to explain it.
+    """
+    stated = brief(quantity=2, constraints=(), budget_minor=BUDGET)
+
+    assert satisfies(stated, entry(price=200000, stock=1)) is False
+    assert satisfies(stated, entry(price=200000, stock=2)) is True
+
+
 def test_a_mission_cannot_want_more_units_than_it_authorizes() -> None:
     """Unsatisfiable by construction, and for a reason no merchant has anything to do with."""
     with pytest.raises(ValueError, match="while authorizing"):

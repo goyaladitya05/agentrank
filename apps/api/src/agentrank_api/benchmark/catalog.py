@@ -61,16 +61,21 @@ class CatalogEntry:
         if self.inventory_quantity < 0:
             raise ValueError("catalog inventory must not be negative")
 
-    @property
-    def is_purchasable(self) -> bool:
-        """Whether a buyer could actually take one of these away today.
+    def can_supply(self, quantity: int) -> bool:
+        """Whether a buyer could actually take this many of these away today.
 
-        Active and in stock. An inactive variant is something the merchant no longer sells and
-        an out of stock one is something it has run out of, and neither can satisfy a mission,
-        which is why one predicate covers both here and two failure reasons separate them when
-        an executor tries anyway.
+        Active and stocked to the quantity asked for. An inactive variant is something the
+        merchant no longer sells and an understocked one is something it has not got enough of,
+        and neither can satisfy a mission, which is why one predicate covers both here and two
+        failure reasons separate them when an executor tries anyway.
+
+        It takes the quantity rather than testing for any stock at all, and that is a correction
+        an independent review forced. A mission wanting two units of something one unit of which
+        remains is a mission nobody can complete, and reporting it as satisfiable meant the
+        executor was marked down for a discovery failure while the oracle check reported no
+        disagreement. The budget comparison beside it already multiplied by the quantity.
         """
-        return self.is_active and self.inventory_quantity > 0
+        return self.is_active and self.inventory_quantity >= quantity
 
     def to_payload(self) -> dict[str, Any]:
         """The entry as it enters the catalog pin."""
@@ -126,16 +131,23 @@ def facts_for(
 def satisfies(brief: AgentMissionBrief, entry: CatalogEntry) -> bool:
     """Whether one purchasable variant meets everything this mission requires.
 
-    Fail closed in the same three ways the evaluator is. An inactive or out of stock variant
-    cannot satisfy anything. A category the merchant never published cannot be an allowed one.
-    An attribute that is absent, or present in a form that cannot be compared, is not a pass.
+    Fail closed in the same three ways the evaluator is. An inactive variant, or one the merchant
+    has not got enough of, cannot satisfy anything. A category the merchant never published
+    cannot be an allowed one. An attribute that is absent, or present in a form that cannot be
+    compared, is not a pass.
 
-    The buyer's own quantity ceiling is not checked here. It is a property of the brief alone, so
-    checking it per entry would make this answer false for every variant on the strength of
-    something no variant has anything to do with. `AgentMissionBrief` refuses that mission
-    outright instead.
+    The quantity is compared against stock as well as against the budget, and the executor that
+    decides what to buy applies the same rule. When the two disagreed, a mission whose only
+    qualifying variant had one unit left and wanted two was reported as satisfiable here and
+    declined there, so the executor was marked down for a discovery failure it never had a
+    chance at and the oracle check reported no disagreement to explain it.
+
+    The buyer's own quantity *ceiling* is still not checked here. It is a property of the brief
+    alone, so checking it per entry would make this answer false for every variant on the
+    strength of something no variant has anything to do with. `AgentMissionBrief` refuses that
+    mission outright instead.
     """
-    if not entry.is_purchasable:
+    if not entry.can_supply(brief.quantity):
         return False
     if entry.currency != brief.currency:
         return False
