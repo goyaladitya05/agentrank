@@ -6,6 +6,11 @@ requires-python = "==3.14.*"
 dependencies = [
     "alembic>=1.14",
     "fastapi>=0.115",
+    # The Razorpay REST adapter. Already present for the FastAPI test client, promoted to a
+    # runtime dependency rather than added: the alternative was Razorpay's own SDK, which is a
+    # synchronous requests client and cannot be called from this application's event loop
+    # without a thread pool. See agentrank_api/razorpay/client.py.
+    "httpx2>=2.0",
     "psycopg[binary]>=3.2",
     "pydantic>=2.9",
     "pydantic-settings>=2.5",

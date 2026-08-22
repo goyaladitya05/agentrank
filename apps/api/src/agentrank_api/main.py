@@ -17,11 +17,15 @@ from agentrank_api.errors import (
 )
 from agentrank_api.payments.provider import PaymentProvider
 from agentrank_api.payments.wiring import build_payment_provider
+from agentrank_api.razorpay.client import HttpRazorpayClient, RazorpayClient
+from agentrank_api.razorpay.wiring import build_razorpay_client
 from agentrank_api.routes import checkouts, commerce, constraints, mandates, payments, system
 
 
 def create_app(
-    settings: Settings | None = None, payment_provider: PaymentProvider | None = None
+    settings: Settings | None = None,
+    payment_provider: PaymentProvider | None = None,
+    razorpay_client: RazorpayClient | None = None,
 ) -> FastAPI:
     """Build the application.
 
@@ -35,21 +39,35 @@ def create_app(
     to different providers. It is a deterministic fake, because it is the only implementation
     that exists. Phase 1F is provider independent on purpose, and no request field can select a
     different outcome.
+
+    The Razorpay transport is injectable for the same reasons, and it is deliberately not the
+    payment provider. Standard Checkout is interactive: the browser collects the payment and
+    this application creates an order beforehand and confirms a result afterwards, so it does
+    not fit an interface whose one operation is "perform this payment". It is None when no Test
+    Mode key pair is configured, and the endpoints that need one refuse by name rather than the
+    application refusing to start.
     """
     resolved = settings or get_settings()
     provider = payment_provider or build_payment_provider()
+    razorpay = razorpay_client if razorpay_client is not None else build_razorpay_client(resolved)
     logging.basicConfig(level=resolved.log_level.upper())
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.settings = resolved
         app.state.payment_provider = provider
+        app.state.razorpay_client = razorpay
         app.state.engine = create_engine(resolved)
         app.state.session_factory = create_session_factory(app.state.engine)
         try:
             yield
         finally:
             await app.state.engine.dispose()
+            # Only the real transport holds a connection pool. An injected fake has nothing to
+            # close, and closing something a test still owns would be this application reaching
+            # outside itself.
+            if isinstance(razorpay, HttpRazorpayClient):
+                await razorpay.aclose()
 
     app = FastAPI(
         title="AgentRank API",
