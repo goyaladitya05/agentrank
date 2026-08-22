@@ -19,9 +19,11 @@ than against a promise.
 
 It reads only what a buyer can read. Every fact it decides on arrives through
 `BuyerCommerceSurface`, which is the application service layer with a merchant bound to it and
-which returns the same view models the HTTP routes serialize. There is no session here, no
-repository and no ORM row, so the harness cannot read an answer out of rows a buyer would have to
-discover.
+which returns the same view models the HTTP routes serialize. This module imports no session, no
+repository and no ORM row, and a test reads its own source to say so. The surface it is handed
+does hold a session behind two private attributes, because it holds application services, so the
+guarantee is that reaching one takes a deliberate act rather than that it is impossible. See
+docs/shortcomings.md.
 
 And it decides deterministically. No randomness, no clock in any decision, no set iteration and
 no reliance on the order rows came back in. The same world and the same brief always produce the
@@ -576,10 +578,15 @@ class ReferenceMissionExecutor:
 def idempotency_key(checkout_id: uuid.UUID) -> str:
     """The identity this executor pays one quote under.
 
-    Derived from the quote rather than chosen, and that is what makes a repeat safe. An
-    idempotency key is scoped to its checkout, so a second payment request for the same quote
-    resolves to the first attempt instead of writing a second one, and a mission retried against
-    a quote it already created cannot charge twice.
+    Derived from the quote rather than chosen, and what that makes safe is precisely a repeat of
+    the payment step for one quote: an idempotency key is scoped to its checkout, so a second
+    `complete_checkout` for the same quote resolves to the first attempt instead of writing a
+    second one.
+
+    It is not retry safety for a mission. This executor has no path that reuses an existing
+    quote, so a re-executed mission creates a fresh mandate and a fresh checkout and therefore a
+    fresh identity. That is why a mission left RUNNING is never replayed, which is the runner's
+    rule rather than this one.
 
     Deterministic and server derived. There is no clock in it, no counter and no caller supplied
     string, so the same quote always produces the same identity and two quotes never produce one.

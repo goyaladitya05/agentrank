@@ -13,6 +13,7 @@ the executor label and the disclaimer are asserted rather than left to a docstri
 
 import asyncio
 import json
+import logging
 import uuid
 from dataclasses import dataclass
 from io import StringIO
@@ -132,6 +133,8 @@ async def test_run_executes_the_suite_and_says_what_produced_the_numbers(
     assert DISCLAIMER in result.out
     assert "AI agent" not in result.out
     assert "COMPLETED" in result.out
+    assert f"{SUITE_KEY}@{SUITE_VERSION}" in result.out
+    assert "voltedge-catalog@1" in result.out
     finished = await only_run(session)
     assert finished.status is BenchmarkRunStatus.COMPLETED
     assert finished.representation_label == "baseline"
@@ -147,6 +150,12 @@ async def test_run_reports_every_mission_and_its_outcome(
     payload = result.json()
     assert payload["disclaimer"] == DISCLAIMER
     assert payload["executor"] == "reference-v1"
+    # Every pin the comparison rule names, including the two an earlier version of this report
+    # left out while printing the label the same rule calls never evidence.
+    assert payload["suite"] == f"{SUITE_KEY}@{SUITE_VERSION}"
+    assert payload["environment"] == "voltedge-catalog@1"
+    assert payload["catalog_hash"] is not None
+    assert payload["evaluator_version"] is not None
     missions = payload["missions"]
     assert isinstance(missions, list)
     assert len(missions) == 14
@@ -241,3 +250,28 @@ async def test_aborting_a_finished_run_is_refused_rather_than_silently_ignored(
 
     assert result.code == ExitCode.REFUSED
     assert "run_already_finished" in result.err
+
+
+async def test_a_mission_line_never_carries_how_the_mission_was_marked(
+    catalog_settings: Settings, provider: FakePaymentProvider, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A status and a failure reason are the oracle decoded, and an executor can read a log.
+
+    An abstention with a reason means the ground truth said a purchase was available and one
+    without means it said none was, so fourteen labelled mission lines are fourteen answers.
+    Counts after the last mission cannot inform the run they describe and do not say which
+    mission was which.
+    """
+    await cli(catalog_settings, provider, "benchmark", "seed")
+
+    with caplog.at_level(logging.INFO, logger="agentrank_api.benchmark.runner"):
+        await cli(catalog_settings, provider, "benchmark", "run")
+
+    missions = [record for record in caplog.records if record.msg == "benchmark mission recorded"]
+    assert len(missions) == 14
+    for record in missions:
+        assert not hasattr(record, "status")
+        assert not hasattr(record, "primary_failure_reason")
+        assert getattr(record, "mission_key", None)
+    completed = [record for record in caplog.records if record.msg == "benchmark run completed"]
+    assert [getattr(record, "missions_total", None) for record in completed] == [14]

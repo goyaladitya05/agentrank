@@ -82,10 +82,17 @@ from agentrank_api.payments.models import PaymentAttempt, PaymentAttemptStatus
 
 RUN_RESOURCE = "benchmark_run"
 
-# Structured fields only, and deliberately no oracle. A log line carries which run, which
-# mission run and which mission key, all of which a person needs to find a row again. What a
-# mission's ground truth was is the evaluator's and stays out of an operational log, because a
-# log that prints the answer is a log an executor's author can read.
+# Structured fields only, and deliberately no oracle. A mission line carries which run, which
+# mission run and which mission key, all of which a person needs to find a row again, and
+# nothing about how the mission was marked.
+#
+# That last part is not tidiness and it was got wrong first. A status and a failure reason are
+# the oracle decoded: an abstention with a reason means the ground truth said a purchase was
+# available, an abstention without one means it said none was, and a success means the same as
+# the first. An in process executor can attach a filter to this logger, read fourteen labelled
+# answers out of one run, and replay them against the next run of the same immutable suite
+# without opening the catalog. `logging` is not a plausible thing to forbid an executor from
+# importing, so the fix is to not write the answer down while the run is still going.
 log = logging.getLogger(__name__)
 
 
@@ -240,16 +247,29 @@ class BenchmarkRunService:
                     "benchmark_run_id": str(run_id),
                     "mission_run_id": str(result.id),
                     "mission_key": brief.key,
-                    "status": result.status.value,
-                    "primary_failure_reason": (
-                        None
-                        if result.primary_failure_reason is None
-                        else result.primary_failure_reason.value
-                    ),
                 },
             )
 
-        return await self.complete_run(run_id, merchant_id=merchant_id)
+        finished = await self.complete_run(run_id, merchant_id=merchant_id)
+        # Counts, at the end, and never per mission. What a mission was marked as is the oracle
+        # decoded: an abstention with a reason means the ground truth said a purchase was
+        # available and one without means it said none was. Logged per mission, an in process
+        # executor could read its own answers out of a handler and replay them on the next run
+        # of the same immutable suite. Counts after the last mission cannot inform the run they
+        # describe and do not identify which mission was which.
+        counts = compute_metrics(outcomes_of(finished.mission_runs))
+        log.info(
+            "benchmark run completed",
+            extra={
+                "benchmark_run_id": str(run_id),
+                "missions_total": counts.missions_total,
+                "missions_succeeded": counts.missions_succeeded,
+                "missions_failed": counts.missions_failed,
+                "missions_abstained": counts.missions_abstained,
+                "missions_errored": counts.missions_errored,
+            },
+        )
+        return finished
 
     async def start_mission(
         self, run_id: uuid.UUID, mission_key: str, *, merchant_id: uuid.UUID
@@ -391,6 +411,34 @@ class BenchmarkRunService:
         identifier is worth nothing to anybody who is not its merchant.
         """
         return await self._loaded_run(run_id, merchant_id=merchant_id)
+
+    async def suite_label(self, run: BenchmarkRun) -> str:
+        """Which workload this run executed, as `key@version`.
+
+        Read from the suite the run points at rather than from whatever a caller expected. A run
+        started earlier can name a version nobody defaults to any more, and a report that printed
+        the expectation instead of the row would be the wrong kind of report.
+        """
+        suite = await self._suites.get_by_id(run.suite_id)
+        if suite is None:
+            # Not reachable through the schema: the foreign key onto the suite is RESTRICT.
+            raise NotFoundError("benchmark_suite", str(run.suite_id))
+        return suite.label
+
+    async def environment_label(self, run: BenchmarkRun) -> str | None:
+        """Which registered world this run was measured against, or None when there was none.
+
+        None is the honest answer for a run against a merchant nobody registered, and it is not
+        the same as a world whose name nobody recorded.
+        """
+        if run.environment_id is None:
+            return None
+        environment = await self._session.get(BenchmarkEnvironment, run.environment_id)
+        if environment is None:
+            # Not reachable: a registered world cannot be deleted, and the run's reference is
+            # RESTRICT besides.
+            raise NotFoundError("benchmark_environment", str(run.environment_id))
+        return environment.label
 
     async def metrics(self, run_id: uuid.UUID, *, merchant_id: uuid.UUID) -> BenchmarkMetrics:
         """Count one merchant's run.

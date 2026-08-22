@@ -296,14 +296,29 @@ async def _report(
     """Print one run, whether it was just executed or read back."""
     loaded = await service.load(run_id, merchant_id=merchant_id)
     metrics = await service.metrics(run_id, merchant_id=merchant_id)
+    suite, environment = await _pins(service, loaded)
     if arguments.as_json:
-        write_json(out, _run_json(loaded, metrics))
+        write_json(out, _run_json(loaded, metrics, suite, environment))
         return ExitCode.OK
-    _render(loaded, metrics, out)
+    _render(loaded, metrics, suite, environment, out)
     return ExitCode.OK
 
 
-def _run_json(loaded: BenchmarkRun, metrics: BenchmarkMetrics) -> dict[str, Any]:
+async def _pins(service: BenchmarkRunService, loaded: BenchmarkRun) -> tuple[str, str | None]:
+    """The suite this run executed and the world it ran against, as labels.
+
+    Read rather than assumed from the command's own defaults. A run this command did not start
+    could name a suite version these commands no longer default to, and a report that printed
+    what it expected instead of what the row says would be the wrong kind of report entirely.
+    """
+    suite = await service.suite_label(loaded)
+    environment = await service.environment_label(loaded)
+    return suite, environment
+
+
+def _run_json(
+    loaded: BenchmarkRun, metrics: BenchmarkMetrics, suite: str, environment: str | None
+) -> dict[str, Any]:
     demand = [
         {
             "currency": entry.currency,
@@ -318,10 +333,17 @@ def _run_json(loaded: BenchmarkRun, metrics: BenchmarkMetrics) -> dict[str, Any]
         "disclaimer": DISCLAIMER,
         "run_id": str(loaded.id),
         "status": loaded.status.value,
+        # Every pin the comparison rule in docs/benchmark.md names, and in the order it names
+        # them. The first version of this report printed the executor, the catalog hash and the
+        # representation label, which is the one the same document calls never evidence, and
+        # omitted the two that say which missions ran and against which world. An operator
+        # following that rule with this command could check half of it.
+        "suite": suite,
+        "environment": environment,
         "executor": loaded.executor_label,
-        "representation_label": loaded.representation_label,
         "catalog_hash": loaded.catalog_hash,
         "evaluator_version": loaded.evaluator_version,
+        "representation_label": loaded.representation_label,
         "metrics": {
             "missions_total": metrics.missions_total,
             "missions_succeeded": metrics.missions_succeeded,
@@ -370,7 +392,13 @@ def _optional(value: uuid.UUID | None) -> str | None:
     return None if value is None else str(value)
 
 
-def _render(loaded: BenchmarkRun, metrics: BenchmarkMetrics, out: TextIO) -> None:
+def _render(
+    loaded: BenchmarkRun,
+    metrics: BenchmarkMetrics,
+    suite: str,
+    environment: str | None,
+    out: TextIO,
+) -> None:
     """One run as a person reads it.
 
     The executor is on the second line and is named as what it is. A report that did not say
@@ -380,9 +408,11 @@ def _render(loaded: BenchmarkRun, metrics: BenchmarkMetrics, out: TextIO) -> Non
     print(f"run         {loaded.id}", file=out)
     print(f"executor    {loaded.executor_label or MISSING}   {DISCLAIMER}", file=out)
     print(f"status      {loaded.status.value}", file=out)
-    print(f"label       {loaded.representation_label or MISSING}", file=out)
+    print(f"suite       {suite}", file=out)
+    print(f"world       {environment or MISSING}", file=out)
     print(f"catalog     {loaded.catalog_hash or MISSING}", file=out)
     print(f"evaluator   {loaded.evaluator_version or MISSING}", file=out)
+    print(f"label       {loaded.representation_label or MISSING}", file=out)
     print("", file=out)
     print(
         f"missions    {metrics.missions_total} total,"

@@ -2,8 +2,17 @@
 
 An executor must not reach the database. If it could, "the merchant's data existed and the agent
 could not act on it" would stop being a measurement: the harness would be reading the answer out
-of the rows the agent was supposed to have to discover. So an executor is handed this and holds
-no session, no repository and no ORM row.
+of the rows the agent was supposed to have to discover. So an executor is handed this and is
+typed against the protocol below, which has no session, no repository and no ORM row on it.
+
+That is a narrower guarantee than it first reads, and the difference is worth stating rather than
+glossing. `MerchantBuyerSurface` holds application services and each of those holds the session,
+so anything holding a surface can walk to one through two private attributes. Python offers no
+way to prevent that. What is actually enforced is that an executor's module imports nothing that
+could open a session and spells no oracle name, both checked against its source, and that
+reaching one would take a deliberate act visible in review. The honest closure is a separate
+connection on a database role with no privileges on the benchmark tables, and it is written down
+in docs/shortcomings.md rather than assumed away here.
 
 What this is, precisely, is the application service layer with a merchant already bound to it,
 returning the same view models the HTTP routes serialize. Every method here is one route's body:
