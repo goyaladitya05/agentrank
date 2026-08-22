@@ -57,6 +57,8 @@ from agentrank_api.benchmark.tools import (
     ToolOutcome,
 )
 from agentrank_api.commerce.catalog_fixture import SeedProduct, SeedVariant
+from agentrank_api.commerce.schemas import ProductSearchRequest
+from agentrank_api.commerce.search import ProductSearchCriteria
 from agentrank_api.constraints.rules import ConstraintOperator
 from agentrank_api.errors import AuthenticationError, ConflictError, NotFoundError, UpstreamError
 from agentrank_api.mandates.intent import AllowedCategory, MaxTotalAmount, RequiredAttribute
@@ -483,8 +485,10 @@ async def test_an_executor_cannot_choose_which_exception_the_boundary_observes(
     is the flattering one: ERRORED carries no failure reason and moves the mission's value out of
     lost demand.
 
-    The argument is type checked before anything is watched, so the refusal is a caller that
-    cannot call rather than a fault about anybody.
+    The argument's type is checked before anything is watched, so the refusal is a caller that
+    cannot call rather than a fault about anybody. A subclass rather than a duck typed object,
+    because the first version of the guard used `isinstance` and a two line subclass of the real
+    request model walked straight through it. An independent test audit found that.
     """
     merchant_id = await prepared(session)
     ledger = ToolLedger()
@@ -493,16 +497,37 @@ async def test_an_executor_cannot_choose_which_exception_the_boundary_observes(
         ledger,
     )
 
-    class Trap:
-        limit = 10
-
-        def to_criteria(self, merchant: uuid.UUID) -> object:
+    class Trap(ProductSearchRequest):
+        def to_criteria(self, merchant_id: uuid.UUID) -> ProductSearchCriteria:
             raise AuthenticationError
 
     with pytest.raises(BuyerArgumentError):
-        await surface.search_products(Trap())  # type: ignore[arg-type]
+        await surface.search_products(Trap())
 
     assert ledger.calls == ()
+    assert ledger.fault() is None
+
+
+async def test_a_duck_typed_argument_is_refused_as_well(
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """The other half, and the easier one. Neither is a call the merchant ever saw."""
+    merchant_id = await prepared(session)
+    ledger = ToolLedger()
+    surface = MeasuredBuyerSurface(
+        MerchantBuyerSurface(factory, merchant_id=merchant_id, provider=FakePaymentProvider()),
+        ledger,
+    )
+
+    class Impostor:
+        limit = 10
+
+        def to_criteria(self, merchant_id: uuid.UUID) -> object:
+            raise RuntimeError("the catalog query blew up")
+
+    with pytest.raises(BuyerArgumentError):
+        await surface.search_products(Impostor())  # type: ignore[arg-type]
+
     assert ledger.fault() is None
 
 

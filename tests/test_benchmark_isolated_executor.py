@@ -40,6 +40,7 @@ from agentrank_api.benchmark.endpoint import (
     ServedRequest,
 )
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
+from agentrank_api.benchmark.execution import implementation_revision
 from agentrank_api.benchmark.faults import FaultOrigin
 from agentrank_api.benchmark.fixtures import BenchmarkFixture
 from agentrank_api.benchmark.isolation import (
@@ -49,6 +50,7 @@ from agentrank_api.benchmark.isolation import (
     PaymentUnaccountedError,
 )
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
+from agentrank_api.benchmark.reference_executor import REFERENCE_EXECUTOR
 from agentrank_api.benchmark.runner import BenchmarkRunService
 from agentrank_api.benchmark.suites import BenchmarkSuiteService
 from agentrank_api.benchmark.wire import MissionRequest
@@ -217,7 +219,13 @@ def test_the_environment_the_runner_builds_carries_no_credential() -> None:
 
 
 def test_the_allowlist_contains_nothing_that_could_be_a_credential() -> None:
-    """Read as a whole, because the risk is a name added later that looks harmless."""
+    """Read as a whole, because the risk is a name added later that looks harmless.
+
+    `PYTHONPATH` was on it and is not any more. It carries no secret, which is why it was there,
+    and it decides what a process can import, which is why it should not have been: a checkout on
+    it makes anything in the repository importable from a process whose whole point is that it
+    was handed a brief and nothing else.
+    """
     assert {
         "PATH",
         "HOME",
@@ -225,10 +233,34 @@ def test_the_allowlist_contains_nothing_that_could_be_a_credential() -> None:
         "LC_ALL",
         "LC_CTYPE",
         "TMPDIR",
-        "PYTHONPATH",
         "SSL_CERT_FILE",
         "SSL_CERT_DIR",
     } == PERMITTED_ENVIRONMENT
+
+
+def test_nothing_that_decides_what_a_worker_can_import_is_inherited() -> None:
+    """Named separately from the set above, because this is the property rather than the list."""
+    parent = {
+        "PATH": "/usr/bin",
+        "PYTHONPATH": "/home/somebody/checkout",
+        "PYTHONSTARTUP": "/home/somebody/.pythonrc",
+        "PYTHONHOME": "/opt/python",
+    }
+
+    assert worker_environment(parent) == {"PATH": "/usr/bin"}
+
+
+def test_a_refusal_names_a_variable_nobody_has_thought_of_yet() -> None:
+    """The allowlist's whole claim, asserted on the refusal and not only on the builder.
+
+    The runner strips an unknown variable before a worker ever sees one, so a denylist here
+    would look identical in every other test. This is the one that tells them apart.
+    """
+    with pytest.raises(EnvironmentNotIsolatedError) as raised:
+        require_isolated_environment({"PATH": "/usr/bin", "INVENTED_NEXT_YEAR": "secret"})
+
+    assert raised.value.names == frozenset({"INVENTED_NEXT_YEAR"})
+    assert "secret" not in str(raised.value)
 
 
 def test_a_worker_refuses_to_start_where_a_database_url_is_visible() -> None:
@@ -479,11 +511,15 @@ async def test_a_worker_that_takes_too_long_is_killed_and_attributed(
 ) -> None:
     """A benchmark that waited forever would produce no result at all, which is worse."""
     merchant_id = await prepared(session)
+    # Short enough that no worker finishes inside it and long enough that the bound is what
+    # fires rather than the machine being slow. A worker's floor is one interpreter start, one
+    # package import and one refused connection, which is hundreds of milliseconds; anything
+    # near that would make this pass or fail on how loaded the machine is.
     executor = IsolatedMissionExecutor(
         base_url="http://127.0.0.1:1",
         token="ar_dev_" + "0" * 32 + "_" + "0" * 64,
         served=served,
-        timeout=0.5,
+        timeout=0.05,
         interpreter=sys.executable,
     )
 
@@ -576,6 +612,25 @@ async def test_the_witness_forgets_the_previous_mission(
 
     assert executor.fault() is None
     assert not executor.payment_attempted()
+
+
+def test_the_isolated_revision_covers_every_module_that_decides_what_the_buyer_does() -> None:
+    """Three modules, and asserted as three rather than as a digest compared with itself.
+
+    The scripted buyer decides what to select, the HTTP surface decides what it can see and how a
+    refusal reaches it, and the worker decides what the process does with either. Hashing only the
+    first would leave two of the three able to change with nothing recording it.
+    """
+    expected = implementation_revision(
+        sys.modules["agentrank_api.benchmark.reference_executor"],
+        sys.modules["agentrank_api.benchmark.http_buyer"],
+        sys.modules["agentrank_api.benchmark.worker"],
+    )
+    narrower = implementation_revision(sys.modules["agentrank_api.benchmark.reference_executor"])
+
+    assert ISOLATED_REFERENCE.revision == expected
+    assert ISOLATED_REFERENCE.revision != narrower
+    assert ISOLATED_REFERENCE.revision != REFERENCE_EXECUTOR.revision
 
 
 def test_the_isolated_executor_is_not_the_in_process_one_by_identity() -> None:

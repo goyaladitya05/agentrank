@@ -8,9 +8,23 @@ next one and no counter it keeps can tell it which mission it is on.
 What it has is a brief, a merchant identifier, a base URL and one merchant credential. What it
 does not have is a database. No `DATABASE_URL` reaches it, so `create_engine` has nothing to
 build from, and it holds no session, no repository and no run. There is no benchmark route on the
-API it can reach, so there is no request it can make that touches a suite, a mission definition,
-an expected outcome or another run's result. The oracle is not hidden from this process: it is
-absent from it.
+API it can reach, so there is no request it can make that touches a suite, a run or another
+mission's result.
+
+What that does not do, and an earlier version of this docstring wrongly said it did, is put the
+authored suites out of reach. They are Python in the package this worker runs from, so code
+running here can import `agentrank_api.benchmark.voltedge` and read every mission's expected
+outcome, indexed by the mission key it was just handed. An independent test audit proved it by
+doing it, in exactly this environment and this working directory. `PYTHONPATH` has been taken off
+the allowlist since, which removes one route and not the one that matters.
+
+The boundary is therefore honest about two different things. A database credential, a session and
+every other run's results are absent from this process. The authored ground truth is not, and
+closing that means the suites living somewhere the runtime package does not, which is written
+down in docs/shortcomings.md as the first thing Phase 2C has to do. It is worth being precise
+about who this is a boundary against in the meantime: the code here is this repository's, and the
+untrusted thing behind it is a model that is handed a brief and a tool schema and never a Python
+interpreter.
 
 That is checked rather than assumed, twice and in two different ways.
 `require_isolated_environment` refuses any variable that is not on a short allowlist, which is
@@ -57,8 +71,13 @@ from agentrank_api.config import get_settings
 # None of these is a credential. `PATH` and `HOME` are what an interpreter needs to run at all,
 # the locale variables keep text handling identical to the parent, `TMPDIR` keeps temporary files
 # where the parent puts them, and the certificate variables are what a TLS connection to a real
-# merchant would need. `PYTHONPATH` is inherited because a checkout that is not installed into a
-# virtual environment is otherwise unimportable, and it carries no secret.
+# merchant would need.
+#
+# `PYTHONPATH` was on this list and is not any more. It carries no secret, which is why it was
+# there, and it decides what a process can import, which is why it should not have been: a
+# checkout on it makes anything in the repository importable from a process whose whole point is
+# that it has been given a brief and nothing else. The package this worker runs from is installed
+# in the environment, so nothing needs it.
 PERMITTED_ENVIRONMENT = frozenset(
     {
         "PATH",
@@ -67,7 +86,6 @@ PERMITTED_ENVIRONMENT = frozenset(
         "LC_ALL",
         "LC_CTYPE",
         "TMPDIR",
-        "PYTHONPATH",
         "SSL_CERT_FILE",
         "SSL_CERT_DIR",
     }

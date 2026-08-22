@@ -345,14 +345,21 @@ class BuyerArgumentError(TypeError):
 
 
 def _given(operation: BuyerOperation, value: object, expected: type) -> None:
-    """Refuse an argument that is not what the operation takes, before anything is recorded.
+    """Refuse an argument that is not exactly what the operation takes, before anything is
+    recorded.
 
-    An exact isinstance check, so a subclass is accepted and a duck typed stand in is not. That
-    asymmetry is deliberate: a subclass of a Pydantic model has been through the model's own
-    validation, and an object that merely has the right method names has not been through
-    anything and can run code of its own inside the boundary.
+    The type itself and not an `isinstance` check, and that correction is the point. A subclass
+    of a Pydantic model has been through the model's own validation and can still override the
+    method the surface calls: `MerchantBuyerSurface.search_products` calls `request.to_criteria`,
+    so a two line subclass chose which exception was observed inside the boundary and with it
+    which origin was attributed. An independent test audit found the first version of this guard
+    open to exactly that.
+
+    The cost is that a legitimate subclass would be refused. None exists, the view models are
+    request bodies rather than a hierarchy, and refusing a caller that cannot call is the fail
+    closed direction.
     """
-    if not isinstance(value, expected):
+    if type(value) is not expected:
         raise BuyerArgumentError(operation, expected, value)
 
 

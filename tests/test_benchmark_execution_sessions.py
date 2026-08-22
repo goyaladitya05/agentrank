@@ -240,3 +240,23 @@ async def test_a_purchase_is_visible_to_the_runner_that_did_not_make_it(
     assert result.selected_variant_id is not None
     assert result.checkout_id is not None
     assert result.payment_attempt_id is not None
+
+
+async def test_the_runner_cannot_be_handed_the_session_it_records_on(
+    session: AsyncSession,
+) -> None:
+    """The regression this file exists for, asserted against the arrangement that caused it.
+
+    Every other test here builds the surface from a factory, so none of them can tell "the
+    surface opens its own sessions" from "the surface was handed a different one", which is all
+    that was ever in question. An independent test audit made that point: the file was a
+    regression test for a bug it could not reproduce.
+
+    This asserts the constructor. `MerchantBuyerSurface` takes a factory and refuses a session,
+    so the arrangement that put a mission's commerce inside the run's transaction sequence
+    cannot be rebuilt by passing the runner's session back in. It is a type check rather than a
+    behavioural one on purpose: the behaviour it prevents is exactly what cannot be exercised
+    once the constructor refuses.
+    """
+    with pytest.raises(TypeError):
+        MerchantBuyerSurface(session, merchant_id=uuid.uuid7(), provider=FakePaymentProvider())  # type: ignore[arg-type]

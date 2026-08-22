@@ -150,6 +150,15 @@ class MerchantBuyerSurface:
         merchant_id: uuid.UUID,
         provider: PaymentProvider,
     ) -> None:
+        if isinstance(sessions, AsyncSession):  # type: ignore[unreachable]
+            # The arrangement this class was changed to prevent, refused where it is made rather
+            # than three calls later with an opaque "not callable". Handing a surface the
+            # runner's own session put a mission's commerce inside the run's transaction
+            # sequence, which is what let a broken executor stop the run being recorded.
+            raise TypeError(
+                "a buyer surface opens its own session per operation and takes a session"
+                " factory, not a session"
+            )
         self._sessions = sessions
         self._merchant_id = merchant_id
         self._provider = provider
