@@ -892,6 +892,7 @@ async def test_benchmark_migrations_apply_to_a_database_that_already_holds_data(
                     benchmark_mission(
                         "nothing-fits", outcome=ExpectedOutcome.NO_ACCEPTABLE_PURCHASE
                     ),
+                    merchant_slug=MERCHANT_SLUG,
                 )
             )
             await session.commit()
@@ -902,11 +903,11 @@ async def test_benchmark_migrations_apply_to_a_database_that_already_holds_data(
         assert benchmark_snapshot(throwaway_database) == published
 
         async with factory() as session:
-            merchant_id = (await session.execute(select(Merchant.id))).scalars().one()
+            seeded_merchant = (await session.execute(select(Merchant))).scalars().one()
             suite = await BenchmarkSuiteRepository(session).get("test-suite", 1)
             assert suite is not None
             run = await BenchmarkRunRepository(session).create(
-                merchant_id=merchant_id, suite=suite, representation_label="baseline"
+                merchant=seeded_merchant, suite=suite, representation_label="baseline"
             )
             run.status = BenchmarkRunStatus.RUNNING
             run.started_at = datetime.now(UTC)

@@ -24,6 +24,12 @@ exists to prevent. Identifiers and timestamps are excluded because they are prop
 row rather than of a workload; including them would give one definition a different identity
 in every database.
 
+The digest is verified on every read rather than only written. A stored hash nothing ever
+checks is a comment: the immutability triggers refuse UPDATE and DELETE, and an INSERT of one
+more mission into an already published suite is neither, so appending to a workload was the one
+edit the digest was blind to. Recomputing it from the rows on the way out closes that and every
+other route around this application at once.
+
 Canonicalisation is JSON with sorted keys, no insignificant whitespace and no NaN. Mission
 order is preserved rather than sorted, because the order missions are presented in is part of
 the workload. The digest is labelled with its algorithm for the same reason a credential
@@ -36,6 +42,7 @@ import json
 from typing import Any
 
 from agentrank_api.benchmark.definitions import BenchmarkSuiteDefinition
+from agentrank_api.errors import AgentRankError
 
 HASH_ALGORITHM = "sha256"
 
@@ -84,3 +91,21 @@ def suite_content_hash(definition: BenchmarkSuiteDefinition) -> str:
     """The labelled digest of one suite definition's semantically relevant content."""
     digest = hashlib.sha256(canonical_json(canonical_payload(definition)).encode("utf-8"))
     return f"{HASH_ALGORITHM}:{digest.hexdigest()}"
+
+
+class CorruptedSuiteDefinitionError(AgentRankError):
+    """A published suite's stored content does not match the digest stored beside it.
+
+    Not a conflict and not a missing resource. It means the rows were changed by something that
+    went around this application, and there is no request a caller could fix. It is raised on
+    read rather than swallowed, because a benchmark run against a definition nobody can vouch
+    for is worse than no run at all.
+    """
+
+    def __init__(self, label: str, stored: str, actual: str) -> None:
+        super().__init__(
+            f"benchmark suite {label} was published as {stored} and now hashes to {actual}"
+        )
+        self.label = label
+        self.stored = stored
+        self.actual = actual

@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from agentrank_api.benchmark.definitions import BenchmarkSuiteDefinition
-from agentrank_api.benchmark.identity import suite_content_hash
+from agentrank_api.benchmark.identity import CorruptedSuiteDefinitionError, suite_content_hash
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
 from agentrank_api.benchmark.models import (
     BenchmarkMission,
@@ -26,6 +26,7 @@ from agentrank_api.benchmark.models import (
     BenchmarkRun,
     BenchmarkSuite,
 )
+from agentrank_api.commerce.models import Merchant
 
 # A listing is a work list, not an export. The bound is here rather than at a caller so that
 # there is no way to ask for an unbounded read.
@@ -91,7 +92,7 @@ class BenchmarkSuiteRepository:
             .options(selectinload(BenchmarkSuite.missions))
             .where(BenchmarkSuite.suite_key == key, BenchmarkSuite.version == version)
         )
-        return (await self._session.execute(statement)).scalar_one_or_none()
+        return _verified((await self._session.execute(statement)).scalar_one_or_none())
 
     async def get_by_id(self, suite_id: uuid.UUID) -> BenchmarkSuite | None:
         """One published suite by identifier, with every mission loaded.
@@ -104,7 +105,7 @@ class BenchmarkSuiteRepository:
             .options(selectinload(BenchmarkSuite.missions))
             .where(BenchmarkSuite.id == suite_id)
         )
-        return (await self._session.execute(statement)).scalar_one_or_none()
+        return _verified((await self._session.execute(statement)).scalar_one_or_none())
 
     async def list_versions(self, key: str) -> list[BenchmarkSuite]:
         """Every published version of one suite key, oldest first.
@@ -137,7 +138,7 @@ class BenchmarkRunRepository:
     async def create(
         self,
         *,
-        merchant_id: uuid.UUID,
+        merchant: Merchant,
         suite: BenchmarkSuite,
         representation_label: str | None = None,
     ) -> BenchmarkRun:
@@ -148,18 +149,30 @@ class BenchmarkRunRepository:
         would look like a run over a shorter suite, and the completion rate would be computed
         against a denominator nobody chose.
 
+        The merchant is passed as a row rather than an identifier so that its slug can be
+        compared with the one the suite was authored against. A mission oracle is a statement
+        about one catalog, and running the suite anywhere else would produce a perfectly well
+        formed result marked against ground truth nobody ever established there.
+
         Requires `suite.missions` to be loaded. `lazy="raise_on_sql"` makes an unloaded
         collection raise here rather than quietly producing a run with no missions to execute.
         """
+        if merchant.slug != suite.merchant_slug:
+            raise ValueError(
+                f"benchmark suite {suite.label} was authored against merchant"
+                f" {suite.merchant_slug!r} and cannot be run against {merchant.slug!r}"
+            )
+
         run = BenchmarkRun(
-            merchant_id=merchant_id,
+            merchant_id=merchant.id,
             suite_id=suite.id,
             representation_label=representation_label,
             status=BenchmarkRunStatus.PENDING,
         )
         run.mission_runs = [
             BenchmarkMissionRun(
-                merchant_id=merchant_id,
+                merchant_id=merchant.id,
+                suite_id=suite.id,
                 mission_id=mission.id,
                 status=MissionRunStatus.PENDING,
             )
@@ -238,3 +251,20 @@ class BenchmarkRunRepository:
             .limit(min(limit, MAX_RUN_LIMIT))
         )
         return list((await self._session.execute(statement)).scalars())
+
+
+def _verified(suite: BenchmarkSuite | None) -> BenchmarkSuite | None:
+    """Hand back a published suite only if its content still matches its own digest.
+
+    The immutability triggers refuse UPDATE and DELETE, and appending a mission to an already
+    published suite is neither, so the digest was blind to exactly the edit that would change
+    what a workload measured without changing any row that already existed. Recomputing it here
+    closes that and every other route around this application at once, and costs one hash over
+    a bounded document per read.
+    """
+    if suite is None:
+        return None
+    actual = suite_content_hash(suite.to_definition())
+    if actual != suite.definition_hash:
+        raise CorruptedSuiteDefinitionError(suite.label, suite.definition_hash, actual)
+    return suite

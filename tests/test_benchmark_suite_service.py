@@ -120,9 +120,12 @@ async def test_an_unpublished_suite_is_absent_rather_than_empty(session: AsyncSe
 
 
 async def test_a_concurrent_publish_of_one_version_resolves_to_one_suite(
-    factory: async_sessionmaker[AsyncSession],
+    factory: async_sessionmaker[AsyncSession], session: AsyncSession
 ) -> None:
     """Two publishes of a brand new version can both read that none exists.
+
+    `session` is requested and unused on purpose: these tests write through `factory`, which
+    has no teardown of its own, and it is the `session` fixture that truncates afterwards.
 
     The interleaving is forced rather than hoped for. One writer inserts and holds its
     transaction open; the other then runs the real publish, reads nothing because the first
@@ -135,7 +138,7 @@ async def test_a_concurrent_publish_of_one_version_resolves_to_one_suite(
     definition = suite(mission("one"))
 
     async with factory() as holder, factory() as racer:
-        await BenchmarkSuiteRepository(holder).create(definition)
+        winner = await BenchmarkSuiteRepository(holder).create(definition)
 
         publishing = asyncio.create_task(BenchmarkSuiteService(racer).publish(definition))
         # Long enough to conclude the racer is genuinely queued on the index. A publish that
@@ -144,9 +147,32 @@ async def test_a_concurrent_publish_of_one_version_resolves_to_one_suite(
         assert not publishing.done()
 
         await holder.commit()
+        published = await asyncio.wait_for(publishing, timeout=CONCURRENCY_TIMEOUT)
+
+    # The loser read no existing suite, so it reached the constraint rather than the content
+    # comparison, and then re-read and took the same decision the winner did. Convergence has
+    # to mean the same thing under concurrency as it does in sequence.
+    assert published.id == winner.id
+
+
+async def test_a_concurrent_publish_of_two_different_definitions_refuses_one(
+    factory: async_sessionmaker[AsyncSession], session: AsyncSession
+) -> None:
+    """Losing the race is not a licence to redefine the version that won it.
+
+    `session` is requested and unused for the same reason as the test above.
+    """
+    async with factory() as holder, factory() as racer:
+        await BenchmarkSuiteRepository(holder).create(suite(mission("one")))
+
+        publishing = asyncio.create_task(
+            BenchmarkSuiteService(racer).publish(suite(mission("one", constraints=(CHARGERS,))))
+        )
+        await asyncio.sleep(LOCK_WAIT)
+        assert not publishing.done()
+
+        await holder.commit()
         with pytest.raises(ConflictError) as raised:
             await asyncio.wait_for(publishing, timeout=CONCURRENCY_TIMEOUT)
 
-    # The losing writer read no existing suite, so it reached the constraint rather than the
-    # content comparison, and the refusal names the identity rather than the index.
-    assert raised.value.reason == "suite_already_published"
+    assert raised.value.reason == "suite_definition_changed"

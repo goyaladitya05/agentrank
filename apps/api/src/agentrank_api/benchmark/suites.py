@@ -26,6 +26,10 @@ from agentrank_api.errors import ConflictError, NotFoundError
 
 SUITE_RESOURCE = "benchmark_suite"
 
+# The refusal `conflicts.py` produces when two publishes of one brand new version race. Named
+# here because this service is what turns losing that race back into an ordinary answer.
+ALREADY_PUBLISHED = "suite_already_published"
+
 
 class BenchmarkSuiteService:
     def __init__(self, session: AsyncSession) -> None:
@@ -45,9 +49,12 @@ class BenchmarkSuiteService:
         be updated, so the only way an existing version could come to mean something else is
         by being replaced, and there is no code path here that replaces one.
 
-        The read answers first and answers better, naming the version. The unique constraint
-        on key and version answers when two publishes race, and both produce the same refusal,
-        so a caller cannot tell whether it lost a race.
+        The read answers first and answers better, naming the version. The unique constraint on
+        key and version answers when two publishes race, and the loser then re-reads and takes
+        the same three way decision the winner did. That is what makes the convergence claim
+        above true under concurrency as well as in sequence: two processes publishing the same
+        definition both get the suite, and two publishing different ones both get told which
+        digest is already there.
         """
         content_hash = suite_content_hash(definition)
         existing = await self._suites.get(definition.key, definition.version)
@@ -55,10 +62,36 @@ class BenchmarkSuiteService:
             _require_same_content(existing, content_hash)
             return existing
 
-        async with translated_conflicts(self._session, identifier=definition.label):
-            suite = await self._suites.create(definition)
+        try:
+            async with translated_conflicts(self._session, identifier=definition.label):
+                suite = await self._suites.create(definition)
+        except ConflictError as conflict:
+            if conflict.reason != ALREADY_PUBLISHED:
+                raise
+            return await self._published_by_the_winner(definition, content_hash)
+
         await self._session.commit()
         return suite
+
+    async def _published_by_the_winner(
+        self, definition: BenchmarkSuiteDefinition, content_hash: str
+    ) -> BenchmarkSuite:
+        """Resolve a lost publish race by reading what the winner wrote.
+
+        The transaction was already rolled back by the conflict translation, so this read sees
+        the committed row. A version that is somehow still absent means the constraint fired
+        for a reason nobody can explain, and that is a bug rather than a refusal.
+        """
+        existing = await self._suites.get(definition.key, definition.version)
+        if existing is None:
+            raise ConflictError(
+                ALREADY_PUBLISHED,
+                f"benchmark suite {definition.label} could not be published or read back",
+                resource=SUITE_RESOURCE,
+                identifier=definition.label,
+            )
+        _require_same_content(existing, content_hash)
+        return existing
 
     async def get(self, key: str, version: int) -> BenchmarkSuite:
         """One published suite, raising rather than returning None.

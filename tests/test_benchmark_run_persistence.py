@@ -11,9 +11,11 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentrank_api.benchmark.failures import FailureReason
+from agentrank_api.benchmark.identity import CorruptedSuiteDefinitionError
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
 from agentrank_api.benchmark.models import BenchmarkMissionRun, BenchmarkRun, BenchmarkSuite
 from agentrank_api.benchmark.repository import BenchmarkRunRepository, BenchmarkSuiteRepository
+from agentrank_api.commerce.models import Merchant
 from agentrank_api.commerce.repository import MerchantRepository
 
 pytestmark = pytest.mark.anyio
@@ -28,19 +30,20 @@ async def published(session: AsyncSession, *keys: str) -> BenchmarkSuite:
     return stored
 
 
-async def merchant_id(session: AsyncSession, slug: str = "voltedge") -> uuid.UUID:
-    merchant = await MerchantRepository(session).create(slug=slug, name=slug)
+async def merchant(session: AsyncSession, slug: str = "test-merchant") -> Merchant:
+    """A merchant whose slug matches what `benchmark_support.suite` authors against."""
+    created = await MerchantRepository(session).create(slug=slug, name=slug)
     await session.commit()
-    return merchant.id
+    return created
 
 
 async def started(
-    session: AsyncSession, *keys: str, slug: str = "voltedge"
+    session: AsyncSession, *keys: str, slug: str = "test-merchant"
 ) -> tuple[BenchmarkRun, BenchmarkSuite]:
     """A RUNNING run over a published suite, committed."""
     stored = await published(session, *keys)
     run = await BenchmarkRunRepository(session).create(
-        merchant_id=await merchant_id(session, slug), suite=stored
+        merchant=await merchant(session, slug), suite=stored
     )
     run.status = BenchmarkRunStatus.RUNNING
     run.started_at = datetime.now(UTC)
@@ -71,7 +74,7 @@ async def test_a_run_holds_one_mission_run_per_mission(session: AsyncSession) ->
     stored = await published(session, "one", "two", "three")
 
     run = await BenchmarkRunRepository(session).create(
-        merchant_id=await merchant_id(session), suite=stored
+        merchant=await merchant(session), suite=stored
     )
     await session.commit()
 
@@ -84,39 +87,46 @@ async def test_a_run_holds_one_mission_run_per_mission(session: AsyncSession) ->
 async def test_a_run_is_read_only_by_its_own_merchant(session: AsyncSession) -> None:
     """Another merchant's measurement does not exist as far as this merchant is concerned."""
     stored = await published(session)
-    mine = await merchant_id(session, "voltedge")
-    run = await BenchmarkRunRepository(session).create(merchant_id=mine, suite=stored)
+    mine = await merchant(session)
+    run = await BenchmarkRunRepository(session).create(merchant=mine, suite=stored)
     await session.commit()
 
     repository = BenchmarkRunRepository(session)
 
-    assert await repository.get(run.id, merchant_id=mine) is not None
+    assert await repository.get(run.id, merchant_id=mine.id) is not None
     assert await repository.get(run.id, merchant_id=uuid.uuid7()) is None
 
 
-async def test_two_merchants_run_the_same_suite_independently(session: AsyncSession) -> None:
-    """A suite is a global template, so two merchants measuring against it do not collide."""
+async def test_a_suite_is_only_run_against_the_merchant_it_was_authored_for(
+    session: AsyncSession,
+) -> None:
+    """A mission oracle is a statement about one catalog.
+
+    Run anywhere else it produces a perfectly well formed result marked against ground truth
+    nobody ever established there, which is worse than no result.
+    """
     stored = await published(session)
-    first = await merchant_id(session, "voltedge")
-    second = await merchant_id(session, "ampere-supply")
+    stranger = await merchant(session, "ampere-supply")
 
-    repository = BenchmarkRunRepository(session)
-    mine = await repository.create(merchant_id=first, suite=stored)
-    theirs = await repository.create(merchant_id=second, suite=stored)
-    await session.commit()
-
-    assert mine.suite_id == theirs.suite_id
-    assert await repository.get(theirs.id, merchant_id=first) is None
+    with pytest.raises(ValueError, match="was authored against merchant"):
+        await BenchmarkRunRepository(session).create(merchant=stranger, suite=stored)
 
 
 async def test_one_mission_has_one_result_in_one_run(session: AsyncSession) -> None:
-    run, stored = await started(session, "one")
+    # A PENDING run, because the insert guard refuses a mission run against a started one and
+    # would answer first. What is being asserted here is the uniqueness underneath it.
+    stored = await published(session, "one")
+    run = await BenchmarkRunRepository(session).create(
+        merchant=await merchant(session), suite=stored
+    )
+    await session.commit()
 
     with pytest.raises(IntegrityError, match="uq_benchmark_mission_run_mission"):
         session.add(
             BenchmarkMissionRun(
                 run_id=run.id,
                 merchant_id=run.merchant_id,
+                suite_id=run.suite_id,
                 mission_id=stored.missions[0].id,
                 status=MissionRunStatus.PENDING,
             )
@@ -126,12 +136,12 @@ async def test_one_mission_has_one_result_in_one_run(session: AsyncSession) -> N
 
 async def test_runs_are_listed_newest_first_and_bounded(session: AsyncSession) -> None:
     stored = await published(session)
-    mine = await merchant_id(session)
+    mine = await merchant(session)
     repository = BenchmarkRunRepository(session)
-    created = [await repository.create(merchant_id=mine, suite=stored) for _ in range(3)]
+    created = [await repository.create(merchant=mine, suite=stored) for _ in range(3)]
     await session.commit()
 
-    listed = await repository.list_for_merchant(merchant_id=mine, limit=2)
+    listed = await repository.list_for_merchant(merchant_id=mine.id, limit=2)
 
     assert [run.id for run in listed] == [created[2].id, created[1].id]
 
@@ -331,9 +341,9 @@ async def test_a_mission_run_cannot_record_another_merchants_variant(
     session: AsyncSession,
 ) -> None:
     stored = await published(session)
-    mine = await merchant_id(session, "voltedge")
+    mine = await merchant(session)
     theirs = await build_shop(session, "rival-supply")
-    run = await BenchmarkRunRepository(session).create(merchant_id=mine, suite=stored)
+    run = await BenchmarkRunRepository(session).create(merchant=mine, suite=stored)
     await session.commit()
 
     with pytest.raises(IntegrityError, match="fk_benchmark_mission_run_variant"):
@@ -350,11 +360,11 @@ async def test_a_mission_run_cannot_record_another_merchants_checkout(
     session: AsyncSession,
 ) -> None:
     stored = await published(session)
-    mine = await merchant_id(session, "voltedge")
+    mine = await merchant(session)
     theirs = await build_shop(session, "rival-supply")
     their_checkout = await quote(session, theirs)
     await session.commit()
-    run = await BenchmarkRunRepository(session).create(merchant_id=mine, suite=stored)
+    run = await BenchmarkRunRepository(session).create(merchant=mine, suite=stored)
     await session.commit()
 
     with pytest.raises(IntegrityError, match="fk_benchmark_mission_run_checkout"):
@@ -369,12 +379,12 @@ async def test_a_mission_run_cannot_record_another_merchants_payment(
 ) -> None:
     """The reference the payment table gained a unique target for."""
     stored = await published(session)
-    mine = await merchant_id(session, "voltedge")
+    mine = await merchant(session)
     theirs = await build_shop(session, "rival-supply")
     their_checkout = await quote(session, theirs)
     attempt = await admit(session, theirs, their_checkout, key="bench-0001")
     await session.commit()
-    run = await BenchmarkRunRepository(session).create(merchant_id=mine, suite=stored)
+    run = await BenchmarkRunRepository(session).create(merchant=mine, suite=stored)
     await session.commit()
 
     with pytest.raises(IntegrityError, match="fk_benchmark_mission_run_payment"):
@@ -389,11 +399,13 @@ async def test_a_mission_run_records_its_own_merchants_commerce_rows(
 ) -> None:
     """The positive case, so the isolation tests above are not passing for the wrong reason."""
     stored = await published(session)
-    shop = await build_shop(session, "voltedge")
+    shop = await build_shop(session, "test-merchant")
     checkout_id = await quote(session, shop)
     attempt = await admit(session, shop, checkout_id, key="bench-0002")
     await session.commit()
-    run = await BenchmarkRunRepository(session).create(merchant_id=shop.merchant_id, suite=stored)
+    owner = await MerchantRepository(session).get_by_id(shop.merchant_id)
+    assert owner is not None
+    run = await BenchmarkRunRepository(session).create(merchant=owner, suite=stored)
     await session.commit()
 
     result = run.mission_runs[0]
@@ -531,3 +543,187 @@ async def test_a_mission_cannot_be_worth_more_than_its_budget_at_the_database(
             ),
             {"id": uuid.uuid7(), "suite_id": stored.id},
         )
+
+
+# Run integrity. Every one of these was reproduced as a real hole before it was closed.
+
+
+async def test_a_result_cannot_name_a_mission_from_another_suite(session: AsyncSession) -> None:
+    """A run could otherwise carry results for missions it never contained.
+
+    A report reading through to the mission would then take its oracle from a workload nobody
+    executed, and everything about the row would look well formed.
+    """
+    stored = await published(session, "one")
+    run = await BenchmarkRunRepository(session).create(
+        merchant=await merchant(session), suite=stored
+    )
+    other = await BenchmarkSuiteRepository(session).create(
+        suite(mission("elsewhere"), key="other-suite")
+    )
+    await session.commit()
+
+    # Written as an insert rather than an update, because the identity guard refuses to move a
+    # mission run to another mission and would answer first. The pair of composite foreign keys
+    # is what is under test: name another suite's mission and this one fails, name the other
+    # suite in `suite_id` instead and the run foreign key fails.
+    with pytest.raises(IntegrityError, match="fk_benchmark_mission_run_mission"):
+        await session.execute(
+            text(
+                "INSERT INTO benchmark_mission_run (id, run_id, merchant_id, suite_id,"
+                " mission_id, status)"
+                " VALUES (:id, :run, :merchant, :suite, :mission, 'PENDING')"
+            ),
+            {
+                "id": uuid.uuid7(),
+                "run": run.id,
+                "merchant": run.merchant_id,
+                "suite": run.suite_id,
+                "mission": other.missions[0].id,
+            },
+        )
+
+
+async def test_a_result_cannot_be_written_straight_into_a_terminal_status(
+    session: AsyncSession,
+) -> None:
+    """An entire fabricated run of successes used to be a batch of plain inserts.
+
+    A transition whitelist that governs only UPDATE says a result must not be edited into place
+    afterwards. It does not say a result must be produced by a transition, and that is what
+    this guard adds.
+    """
+    stored = await published(session, "one")
+    run = await BenchmarkRunRepository(session).create(
+        merchant=await merchant(session), suite=stored
+    )
+    await session.commit()
+
+    with pytest.raises(DBAPIError, match="produced by a transition"):
+        await session.execute(
+            text(
+                "INSERT INTO benchmark_mission_run (id, run_id, merchant_id, suite_id,"
+                " mission_id, status, started_at, completed_at)"
+                " VALUES (:id, :run, :merchant, :suite, :mission, 'SUCCEEDED', now(), now())"
+            ),
+            {
+                "id": uuid.uuid7(),
+                "run": run.id,
+                "merchant": run.merchant_id,
+                "suite": run.suite_id,
+                "mission": stored.missions[0].id,
+            },
+        )
+
+
+async def test_a_started_run_takes_no_further_missions(session: AsyncSession) -> None:
+    """Adding one after the fact would move the denominator of a run already under way."""
+    run, _ = await started(session, "one")
+    other = await BenchmarkSuiteRepository(session).create(
+        suite(mission("late"), key="other-suite")
+    )
+    await session.commit()
+
+    with pytest.raises(DBAPIError, match="takes its missions before it starts"):
+        await session.execute(
+            text(
+                "INSERT INTO benchmark_mission_run (id, run_id, merchant_id, suite_id,"
+                " mission_id, status)"
+                " VALUES (:id, :run, :merchant, :suite, :mission, 'PENDING')"
+            ),
+            {
+                "id": uuid.uuid7(),
+                "run": run.id,
+                "merchant": run.merchant_id,
+                "suite": run.suite_id,
+                "mission": other.missions[0].id,
+            },
+        )
+
+
+async def test_a_result_cannot_be_changed_once_its_run_has_finished(
+    session: AsyncSession,
+) -> None:
+    """A completion rate that can move after the run was closed is not a measurement."""
+    run, _ = await started(session, "one", "two")
+    result = await begin(session, run.mission_runs[0])
+    await session.execute(
+        text("UPDATE benchmark_run SET status = 'COMPLETED', completed_at = now() WHERE id = :id"),
+        {"id": run.id},
+    )
+
+    with pytest.raises(DBAPIError, match="once its run has finished"):
+        await session.execute(
+            text(
+                "UPDATE benchmark_mission_run SET status = 'SUCCEEDED', completed_at = now()"
+                " WHERE id = :id"
+            ),
+            {"id": result.id},
+        )
+
+
+async def test_a_recorded_result_cannot_be_deleted(session: AsyncSession) -> None:
+    """The previous revision claimed the RESTRICT references held this. They point away."""
+    run, _ = await started(session)
+    result = await begin(session, run.mission_runs[0])
+
+    with pytest.raises(DBAPIError, match="cannot be deleted"):
+        await session.execute(
+            text("DELETE FROM benchmark_mission_run WHERE id = :id"), {"id": result.id}
+        )
+
+
+async def test_a_finished_run_cannot_be_deleted(session: AsyncSession) -> None:
+    run, _ = await started(session)
+    await session.execute(
+        text("UPDATE benchmark_run SET status = 'ABORTED', completed_at = now() WHERE id = :id"),
+        {"id": run.id},
+    )
+
+    with pytest.raises(DBAPIError, match="finished benchmark run cannot be deleted"):
+        await session.execute(text("DELETE FROM benchmark_run WHERE id = :id"), {"id": run.id})
+
+
+async def test_an_unfinished_run_can_still_be_deleted_and_takes_its_results(
+    session: AsyncSession,
+) -> None:
+    """The cascade has to keep working, which is what the delete guard is written around.
+
+    During ON DELETE CASCADE the parent row is already gone when the child guard runs, so a
+    legitimate cascade passes and a standalone delete does not.
+    """
+    run, _ = await started(session, "one", "two")
+
+    await session.execute(text("DELETE FROM benchmark_run WHERE id = :id"), {"id": run.id})
+    await session.commit()
+
+    remaining = (
+        await session.execute(text("SELECT count(*) FROM benchmark_mission_run"))
+    ).scalar_one()
+    assert remaining == 0
+
+
+async def test_a_published_suite_that_gained_a_mission_is_refused_on_read(
+    session: AsyncSession,
+) -> None:
+    """Appending is neither an UPDATE nor a DELETE, so the immutability trigger allowed it.
+
+    The digest is what notices, and it only notices because it is recomputed on the way out.
+    A stored hash nothing ever checks is a comment.
+    """
+    stored = await published(session, "one")
+    await session.execute(
+        text(
+            "INSERT INTO benchmark_mission (id, suite_id, mission_key, ordinal, objective,"
+            " quantity, budget_amount_minor, currency, hard_constraints, preferences,"
+            " expected_outcome, simulated_value_amount_minor)"
+            " VALUES (:id, :suite_id, 'appended', 99, 'Buy a charger', 1, 100, 'INR',"
+            " '[]'::jsonb, '[]'::jsonb, 'PURCHASE_AVAILABLE', 100)"
+        ),
+        {"id": uuid.uuid7(), "suite_id": stored.id},
+    )
+    await session.commit()
+    session.expunge_all()
+
+    with pytest.raises(CorruptedSuiteDefinitionError, match="test-suite@1"):
+        await BenchmarkSuiteRepository(session).get("test-suite", 1)

@@ -175,6 +175,10 @@ class BenchmarkMission(Base):
         # And one position cannot be held twice, so suite order is total. Ordering is what
         # makes a rerun present the same workload in the same sequence.
         UniqueConstraint("suite_id", "ordinal", name="uq_benchmark_mission_ordinal"),
+        # Redundant against the primary key, and present only as a composite foreign key
+        # target: a mission run is bound through (mission_id, suite_id), so it cannot attribute
+        # a result to a mission belonging to a suite its run never executed.
+        UniqueConstraint("id", "suite_id", name="uq_benchmark_mission_suite"),
         CheckConstraint(f"mission_key ~ '{KEY_PATTERN}'", name="mission_key_format"),
         CheckConstraint("ordinal >= 0", name="ordinal_not_negative"),
         CheckConstraint("length(btrim(objective)) > 0", name="objective_not_blank"),
@@ -332,9 +336,11 @@ class BenchmarkRun(Base):
 
     __tablename__ = "benchmark_run"
     __table_args__ = (
-        # Redundant against the primary key, and present only as a composite foreign key target,
-        # so a mission run carries this run's merchant structurally rather than by convention.
-        UniqueConstraint("id", "merchant_id", name="uq_benchmark_run_ownership"),
+        # Redundant against the primary key, and present only as a composite foreign key
+        # target. Carrying the suite as well as the merchant is what makes two invariants one
+        # foreign key: a mission run cannot be attributed to another merchant, and it cannot
+        # carry a result for a mission from a suite this run never executed.
+        UniqueConstraint("id", "merchant_id", "suite_id", name="uq_benchmark_run_binding"),
         CheckConstraint(f"status IN ({_RUN_STATUS_VALUES})", name="status_known"),
         CheckConstraint(
             "representation_label IS NULL OR length(btrim(representation_label)) > 0",
@@ -431,15 +437,19 @@ class BenchmarkMissionRun(Base):
         # CASCADE, unlike everything else here. A mission run has no meaning without its run,
         # exactly as a checkout line has none without its quote.
         ForeignKeyConstraint(
-            ["run_id", "merchant_id"],
-            ["benchmark_run.id", "benchmark_run.merchant_id"],
+            ["run_id", "merchant_id", "suite_id"],
+            ["benchmark_run.id", "benchmark_run.merchant_id", "benchmark_run.suite_id"],
             name="fk_benchmark_mission_run_run",
             ondelete="CASCADE",
         ),
-        # RESTRICT. The mission definition is what makes this row interpretable.
+        # RESTRICT. The mission definition is what makes this row interpretable. Reached
+        # through (mission_id, suite_id), which is the other half of the pair above: between
+        # them, the mission this result names has to belong to the suite the run executed.
+        # Without it a run could carry results for missions it never contained, and a report
+        # would read an oracle from a workload nobody ran.
         ForeignKeyConstraint(
-            ["mission_id"],
-            ["benchmark_mission.id"],
+            ["mission_id", "suite_id"],
+            ["benchmark_mission.id", "benchmark_mission.suite_id"],
             name="fk_benchmark_mission_run_mission",
             ondelete="RESTRICT",
         ),
@@ -541,15 +551,44 @@ class BenchmarkMissionRun(Base):
             "completed_at IS NULL OR completed_at >= started_at", name="completion_after_start"
         ),
         # The unique constraint above has run_id leftmost, so loading a run's results and the
-        # cascade delete are served. These cover the merchant scoped read and the RESTRICT
-        # checks when a mission definition or a commerce row is deleted.
-        Index(None, "merchant_id"),
+        # cascade delete are both served. This covers the RESTRICT check when a mission
+        # definition is deleted.
         Index(None, "mission_id"),
+        # And these three cover the RESTRICT checks when a variant, a quote or a payment is
+        # deleted. Without them PostgreSQL scans every mission run the merchant has ever
+        # accumulated on each such delete, which was measured rather than assumed. Partial,
+        # because most mission runs never reach a quote or a payment, and the nullable column
+        # is leftmost because that is what the referential integrity probe filters on.
+        Index(
+            None,
+            "selected_variant_id",
+            "merchant_id",
+            postgresql_where=text("selected_variant_id IS NOT NULL"),
+        ),
+        Index(
+            None,
+            "checkout_id",
+            "merchant_id",
+            postgresql_where=text("checkout_id IS NOT NULL"),
+        ),
+        Index(
+            None,
+            "payment_attempt_id",
+            "merchant_id",
+            postgresql_where=text("payment_attempt_id IS NOT NULL"),
+        ),
+        # There is deliberately no index on merchant_id alone. This table has no direct foreign
+        # key to merchant, so no integrity check targets it, and every read reaches a mission
+        # run through its run.
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)
     run_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
     merchant_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    # The suite both parents have to agree on. Denormalized from the run on purpose: a column
+    # is the only thing a composite foreign key can compare, and this is what turns "a result
+    # belongs to a mission of the suite that was run" from a hope into a constraint.
+    suite_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
     mission_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
     status: Mapped[MissionRunStatus] = mapped_column(MISSION_RUN_STATUS, nullable=False)
     primary_failure_reason: Mapped[FailureReason | None] = mapped_column(
@@ -588,7 +627,11 @@ class BenchmarkMissionRun(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     run: Mapped[BenchmarkRun] = relationship(back_populates="mission_runs", lazy="raise_on_sql")
-    mission: Mapped[BenchmarkMission] = relationship(lazy="raise_on_sql")
+    # Read only, and it has to be. `suite_id` sits in both composite foreign keys, so without
+    # this SQLAlchemy would treat the mission as another writer of it and warn that two
+    # relationships copy into one column. Nothing assigns a mission to a result: the mission is
+    # chosen when the run is created, from the suite, and never afterwards.
+    mission: Mapped[BenchmarkMission] = relationship(lazy="raise_on_sql", viewonly=True)
 
     @property
     def is_terminal(self) -> bool:
