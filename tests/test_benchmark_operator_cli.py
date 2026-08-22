@@ -22,6 +22,8 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from agentrank_api.auth.models import MerchantApiCredential
+from agentrank_api.benchmark.endpoint import CREDENTIAL_LABEL
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
 from agentrank_api.benchmark.models import BenchmarkRun
 from agentrank_api.benchmark.runner import BenchmarkRunService
@@ -116,6 +118,55 @@ async def test_seeding_twice_creates_nothing_the_second_time(
 
 
 # Running.
+
+
+async def test_run_isolated_executes_the_whole_suite_in_separate_processes(
+    catalog_settings: Settings, provider: FakePaymentProvider, session: AsyncSession
+) -> None:
+    """The reference result, produced through the boundary a model will use.
+
+    Fourteen missions, fourteen worker processes, each with no database credential, reaching the
+    merchant only over its own commerce API on a loopback port with an ephemeral credential. The
+    outcome is the same as the in process path, which is the point: the boundary is a
+    substitution rather than a different measurement.
+
+    The executor is recorded as `reference-isolated` rather than `reference`, because two
+    transports with different failure modes are two measurements even when they agree.
+    """
+    await cli(catalog_settings, provider, "benchmark", "seed")
+
+    result = await cli(catalog_settings, provider, "benchmark", "run", "--isolated", "--json")
+
+    assert result.code == ExitCode.OK
+    payload = result.json()
+    assert payload["executor"] == "reference-isolated-v1"
+    assert payload["status"] == "COMPLETED"
+    metrics = payload["metrics"]
+    assert isinstance(metrics, dict)
+    assert metrics["missions_total"] == 14
+    assert metrics["missions_succeeded"] == 8
+    assert metrics["missions_abstained"] == 6
+    assert metrics["missions_failed"] == 0
+    assert metrics["missions_errored"] == 0
+    assert metrics["unsafe_attempts"] == 0
+    assert metrics["unsafe_completions"] == 0
+    finished = await only_run(session)
+    assert finished.executor_kind == "reference-isolated"
+
+
+async def test_an_isolated_run_leaves_no_usable_credential_behind(
+    catalog_settings: Settings, provider: FakePaymentProvider, session: AsyncSession
+) -> None:
+    """The credential exists for the length of one run and is revoked whatever happens."""
+    await cli(catalog_settings, provider, "benchmark", "seed")
+
+    await cli(catalog_settings, provider, "benchmark", "run", "--isolated", "--json")
+
+    session.expire_all()
+    credentials = list((await session.execute(select(MerchantApiCredential))).scalars())
+    minted = [issued for issued in credentials if issued.label == CREDENTIAL_LABEL]
+    assert minted
+    assert all(issued.revoked_at is not None for issued in minted)
 
 
 async def test_run_executes_the_suite_and_says_what_produced_the_numbers(

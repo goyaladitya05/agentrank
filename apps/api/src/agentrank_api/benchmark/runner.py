@@ -264,13 +264,15 @@ class BenchmarkRunService:
             if witness is not None:
                 witness.begin()
             observed = await executor(brief, merchant_id=merchant_id)
+            fault = None if witness is None else witness.fault()
+            _require_payment_accounted(brief.key, observed, fault, witness)
             result = await self.record_result(
                 run_id,
                 brief.key,
                 observed,
                 merchant_id=merchant_id,
                 catalog=entries,
-                fault=None if witness is None else witness.fault(),
+                fault=fault,
             )
             log.info(
                 "benchmark mission recorded",
@@ -661,6 +663,42 @@ class BenchmarkRunService:
         if attempt.status is not PaymentAttemptStatus.SUCCEEDED:
             return None
         return attempt.id
+
+
+def _require_payment_accounted(
+    mission_key: str,
+    observed: ObservedResult,
+    fault: ExecutionFault | None,
+    witness: ExecutionWitness | None,
+) -> None:
+    """Refuse to record a mission that dispatched a payment and cannot say what became of it.
+
+    Three facts have to hold together for this to fire: something failed, the payment call was
+    actually made, and the report carries no payment. The first two come from the witness and
+    the third is the executor's, which is safe in this direction: an executor that hid a payment
+    it made would be hiding it from the only check that stops the run.
+
+    Recording it would be worse than stopping. ERRORED says the harness could not carry the
+    mission out and moves the mission's value out of lost demand, which is exactly the wrong
+    thing to say about a mission that may have bought something. Carrying on would let the next
+    preparation release a hold under a payment nobody has resolved.
+
+    So the mission stays RUNNING, which is the one state that means "this started and what it
+    did is unknown", and the run stops. That state is never replayed, which is the rule that
+    keeps a benchmark from buying the same thing twice. An operator resolves the payment through
+    `agentrank_api.cli payments` and closes the run with `benchmark abort`.
+    """
+    if witness is None or fault is None or observed.payment is not None:
+        return
+    if not witness.payment_attempted():
+        return
+    raise ConflictError(
+        "payment_unaccounted",
+        f"mission {mission_key} dispatched a payment and reported none, after"
+        f" {fault.detail}. Resolve the payment before closing this run",
+        resource=RUN_RESOURCE,
+        identifier=mission_key,
+    )
 
 
 def _apply(result: BenchmarkMissionRun, evaluation: MissionEvaluation, *, at: datetime) -> None:

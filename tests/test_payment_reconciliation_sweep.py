@@ -666,24 +666,45 @@ async def test_the_sweep_is_reachable_from_the_command_line_and_not_over_http(
 
 
 def test_nothing_schedules_a_sweep() -> None:
-    """No cron, no worker, no timer and no background task anywhere in the application.
+    """No cron, no worker, no timer and no periodic task anywhere in the application.
 
     Asserted rather than assumed, because this is the property that would be easiest to lose by
     accident and the most expensive to lose: an ambiguous payment queried on a timer is a
     payment that eventually gets charged twice by something nobody is watching. A sweep happens
     because a person ran a command.
+
+    `create_task(` has exactly one allowance and it is named rather than pattern matched. The
+    benchmark commerce endpoint serves a loopback socket for the length of one operator command,
+    which is a foreground server with an explicit shutdown rather than anything on a schedule.
+    The allowance is bounded from both ends: that file is asserted to be the only one, and to
+    contain no payment operation for a loop to reach even if somebody added one.
     """
     from pathlib import Path
 
     source = Path(__file__).resolve().parent.parent / "apps" / "api" / "src"
-    banned = ("apscheduler", "celery", "create_task(", "add_periodic", "BackgroundTasks")
+    serving = source / "agentrank_api" / "benchmark" / "endpoint.py"
+    banned = ("apscheduler", "celery", "add_periodic", "BackgroundTasks")
     offences = [
         f"{path}: {word}"
         for path in source.rglob("*.py")
         for word in banned
         if word in path.read_text()
     ]
+    spawning = [
+        str(path)
+        for path in source.rglob("*.py")
+        if "create_task(" in path.read_text() and path != serving
+    ]
+
     assert offences == []
+    assert spawning == []
+    # The one allowance, and what bounds it: a server with an explicit shutdown, and nothing
+    # about payments in the file that starts it.
+    served = serving.read_text()
+    assert served.count("create_task(") == 1
+    assert "should_exit" in served
+    assert "reconcile" not in served
+    assert "sweep" not in served
     # And the one place a background loop would most plausibly be started.
     assert "reconcile" not in (source / "agentrank_api" / "main.py").read_text()
 

@@ -39,8 +39,16 @@ from typing import Any, TextIO
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from agentrank_api.auth.service import MerchantCredentialService
+from agentrank_api.auth.tokens import TokenMarker
 from agentrank_api.benchmark.buyer import MerchantBuyerSurface
+from agentrank_api.benchmark.endpoint import (
+    LocalCommerceEndpoint,
+    RequestLedger,
+    issued_credential,
+)
 from agentrank_api.benchmark.fixtures import BenchmarkFixture
+from agentrank_api.benchmark.isolation import IsolatedMissionExecutor
 from agentrank_api.benchmark.lifecycle import MissionRunStatus
 from agentrank_api.benchmark.metrics import BenchmarkMetrics
 from agentrank_api.benchmark.models import BenchmarkMissionRun, BenchmarkRun
@@ -103,6 +111,14 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
         "--representation-label",
         default=None,
         help="a label for the merchant representation under test. A label, never an identity",
+    )
+    running.add_argument(
+        "--isolated",
+        action="store_true",
+        help=(
+            "run the buyer in a separate process with no database credential, over the merchant"
+            " commerce API on a loopback port. Slower, and the boundary a model will use"
+        ),
     )
     _add_json(running)
     running.set_defaults(command=run)
@@ -214,9 +230,12 @@ async def run(
     from what the surface actually did, and the executor is given the surface that writes to it
     rather than the ledger itself.
     """
-    del settings
     merchant_id = await _benchmark_merchant(session)
     service = BenchmarkRunService(session)
+    if arguments.isolated:
+        finished = await _isolated_run(session, service, merchant_id, arguments, provider, settings)
+        return await _report(service, finished.id, merchant_id, arguments, out)
+
     ledger = ToolLedger()
     surface = MeasuredBuyerSurface(
         MerchantBuyerSurface(sessions, merchant_id=merchant_id, provider=provider), ledger
@@ -230,6 +249,47 @@ async def run(
         representation_label=arguments.representation_label,
     )
     return await _report(service, finished.id, merchant_id, arguments, out)
+
+
+async def _isolated_run(
+    session: AsyncSession,
+    service: BenchmarkRunService,
+    merchant_id: uuid.UUID,
+    arguments: argparse.Namespace,
+    provider: PaymentProvider,
+    settings: Settings,
+) -> BenchmarkRun:
+    """Execute the suite with the buyer in a process that has no database.
+
+    Three things are arranged and unwound together, in this order, because each depends on the
+    one before it. The endpoint has to be listening before a credential is worth anything, the
+    credential has to exist before a worker can be given one, and both have to be torn down
+    whatever the run does: a server left running is a merchant an unread process can still
+    reach, and a credential left valid is one nobody revoked.
+
+    The recorded executor identity is `reference-isolated`, not `reference`. The buyer inside
+    the worker is the same scripted one, and it reaches the merchant over a different transport
+    with different failure modes, so a run produced this way is not the same measurement and
+    must not be compared with one as though it were.
+    """
+    served = RequestLedger()
+    async with (
+        LocalCommerceEndpoint(settings, provider=provider, observer=served) as endpoint,
+        issued_credential(
+            MerchantCredentialService(session),
+            merchant_id=merchant_id,
+            marker=TokenMarker.of(settings.environment),
+        ) as token,
+    ):
+        executor = IsolatedMissionExecutor(base_url=endpoint.base_url, token=token, served=served)
+        return await service.run_suite(
+            executor,
+            suite_key=SUITE_KEY,
+            suite_version=SUITE_VERSION,
+            fixture=WORLD,
+            witness=executor,
+            representation_label=arguments.representation_label,
+        )
 
 
 async def show(
