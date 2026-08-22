@@ -15,10 +15,10 @@ model.  It is not a security boundary against arbitrary native code with databas
 """
 
 import uuid
-from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from agentrank_api.benchmark.execution import BenchmarkRunCapability
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus
 from agentrank_api.benchmark.repository import BenchmarkRunRepository
 from agentrank_api.errors import ConflictError
@@ -26,14 +26,6 @@ from agentrank_api.errors import ConflictError
 BENCHMARK_ENVIRONMENT_RESOURCE = "benchmark_environment"
 BENCHMARK_WORLD_ACTIVE = "benchmark_world_active"
 BENCHMARK_RUN_NOT_ACTIVE = "benchmark_run_not_active"
-
-
-@dataclass(frozen=True, slots=True)
-class BenchmarkRunCapability:
-    """The specific running benchmark world a trusted caller may mutate."""
-
-    merchant_id: uuid.UUID
-    run_id: uuid.UUID
 
 
 class BenchmarkMutationGuard:

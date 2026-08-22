@@ -34,7 +34,8 @@ from agentrank_api.auth.tokens import (
     parse_token,
     verify_secret,
 )
-from agentrank_api.benchmark.mutation import BenchmarkMutationGuard, BenchmarkRunCapability
+from agentrank_api.benchmark.execution import BenchmarkRunCapability
+from agentrank_api.benchmark.mutation import BenchmarkMutationGuard
 from agentrank_api.commerce.repository import MerchantRepository
 from agentrank_api.errors import NotFoundError
 

@@ -58,6 +58,7 @@ from agentrank_api.benchmark.evidence import (
     after_payment,
     after_preparation,
 )
+from agentrank_api.benchmark.execution import BenchmarkRunCapability
 from agentrank_api.benchmark.faults import (
     AUTHORIZATION_REFUSALS,
     CATALOG_REFUSALS,
@@ -65,7 +66,6 @@ from agentrank_api.benchmark.faults import (
     ExecutionFault,
     FaultOrigin,
 )
-from agentrank_api.benchmark.mutation import BenchmarkRunCapability
 from agentrank_api.checkout.schemas import (
     CheckoutView,
     CreateCheckoutRequest,
@@ -265,6 +265,12 @@ class MeasuredBuyerSurface:
         binder = getattr(self._inner, "bind_benchmark_run", None)
         if binder is not None:
             binder(capability)
+
+    def unbind_benchmark_run(self) -> None:
+        """Forward completed-run cleanup to the wrapped trusted buyer surface."""
+        unbinder = getattr(self._inner, "unbind_benchmark_run", None)
+        if unbinder is not None:
+            unbinder()
 
     async def search_products(self, request: ProductSearchRequest) -> ProductSearchResponse:
         self._given(BuyerOperation.SEARCH_PRODUCTS, request, ProductSearchRequest)

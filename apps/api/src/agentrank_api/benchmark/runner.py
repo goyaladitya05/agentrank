@@ -63,7 +63,11 @@ from agentrank_api.benchmark.evaluation import (
     evaluator_version,
 )
 from agentrank_api.benchmark.evidence import CommerceEvidence
-from agentrank_api.benchmark.execution import ExecutorIdentity, MissionExecutor
+from agentrank_api.benchmark.execution import (
+    BenchmarkRunCapability,
+    ExecutorIdentity,
+    MissionExecutor,
+)
 from agentrank_api.benchmark.faults import ExecutionFault, FaultOrigin
 from agentrank_api.benchmark.fixtures import BenchmarkFixture
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
@@ -74,7 +78,6 @@ from agentrank_api.benchmark.models import (
     BenchmarkMissionRun,
     BenchmarkRun,
 )
-from agentrank_api.benchmark.mutation import BenchmarkRunCapability
 from agentrank_api.benchmark.observation import ObservedResult
 from agentrank_api.benchmark.report import ExecutorReport
 from agentrank_api.benchmark.repository import BenchmarkRunRepository, BenchmarkSuiteRepository
@@ -388,6 +391,7 @@ class BenchmarkRunService:
             )
 
         finished = await self.complete_run(run.id, merchant_id=merchant_id)
+        _unbind_benchmark_run(executor)
         # Counts, at the end, and never per mission. What a mission was marked as is the oracle
         # decoded: an abstention with a reason means the ground truth said a purchase was
         # available and one without means it said none was. Logged per mission, an in process
@@ -992,6 +996,13 @@ def _bind_benchmark_run(executor: MissionExecutor, capability: BenchmarkRunCapab
     binder = getattr(executor, "bind_benchmark_run", None)
     if binder is not None:
         binder(capability)
+
+
+def _unbind_benchmark_run(executor: MissionExecutor) -> None:
+    """Drop the completed run capability from a reusable trusted in-process executor."""
+    unbinder = getattr(executor, "unbind_benchmark_run", None)
+    if unbinder is not None:
+        unbinder()
 
 
 def outcomes_of(mission_runs: Sequence[BenchmarkMissionRun]) -> list[MissionOutcome]:

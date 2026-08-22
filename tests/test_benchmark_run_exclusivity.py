@@ -37,10 +37,11 @@ from agentrank_api.benchmark.definitions import (
     MissionOracle,
 )
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
+from agentrank_api.benchmark.execution import BenchmarkRunCapability
 from agentrank_api.benchmark.fixtures import BenchmarkFixture
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus
 from agentrank_api.benchmark.models import BenchmarkRun
-from agentrank_api.benchmark.mutation import BenchmarkMutationGuard, BenchmarkRunCapability
+from agentrank_api.benchmark.mutation import BenchmarkMutationGuard
 from agentrank_api.benchmark.reference_executor import ReferenceMissionExecutor
 from agentrank_api.benchmark.repository import BenchmarkRunRepository, BenchmarkSuiteRepository
 from agentrank_api.benchmark.runner import BenchmarkRunService

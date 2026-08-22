@@ -47,8 +47,11 @@ from typing import Any
 
 from agentrank_api.benchmark.buyer import BuyerCommerceSurface
 from agentrank_api.benchmark.definitions import AgentMissionBrief
-from agentrank_api.benchmark.execution import ExecutorIdentity, implementation_revision
-from agentrank_api.benchmark.mutation import BenchmarkRunCapability
+from agentrank_api.benchmark.execution import (
+    BenchmarkRunCapability,
+    ExecutorIdentity,
+    implementation_revision,
+)
 from agentrank_api.benchmark.report import (
     AbstentionCode,
     CheckoutRefusal,
@@ -343,6 +346,12 @@ class ReferenceMissionExecutor:
         binder = getattr(self._surface, "bind_benchmark_run", None)
         if binder is not None:
             binder(capability)
+
+    def unbind_benchmark_run(self) -> None:
+        """Drop a completed run's authority from a reusable trusted buyer surface."""
+        unbinder = getattr(self._surface, "unbind_benchmark_run", None)
+        if unbinder is not None:
+            unbinder()
 
     async def __call__(self, brief: AgentMissionBrief, *, merchant_id: uuid.UUID) -> ExecutorReport:
         """Carry out one mission and report what happened, never what it meant.

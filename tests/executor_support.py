@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.benchmark.buyer import BuyerCommerceSurface, MerchantBuyerSurface
 from agentrank_api.benchmark.definitions import AgentMissionBrief
-from agentrank_api.benchmark.execution import ExecutorIdentity
+from agentrank_api.benchmark.execution import BenchmarkRunCapability, ExecutorIdentity
 from agentrank_api.benchmark.report import (
     AbstentionCode,
     CheckoutRefusal,
@@ -121,6 +121,18 @@ class ScriptedBuyer:
         self._script = script
         self._lie = lie
         self.honest: dict[str, ExecutorReport] = {}
+
+    def bind_benchmark_run(self, capability: BenchmarkRunCapability) -> None:
+        """Forward trusted run authority when the runner executes this test executor."""
+        binder = getattr(self._surface, "bind_benchmark_run", None)
+        if binder is not None:
+            binder(capability)
+
+    def unbind_benchmark_run(self) -> None:
+        """Drop completed-run authority from the reusable scripted surface."""
+        unbinder = getattr(self._surface, "unbind_benchmark_run", None)
+        if unbinder is not None:
+            unbinder()
 
     async def __call__(self, brief: AgentMissionBrief, *, merchant_id: uuid.UUID) -> ExecutorReport:
         action = self._script[brief.key]

@@ -38,7 +38,8 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from agentrank_api.benchmark.mutation import BenchmarkMutationGuard, BenchmarkRunCapability
+from agentrank_api.benchmark.execution import BenchmarkRunCapability
+from agentrank_api.benchmark.mutation import BenchmarkMutationGuard
 from agentrank_api.errors import AgentRankError, ConflictError, NotFoundError
 from agentrank_api.payments.admission import PaymentAdmission, PaymentAdmissionService
 from agentrank_api.payments.execution import PaymentExecutionService, PaymentOutcome

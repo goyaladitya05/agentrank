@@ -7,7 +7,7 @@ without any of them importing the others.
 import uuid
 from dataclasses import dataclass
 
-from agentrank_api.benchmark.mutation import BenchmarkRunCapability
+from agentrank_api.benchmark.execution import BenchmarkRunCapability
 
 
 @dataclass(frozen=True, slots=True)

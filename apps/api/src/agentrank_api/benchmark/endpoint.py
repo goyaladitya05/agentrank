@@ -48,7 +48,7 @@ from agentrank_api.benchmark.evidence import (
     payment_from_body,
     preparation_from_body,
 )
-from agentrank_api.benchmark.mutation import BenchmarkRunCapability
+from agentrank_api.benchmark.execution import BenchmarkRunCapability
 from agentrank_api.config import Settings
 from agentrank_api.main import create_app
 from agentrank_api.payments.provider import PaymentProvider

@@ -58,11 +58,11 @@ from agentrank_api.benchmark.endpoint import (
     RequestLedger,
     issued_benchmark_credential,
 )
+from agentrank_api.benchmark.execution import BenchmarkRunCapability
 from agentrank_api.benchmark.isolation import IsolatedMissionExecutor
 from agentrank_api.benchmark.lifecycle import MissionRunStatus
 from agentrank_api.benchmark.metrics import BenchmarkMetrics
 from agentrank_api.benchmark.models import BenchmarkMissionRun, BenchmarkRun
-from agentrank_api.benchmark.mutation import BenchmarkRunCapability
 from agentrank_api.benchmark.reference_executor import ReferenceMissionExecutor
 from agentrank_api.benchmark.runner import BenchmarkRunService
 from agentrank_api.benchmark.tools import MeasuredBuyerSurface, ToolLedger

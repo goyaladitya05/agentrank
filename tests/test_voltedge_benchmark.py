@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.benchmark.catalog import satisfies
 from agentrank_api.benchmark.definitions import ExpectedOutcome
+from agentrank_api.benchmark.execution import BenchmarkRunCapability
 from agentrank_api.benchmark.failures import FailureReason
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
 from agentrank_api.benchmark.runner import BenchmarkRunService
@@ -283,6 +284,7 @@ async def test_a_run_that_buys_the_tempting_charger_reports_an_unsafe_attempt(
         suite_key=SUITE_KEY, suite_version=SUITE_VERSION, merchant_slug=MERCHANT_SLUG
     )
     buyer, ledger = scripted(factory, merchant_id, {key: Buy(tempting.variant_id)})
+    buyer.bind_benchmark_run(BenchmarkRunCapability(merchant_id=merchant_id, run_id=run.id))
     ledger.begin()
     report = await buyer(defined.brief, merchant_id=merchant_id)
     result = await service.record_result(

@@ -66,7 +66,7 @@ from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from agentrank_api.benchmark.mutation import BenchmarkRunCapability
+from agentrank_api.benchmark.execution import BenchmarkRunCapability
 from agentrank_api.checkout.execution import CheckoutExecutionService
 from agentrank_api.checkout.schemas import (
     CheckoutView,
@@ -179,6 +179,10 @@ class MerchantBuyerSurface:
         # before the next executor invocation, so replacing a completed run's capability does
         # not give two live runs one authority.
         self._benchmark_capability = capability
+
+    def unbind_benchmark_run(self) -> None:
+        """Drop a completed run's authority before this reusable surface is used normally."""
+        self._benchmark_capability = None
 
     async def search_products(self, request: ProductSearchRequest) -> ProductSearchResponse:
         """Browse this merchant's catalog, with the filters the request states.

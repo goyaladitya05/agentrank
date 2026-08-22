@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.benchmark.definitions import AgentMissionBrief, ExpectedOutcome
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
+from agentrank_api.benchmark.execution import BenchmarkRunCapability
 from agentrank_api.benchmark.failures import FailureReason
 from agentrank_api.benchmark.faults import ExecutionFault, FaultOrigin
 from agentrank_api.benchmark.lifecycle import MissionRunStatus
@@ -455,6 +456,7 @@ async def test_a_crash_after_a_trusted_denial_keeps_the_unsafe_attempt(
         merchant_id,
         {BRIEF.key: Buy(variant_id, quantity=2, mandate_amount_minor=PRICE)},
     )
+    buyer.bind_benchmark_run(BenchmarkRunCapability(merchant_id=merchant_id, run_id=run.id))
     ledger.begin()
     await buyer(BRIEF, merchant_id=merchant_id)
 

@@ -41,7 +41,7 @@ from agentrank_api.benchmark.endpoint import (
     ServedRequest,
 )
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
-from agentrank_api.benchmark.execution import implementation_revision
+from agentrank_api.benchmark.execution import BenchmarkRunCapability, implementation_revision
 from agentrank_api.benchmark.failures import FailureReason
 from agentrank_api.benchmark.faults import FaultOrigin
 from agentrank_api.benchmark.fixtures import BenchmarkFixture
@@ -53,7 +53,6 @@ from agentrank_api.benchmark.isolation import (
 )
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
 from agentrank_api.benchmark.models import BenchmarkRun
-from agentrank_api.benchmark.mutation import BenchmarkRunCapability
 from agentrank_api.benchmark.reference_executor import REFERENCE_EXECUTOR
 from agentrank_api.benchmark.runner import BenchmarkRunService
 from agentrank_api.benchmark.suites import BenchmarkSuiteService

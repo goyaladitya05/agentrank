@@ -48,7 +48,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentrank_api.audit.models import ActorType
 from agentrank_api.audit.repository import AuditRepository
-from agentrank_api.benchmark.mutation import BenchmarkMutationGuard, BenchmarkRunCapability
+from agentrank_api.benchmark.execution import BenchmarkRunCapability
+from agentrank_api.benchmark.mutation import BenchmarkMutationGuard
 from agentrank_api.checkout.execution import CheckoutExecutionService, LockedAuthorization
 from agentrank_api.checkout.execution_authorization import CheckoutExecutionAuthorization
 from agentrank_api.checkout.models import CheckoutSession, CheckoutStatus

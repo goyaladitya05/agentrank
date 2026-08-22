@@ -58,6 +58,18 @@ _REVISION = re.compile(REVISION_PATTERN)
 
 
 @dataclass(frozen=True, slots=True)
+class BenchmarkRunCapability:
+    """The one active benchmark world a trusted commerce caller may mutate.
+
+    This remains pure execution vocabulary so a trusted executor can forward it to a buyer
+    surface without importing the run repository or any evaluator-side benchmark code.
+    """
+
+    merchant_id: uuid.UUID
+    run_id: uuid.UUID
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutorIdentity:
     """Which strategy produced a benchmark result, which version of it, and what it actually was.
 

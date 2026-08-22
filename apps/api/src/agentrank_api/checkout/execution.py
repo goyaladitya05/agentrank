@@ -69,7 +69,8 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from agentrank_api.benchmark.mutation import BenchmarkMutationGuard, BenchmarkRunCapability
+from agentrank_api.benchmark.execution import BenchmarkRunCapability
+from agentrank_api.benchmark.mutation import BenchmarkMutationGuard
 from agentrank_api.checkout.authorization import authorize_checkout
 from agentrank_api.checkout.execution_authorization import (
     CheckoutExecutionAuthorization,
