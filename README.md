@@ -127,6 +127,34 @@ make build-frontend
 
 `AGENTRANK_API_BASE_URL` selects the backend. It defaults to `http://localhost:8000`.
 
+### Razorpay test checkout
+
+`/razorpay` opens a Razorpay Standard Checkout against an AgentRank quote. It is integration UI
+rather than product UI: paste a checkout identifier, pay with a Razorpay test card, and the page
+reports the resulting AgentRank state.
+
+It needs two things in the environment the Next.js server sees:
+
+```bash
+export AGENTRANK_MERCHANT_API_KEY=ar_dev_...   # minted by make credentials
+make web
+```
+
+and a Razorpay Test Mode key pair in the API's `.env`:
+
+```text
+RAZORPAY_KEY_ID=rzp_test_...
+RAZORPAY_KEY_SECRET=...
+```
+
+The key id must begin `rzp_test_`. A live key is refused at startup and there is no variable,
+request field or flag that relaxes that: this project has no live mode. The key secret stays in
+the API process; the browser receives only the public key id and an order identifier, which is
+what Standard Checkout needs.
+
+The console has no authentication of its own, so anyone who can reach it can transact as the
+configured merchant. Keep it bound to localhost.
+
 ## Migrations
 
 Every schema change is an Alembic migration. Schema is never created or altered as an
