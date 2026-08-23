@@ -480,6 +480,21 @@ def primary_code(codes: Iterable[DiagnosticCode]) -> DiagnosticCode | None:
     return min(eligible, key=lambda code: _PRIMARY_RANK[code])
 
 
+def precedence_rank(code: DiagnosticCode) -> int:
+    """Where a code sits in primary precedence, after every eligible code for secondary ones.
+
+    Exposed so aggregation orders grouped findings consistently with mission level output
+    without restating the order in a second module.
+    """
+    if code in SECONDARY_ONLY_CODES:
+        secondary_order = (
+            DiagnosticCode.PROVIDER_THROTTLE_RECOVERED,
+            DiagnosticCode.RESOLVED_MODEL_MISMATCH,
+        )
+        return len(_PRIMARY_RANK) + secondary_order.index(code)
+    return _PRIMARY_RANK.get(code, len(_PRIMARY_RANK))
+
+
 def sort_codes(codes: Iterable[DiagnosticCode]) -> tuple[DiagnosticCode, ...]:
     """Codes ordered primary first, then remaining precedence order, then secondary-only.
 
@@ -487,19 +502,13 @@ def sort_codes(codes: Iterable[DiagnosticCode]) -> tuple[DiagnosticCode, ...]:
     diagnoses. Secondary-only codes trail in their own declared order after every eligible
     primary code.
     """
-    secondary_order = (
-        DiagnosticCode.PROVIDER_THROTTLE_RECOVERED,
-        DiagnosticCode.RESOLVED_MODEL_MISMATCH,
-    )
     unique = set(codes)
     return tuple(
         sorted(
             unique,
             key=lambda code: (
                 code in SECONDARY_ONLY_CODES,
-                _PRIMARY_RANK.get(code, len(_PRIMARY_RANK))
-                if code not in SECONDARY_ONLY_CODES
-                else secondary_order.index(code),
+                precedence_rank(code),
             ),
         )
     )
