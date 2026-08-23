@@ -207,7 +207,12 @@ class CompilerImpactExperimentService:
             buyer_configuration=buyer_configuration,
             methodology={
                 "benchmark_designation": "DEVELOPMENT" if development_benchmark else "EVALUATION",
-                "comparison": "paired alternating raw then compiled samples",
+                "comparison": "paired alternating raw and compiled samples",
+                # Frozen before any result exists. Odd pairs run raw first and even pairs run
+                # compiled first, so a rate limited provider cannot systematically hand the
+                # second arm of every pair its accumulated quota pressure. Historical
+                # experiments declared no pair order and remain raw first for every pair.
+                "pair_order": "counterbalanced",
                 "primary_metrics": "existing deterministic benchmark metrics",
                 "simulated_demand": True,
             },
@@ -216,26 +221,26 @@ class CompilerImpactExperimentService:
         self._session.add(experiment)
         await self._session.flush()
         for pair in range(1, sample_count + 1):
-            self._session.add_all(
-                (
-                    CompilerImpactSample(
-                        experiment_id=experiment.id,
-                        merchant_id=merchant_id,
-                        pair_ordinal=pair,
-                        execution_ordinal=(pair - 1) * 2 + 1,
-                        representation_kind=RepresentationKind.RAW,
-                        source_snapshot_id=source.id,
-                    ),
-                    CompilerImpactSample(
-                        experiment_id=experiment.id,
-                        merchant_id=merchant_id,
-                        pair_ordinal=pair,
-                        execution_ordinal=(pair - 1) * 2 + 2,
-                        representation_kind=RepresentationKind.COMPILED,
-                        representation_id=representation.id,
-                    ),
-                )
+            arms: tuple[RepresentationKind, RepresentationKind] = (
+                (RepresentationKind.RAW, RepresentationKind.COMPILED)
+                if pair % 2 == 1
+                else (RepresentationKind.COMPILED, RepresentationKind.RAW)
             )
+            for offset, kind in enumerate(arms):
+                if kind is RepresentationKind.RAW:
+                    identity: dict[str, Any] = {"source_snapshot_id": source.id}
+                else:
+                    identity = {"representation_id": representation.id}
+                self._session.add(
+                    CompilerImpactSample(
+                        experiment_id=experiment.id,
+                        merchant_id=merchant_id,
+                        pair_ordinal=pair,
+                        execution_ordinal=(pair - 1) * 2 + offset + 1,
+                        representation_kind=kind,
+                        **identity,
+                    )
+                )
         await self._session.commit()
         return experiment
 
@@ -395,12 +400,28 @@ class CompilerImpactExperimentService:
     def _validate_sample_identity(
         experiment: CompilerImpactExperiment, sample: CompilerImpactSample
     ) -> None:
-        expected_execution = sample.pair_ordinal * 2 - (
-            1 if sample.representation_kind is RepresentationKind.RAW else 0
-        )
+        # The plan is read from the experiment's own frozen methodology, never inferred from
+        # what happens to be in the table. Experiments created before pair ordering existed
+        # declare nothing and are validated under the original raw first scheme, so history
+        # keeps validating exactly as it was written.
+        pair_order = experiment.methodology.get("pair_order", "raw_then_compiled")
+        if pair_order not in {"raw_then_compiled", "counterbalanced"}:
+            raise ValueError("compiler impact experiment declares an unknown pair order")
         if not 1 <= sample.pair_ordinal <= experiment.sample_count:
             raise ValueError("compiler impact sample pair is outside experiment plan")
-        if sample.execution_ordinal != expected_execution:
+        # Each slot of a pair has its own expected arm: the odd execution slot opens the pair.
+        # Counterbalancing swaps which arm that is on even pairs; legacy experiments keep raw
+        # opening every pair.
+        first_slot = sample.execution_ordinal == sample.pair_ordinal * 2 - 1
+        opens_compiled = pair_order == "counterbalanced" and sample.pair_ordinal % 2 == 0
+        if first_slot is opens_compiled:
+            expected_kind = RepresentationKind.COMPILED
+        else:
+            expected_kind = RepresentationKind.RAW
+        if sample.representation_kind is not expected_kind or sample.execution_ordinal not in (
+            sample.pair_ordinal * 2 - 1,
+            sample.pair_ordinal * 2,
+        ):
             raise ValueError("compiler impact sample order does not match experiment plan")
         if (
             sample.representation_kind is RepresentationKind.RAW

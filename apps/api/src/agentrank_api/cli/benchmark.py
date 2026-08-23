@@ -499,6 +499,7 @@ async def compare_create(
         "buyer_configuration": experiment.buyer_configuration,
         "sample_count_per_representation": experiment.sample_count,
         "benchmark_designation": experiment.methodology["benchmark_designation"],
+        "pair_order": experiment.methodology["pair_order"],
     }
     if arguments.as_json:
         write_json(out, payload)
@@ -514,6 +515,7 @@ async def compare_create(
         print(
             f"samples     {payload['sample_count_per_representation']} per representation", file=out
         )
+        print(f"pair order  {payload['pair_order']}", file=out)
     return ExitCode.OK
 
 
@@ -657,6 +659,7 @@ async def compare_show(
     payload: dict[str, Any] = {
         "title": "Compiler Impact Experiment",
         "benchmark_designation": designation,
+        "pair_order": experiment.methodology.get("pair_order", "raw_then_compiled"),
         "experiment_id": str(experiment.id),
         "buyer_configuration_digest": experiment.buyer_configuration_digest,
         "source_snapshot_id": str(experiment.source_snapshot_id),

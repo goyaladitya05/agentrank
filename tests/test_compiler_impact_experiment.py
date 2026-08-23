@@ -1,11 +1,12 @@
 """Controlled compiler impact experiment protections."""
 
+import json
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from benchmark_support import VOLTEDGE, suite
+from benchmark_support import VOLTEDGE, mission, suite
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,12 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
 from agentrank_api.benchmark.execution import ExecutorIdentity
 from agentrank_api.benchmark.experiment import (
+    CompilerImpactExperiment,
     CompilerImpactExperimentService,
+    CompilerImpactSample,
     RepresentationKind,
 )
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus
-from agentrank_api.benchmark.llm import AgentConfiguration, mission_input
-from agentrank_api.benchmark.models import BenchmarkEnvironment, BenchmarkSuite
+from agentrank_api.benchmark.llm import GEMINI_PROVIDER, AgentConfiguration, mission_input
+from agentrank_api.benchmark.models import BenchmarkEnvironment, BenchmarkRun, BenchmarkSuite
 from agentrank_api.benchmark.repository import BenchmarkRunRepository, BenchmarkSuiteRepository
 from agentrank_api.benchmark.wire import LLM_STRATEGY, MissionRequest
 from agentrank_api.cli.benchmark import (
@@ -81,18 +84,154 @@ async def test_experiment_freezes_paired_source_compiler_and_buyer_identities(
 
     samples = await service.samples(merchant.id, experiment.id)
 
-    assert [sample.representation_kind for sample in samples] == [
-        RepresentationKind.RAW,
-        RepresentationKind.COMPILED,
-        RepresentationKind.RAW,
-        RepresentationKind.COMPILED,
+    # Counterbalanced by construction: odd pairs open raw, even pairs open compiled. The order
+    # is frozen before any provider call and cannot be reordered after results are observed.
+    assert [(sample.pair_ordinal, sample.representation_kind) for sample in samples] == [
+        (1, RepresentationKind.RAW),
+        (1, RepresentationKind.COMPILED),
+        (2, RepresentationKind.COMPILED),
+        (2, RepresentationKind.RAW),
     ]
     assert [sample.execution_ordinal for sample in samples] == [1, 2, 3, 4]
-    assert all(sample.source_snapshot_id == source.id for sample in samples[::2])
-    assert all(sample.representation_id == compiled.id for sample in samples[1::2])
+    assert all(
+        sample.source_snapshot_id == source.id
+        for sample in samples
+        if sample.representation_kind is RepresentationKind.RAW
+    )
+    assert all(
+        sample.representation_id == compiled.id
+        for sample in samples
+        if sample.representation_kind is RepresentationKind.COMPILED
+    )
     assert experiment.buyer_configuration_digest == config.configuration_digest
     assert experiment.source_snapshot_id == compiled.source_snapshot_id
     assert compiled.compiler_run_id is not None
+    assert experiment.methodology["pair_order"] == "counterbalanced"
+
+
+async def test_treatment_order_follows_the_frozen_counterbalanced_plan(
+    session: AsyncSession,
+) -> None:
+    merchant, source, compiled, stored_suite, environment = await prepared(session)
+    config = AgentConfiguration(provider="openai-responses", requested_model="test-model")
+    service = CompilerImpactExperimentService(session)
+    experiment = await service.create(
+        merchant_id=merchant.id,
+        suite_id=stored_suite.id,
+        environment=environment,
+        source_snapshot_id=source.id,
+        compiled_representation_id=compiled.id,
+        buyer_configuration=config.payload(),
+        buyer_configuration_digest=config.configuration_digest,
+        sample_count=2,
+    )
+    observed: list[RepresentationKind] = []
+    for _ in range(4):
+        treatment = await service.next_treatment(merchant.id, experiment.id)
+        observed.append(treatment.sample.representation_kind)
+        benchmark_run = await BenchmarkRunRepository(session).create(
+            merchant=merchant,
+            suite=stored_suite,
+            environment=environment,
+            executor=ExecutorIdentity(
+                kind="llm-openai", version=1, revision=config.configuration_digest
+            ),
+            agent_configuration=config.payload(),
+            catalog_hash="sha256:" + "0" * 64,
+            evaluator_version="sha256:" + "0" * 64,
+            representation=treatment.representation,
+        )
+        benchmark_run.status = BenchmarkRunStatus.RUNNING
+        benchmark_run.started_at = datetime.now(UTC)
+        await session.commit()
+        await service.bind_run(treatment, benchmark_run.id)
+        # Close each bound sample so the one-run-per-world claim never blocks the next.
+        bound = await session.get(BenchmarkRun, benchmark_run.id)
+        assert bound is not None
+        bound.status = BenchmarkRunStatus.COMPLETED
+        bound.completed_at = datetime.now(UTC)
+        await session.commit()
+
+    assert observed == [
+        RepresentationKind.RAW,
+        RepresentationKind.COMPILED,
+        RepresentationKind.COMPILED,
+        RepresentationKind.RAW,
+    ]
+
+
+def test_historical_raw_first_experiments_still_validate_their_own_plan() -> None:
+    config = AgentConfiguration(provider="openai-responses", requested_model="test-model").payload()
+    legacy = CompilerImpactExperiment(
+        id=uuid.uuid7(),
+        merchant_id=uuid.uuid7(),
+        suite_id=uuid.uuid7(),
+        environment_id=uuid.uuid7(),
+        source_snapshot_id=uuid.uuid7(),
+        compiled_representation_id=uuid.uuid7(),
+        buyer_configuration_digest="sha256:" + "0" * 64,
+        buyer_configuration=config,
+        methodology={},
+        sample_count=2,
+    )
+    even_pair_compiled_second = CompilerImpactSample(
+        experiment_id=legacy.id,
+        merchant_id=legacy.merchant_id,
+        pair_ordinal=2,
+        execution_ordinal=4,
+        representation_kind=RepresentationKind.COMPILED,
+        representation_id=legacy.compiled_representation_id,
+    )
+    CompilerImpactExperimentService._validate_sample_identity(legacy, even_pair_compiled_second)
+
+    reordered = CompilerImpactSample(
+        experiment_id=legacy.id,
+        merchant_id=legacy.merchant_id,
+        pair_ordinal=2,
+        execution_ordinal=3,
+        representation_kind=RepresentationKind.COMPILED,
+        representation_id=legacy.compiled_representation_id,
+    )
+    with pytest.raises(ValueError, match="order does not match"):
+        CompilerImpactExperimentService._validate_sample_identity(legacy, reordered)
+
+
+def test_counterbalanced_validation_accepts_only_its_own_declared_order() -> None:
+    config = AgentConfiguration(provider=GEMINI_PROVIDER, requested_model="test-model").payload()
+    counterbalanced = CompilerImpactExperiment(
+        id=uuid.uuid7(),
+        merchant_id=uuid.uuid7(),
+        suite_id=uuid.uuid7(),
+        environment_id=uuid.uuid7(),
+        source_snapshot_id=uuid.uuid7(),
+        compiled_representation_id=uuid.uuid7(),
+        buyer_configuration_digest="sha256:" + "0" * 64,
+        buyer_configuration=config,
+        methodology={"pair_order": "counterbalanced"},
+        sample_count=3,
+    )
+    even_pair_opens_compiled = CompilerImpactSample(
+        experiment_id=counterbalanced.id,
+        merchant_id=counterbalanced.merchant_id,
+        pair_ordinal=2,
+        execution_ordinal=3,
+        representation_kind=RepresentationKind.COMPILED,
+        representation_id=counterbalanced.compiled_representation_id,
+    )
+    CompilerImpactExperimentService._validate_sample_identity(
+        counterbalanced, even_pair_opens_compiled
+    )
+
+    legacy_position = CompilerImpactSample(
+        experiment_id=counterbalanced.id,
+        merchant_id=counterbalanced.merchant_id,
+        pair_ordinal=2,
+        execution_ordinal=4,
+        representation_kind=RepresentationKind.COMPILED,
+        representation_id=counterbalanced.compiled_representation_id,
+    )
+    with pytest.raises(ValueError, match="order does not match"):
+        CompilerImpactExperimentService._validate_sample_identity(counterbalanced, legacy_position)
 
 
 async def test_evaluation_designation_is_frozen_separately_from_development(
@@ -214,6 +353,149 @@ async def test_experiment_and_sample_identity_cannot_be_rewritten(session: Async
     await session.rollback()
 
 
+async def test_the_database_enforces_each_declared_pair_order(session: AsyncSession) -> None:
+    merchant, source, compiled, stored_suite, environment = await prepared(session)
+    config = AgentConfiguration(provider="openai-responses", requested_model="test-model")
+    await CompilerImpactExperimentService(session).create(
+        merchant_id=merchant.id,
+        suite_id=stored_suite.id,
+        environment=environment,
+        source_snapshot_id=source.id,
+        compiled_representation_id=compiled.id,
+        buyer_configuration=config.payload(),
+        buyer_configuration_digest=config.configuration_digest,
+        sample_count=1,
+    )
+    # A raw SQL experiment keeps the insert guard independent of this application's own
+    # validation, which is what makes the check a database invariant rather than a convention.
+    experiment_id = uuid.uuid7()
+    await session.execute(
+        text(
+            "INSERT INTO compiler_impact_experiment"
+            " (id, merchant_id, suite_id, environment_id, source_snapshot_id,"
+            "  compiled_representation_id, buyer_configuration_digest, buyer_configuration,"
+            "  methodology, sample_count)"
+            " VALUES (:id, :merchant, :suite, :environment, :source, :representation,"
+            '  :digest, :configuration, \'{"pair_order": "counterbalanced"}\'::jsonb, 2)'
+        ),
+        {
+            "id": experiment_id,
+            "merchant": merchant.id,
+            "suite": stored_suite.id,
+            "environment": environment.id,
+            "source": source.id,
+            "representation": compiled.id,
+            "digest": "sha256:" + "0" * 64,
+            "configuration": json.dumps(config.payload()),
+        },
+    )
+    # The even pair opens compiled at the pair's first slot.
+    await session.execute(
+        text(
+            "INSERT INTO compiler_impact_sample"
+            " (id, experiment_id, merchant_id, pair_ordinal, execution_ordinal,"
+            "  representation_kind, representation_id)"
+            " VALUES (:id, :experiment, :merchant, 2, 3, 'COMPILED', :representation)"
+        ),
+        {
+            "id": uuid.uuid7(),
+            "experiment": experiment_id,
+            "merchant": merchant.id,
+            "representation": compiled.id,
+        },
+    )
+    await session.commit()
+    # The compiled arm cannot take the even pair's closing slot under the counterbalanced plan.
+    with pytest.raises(DBAPIError, match="outside its experiment plan"):
+        await session.execute(
+            text(
+                "INSERT INTO compiler_impact_sample"
+                " (id, experiment_id, merchant_id, pair_ordinal, execution_ordinal,"
+                "  representation_kind, representation_id)"
+                " VALUES (:id, :experiment, :merchant, 2, 4, 'COMPILED', :representation)"
+            ),
+            {
+                "id": uuid.uuid7(),
+                "experiment": experiment_id,
+                "merchant": merchant.id,
+                "representation": compiled.id,
+            },
+        )
+    await session.rollback()
+
+
+async def test_the_database_still_enforces_the_legacy_raw_first_plan(
+    session: AsyncSession,
+) -> None:
+    """Experiments that declare no pair order keep their historical raw first guard."""
+    merchant, source, compiled, stored_suite, environment = await prepared(session)
+    config = AgentConfiguration(provider="openai-responses", requested_model="test-model")
+    await CompilerImpactExperimentService(session).create(
+        merchant_id=merchant.id,
+        suite_id=stored_suite.id,
+        environment=environment,
+        source_snapshot_id=source.id,
+        compiled_representation_id=compiled.id,
+        buyer_configuration=config.payload(),
+        buyer_configuration_digest=config.configuration_digest,
+        sample_count=1,
+    )
+    experiment_id = uuid.uuid7()
+    await session.execute(
+        text(
+            "INSERT INTO compiler_impact_experiment"
+            " (id, merchant_id, suite_id, environment_id, source_snapshot_id,"
+            "  compiled_representation_id, buyer_configuration_digest, buyer_configuration,"
+            "  methodology, sample_count)"
+            " VALUES (:id, :merchant, :suite, :environment, :source, :representation,"
+            "  :digest, :configuration, '{}'::jsonb, 2)"
+        ),
+        {
+            "id": experiment_id,
+            "merchant": merchant.id,
+            "suite": stored_suite.id,
+            "environment": environment.id,
+            "source": source.id,
+            "representation": compiled.id,
+            "digest": "sha256:" + "0" * 64,
+            "configuration": json.dumps(config.payload()),
+        },
+    )
+    # The even pair still opens raw, exactly as every pre counterbalancing experiment ran.
+    await session.execute(
+        text(
+            "INSERT INTO compiler_impact_sample"
+            " (id, experiment_id, merchant_id, pair_ordinal, execution_ordinal,"
+            "  representation_kind, source_snapshot_id)"
+            " VALUES (:id, :experiment, :merchant, 2, 3, 'RAW', :source)"
+        ),
+        {
+            "id": uuid.uuid7(),
+            "experiment": experiment_id,
+            "merchant": merchant.id,
+            "source": source.id,
+        },
+    )
+    await session.commit()
+    # The compiled arm cannot take the even pair's opening slot in a legacy experiment.
+    with pytest.raises(DBAPIError, match="outside its experiment plan"):
+        await session.execute(
+            text(
+                "INSERT INTO compiler_impact_sample"
+                " (id, experiment_id, merchant_id, pair_ordinal, execution_ordinal,"
+                "  representation_kind, representation_id)"
+                " VALUES (:id, :experiment, :merchant, 2, 3, 'COMPILED', :representation)"
+            ),
+            {
+                "id": uuid.uuid7(),
+                "experiment": experiment_id,
+                "merchant": merchant.id,
+                "representation": compiled.id,
+            },
+        )
+    await session.rollback()
+
+
 def test_merchant_information_reaches_the_model_without_an_oracle() -> None:
     input_item = mission_input(
         suite().missions[0].brief,
@@ -320,3 +602,4 @@ def test_unreported_provider_tokens_render_as_unknown() -> None:
         "total_tokens": None,
         "provider_latency_ms": 125,
     }
+
