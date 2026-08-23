@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from agentrank_api.benchmark.agent_trace import AgentExecutionEvidence
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
 from agentrank_api.benchmark.execution import ExecutorIdentity
 from agentrank_api.benchmark.experiment import (
@@ -22,11 +23,16 @@ from agentrank_api.benchmark.experiment import (
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus
 from agentrank_api.benchmark.llm import GEMINI_PROVIDER, AgentConfiguration, mission_input
 from agentrank_api.benchmark.models import BenchmarkEnvironment, BenchmarkRun, BenchmarkSuite
-from agentrank_api.benchmark.repository import BenchmarkRunRepository, BenchmarkSuiteRepository
+from agentrank_api.benchmark.repository import (
+    AgentEvidenceRepository,
+    BenchmarkRunRepository,
+    BenchmarkSuiteRepository,
+)
 from agentrank_api.benchmark.wire import LLM_STRATEGY, MissionRequest
 from agentrank_api.cli.benchmark import (
     _comparison_aggregates,
     _comparison_delta,
+    _provider_failed_missions,
     _provider_usage_summary,
 )
 from agentrank_api.commerce.models import Merchant
@@ -603,3 +609,31 @@ def test_unreported_provider_tokens_render_as_unknown() -> None:
         "provider_latency_ms": 125,
     }
 
+
+async def test_provider_failure_missions_are_counted_from_traces_not_reports(
+    session: AsyncSession,
+) -> None:
+    stored = await BenchmarkSuiteRepository(session).create(
+        suite(mission("throttled"), mission("healthy"))
+    )
+    merchant = await MerchantRepository(session).create(slug="test-merchant", name="Test")
+    run = await BenchmarkRunRepository(session).create(merchant=merchant, suite=stored)
+    await session.commit()
+    throttled, healthy = run.mission_runs[0].id, run.mission_runs[1].id
+    evidence = AgentExecutionEvidence()
+    evidence.add("MODEL_REQUEST", {"input": "buy"})
+    evidence.add("PROVIDER_ERROR", {"detail": "http_429", "attempt": 1})
+    # A second failure on the same mission pins the count to missions, not events.
+    evidence.add("PROVIDER_ERROR", {"detail": "http_429", "attempt": 2})
+    await AgentEvidenceRepository(session).append(
+        evidence, mission_run_id=throttled, run_id=run.id, merchant_id=merchant.id
+    )
+    clean = AgentExecutionEvidence()
+    clean.add("MODEL_REQUEST", {"input": "buy"})
+    clean.add("MODEL_RESPONSE", {"response_id": "resp_1"})
+    await AgentEvidenceRepository(session).append(
+        clean, mission_run_id=healthy, run_id=run.id, merchant_id=merchant.id
+    )
+    await session.commit()
+
+    assert await _provider_failed_missions(session, run_id=run.id, merchant_id=merchant.id) == 1

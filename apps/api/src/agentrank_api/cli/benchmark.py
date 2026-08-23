@@ -48,7 +48,7 @@ import uuid
 from pathlib import Path
 from typing import Any, TextIO, cast
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.auth.service import MerchantCredentialService
@@ -68,7 +68,12 @@ from agentrank_api.benchmark.isolation import IsolatedMissionExecutor
 from agentrank_api.benchmark.lifecycle import MissionRunStatus
 from agentrank_api.benchmark.llm import GEMINI_PROVIDER, OPENAI_PROVIDER, AgentConfiguration
 from agentrank_api.benchmark.metrics import BenchmarkMetrics
-from agentrank_api.benchmark.models import AgentProviderUsage, BenchmarkMissionRun, BenchmarkRun
+from agentrank_api.benchmark.models import (
+    AgentProviderUsage,
+    AgentTraceEvent,
+    BenchmarkMissionRun,
+    BenchmarkRun,
+)
 from agentrank_api.benchmark.reference_executor import ReferenceMissionExecutor
 from agentrank_api.benchmark.repository import BenchmarkSuiteRepository
 from agentrank_api.benchmark.runner import BenchmarkRunService
@@ -652,6 +657,12 @@ async def compare_show(
             usage = cast(list[ProviderUsageRow], list(usage_rows))
             report["resolved_models"] = sorted({row[0] for row in usage if row[0] is not None})
             report["provider_usage"] = _provider_usage_summary(usage)
+            # A provider-health diagnostic beside the semantic metrics, never inside them. A
+            # mission the model never got to reason about is a throttled sample, and reading it
+            # as a raw or compiled outcome would be a fact about quota rather than commerce.
+            report["provider_failure_missions"] = await _provider_failed_missions(
+                session, run_id=sample.run_id, merchant_id=merchant_id
+            )
         reports.append(report)
     aggregates = _comparison_aggregates(reports)
     transitions = _mission_transitions(reports)
@@ -756,6 +767,24 @@ def _failure_totals(completed: list[dict[str, Any]]) -> dict[str, int]:
         for reason, count in entry["primary_failure_counts"].items():
             totals[reason] = totals.get(reason, 0) + count
     return {reason: totals[reason] for reason in sorted(totals)}
+
+
+async def _provider_failed_missions(
+    session: AsyncSession, *, run_id: uuid.UUID, merchant_id: uuid.UUID
+) -> int:
+    """How many of one run's missions recorded a provider failure in their trusted traces.
+
+    This is a diagnostic count and never a metric input. It exists so a comparison can say how
+    much of each arm's end to end result the model was actually given the chance to produce.
+    """
+    counted = await session.execute(
+        select(func.count(func.distinct(AgentTraceEvent.mission_run_id))).where(
+            AgentTraceEvent.run_id == run_id,
+            AgentTraceEvent.merchant_id == merchant_id,
+            AgentTraceEvent.event_type == "PROVIDER_ERROR",
+        )
+    )
+    return int(counted.scalar_one())
 
 
 def _provider_usage_summary(rows: list[ProviderUsageRow]) -> dict[str, int | None]:
