@@ -21,7 +21,11 @@ from agentrank_api.benchmark.llm import AgentConfiguration, mission_input
 from agentrank_api.benchmark.models import BenchmarkEnvironment, BenchmarkSuite
 from agentrank_api.benchmark.repository import BenchmarkRunRepository, BenchmarkSuiteRepository
 from agentrank_api.benchmark.wire import LLM_STRATEGY, MissionRequest
-from agentrank_api.cli.benchmark import _comparison_aggregates, _comparison_delta
+from agentrank_api.cli.benchmark import (
+    _comparison_aggregates,
+    _comparison_delta,
+    _provider_usage_summary,
+)
 from agentrank_api.commerce.models import Merchant
 from agentrank_api.commerce.repository import MerchantRepository
 from agentrank_api.compiler.service import MerchantCompilerService
@@ -283,3 +287,16 @@ def test_simulated_demand_comparison_aggregates_and_deltas_stay_per_currency() -
             "not_measured_amount_minor": 0,
         }
     ]
+
+
+def test_unreported_provider_tokens_render_as_unknown() -> None:
+    summary = _provider_usage_summary([("gemini-3.5-flash-lite", None, None, None, None, 125)])
+
+    assert summary == {
+        "invocations": 1,
+        "input_tokens": None,
+        "output_tokens": None,
+        "reasoning_tokens": None,
+        "total_tokens": None,
+        "provider_latency_ms": 125,
+    }

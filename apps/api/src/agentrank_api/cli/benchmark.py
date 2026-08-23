@@ -46,7 +46,7 @@ import argparse
 import os
 import uuid
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, TextIO, cast
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -91,6 +91,7 @@ STATUS_WIDTH = 10
 REASON_WIDTH = 26
 
 MISSING = "-"
+ProviderUsageRow = tuple[str | None, int | None, int | None, int | None, int | None, int | None]
 
 # What every report says about what produced it. A reference executor is a scripted deterministic
 # buyer, and its completion rate is evidence that the benchmark path works rather than evidence
@@ -625,14 +626,21 @@ async def compare_show(
             suite, environment = await _pins(runs, loaded)
             report["run"] = _run_json(loaded, metrics, suite, environment)
             usage_rows = await session.execute(
-                select(AgentProviderUsage.actual_model, AgentProviderUsage.measurement_kind).where(
+                select(
+                    AgentProviderUsage.actual_model,
+                    AgentProviderUsage.input_tokens,
+                    AgentProviderUsage.output_tokens,
+                    AgentProviderUsage.reasoning_tokens,
+                    AgentProviderUsage.total_tokens,
+                    AgentProviderUsage.provider_latency_ms,
+                ).where(
                     AgentProviderUsage.run_id == sample.run_id,
                     AgentProviderUsage.merchant_id == merchant_id,
                 )
             )
-            report["resolved_models"] = sorted(
-                {model for model, _kind in usage_rows if model is not None}
-            )
+            usage = cast(list[ProviderUsageRow], list(usage_rows))
+            report["resolved_models"] = sorted({row[0] for row in usage if row[0] is not None})
+            report["provider_usage"] = _provider_usage_summary(usage)
         reports.append(report)
     aggregates = _comparison_aggregates(reports)
     transitions = _mission_transitions(reports)
@@ -735,6 +743,24 @@ def _failure_totals(completed: list[dict[str, Any]]) -> dict[str, int]:
         for reason, count in entry["primary_failure_counts"].items():
             totals[reason] = totals.get(reason, 0) + count
     return {reason: totals[reason] for reason in sorted(totals)}
+
+
+def _provider_usage_summary(rows: list[ProviderUsageRow]) -> dict[str, int | None]:
+    """Summarize provider usage without turning an omitted token count into zero."""
+
+    def total(values: list[int | None]) -> int | None:
+        if not values or any(value is None for value in values):
+            return None
+        return sum(value for value in values if value is not None)
+
+    return {
+        "invocations": len(rows),
+        "input_tokens": total([row[1] for row in rows]),
+        "output_tokens": total([row[2] for row in rows]),
+        "reasoning_tokens": total([row[3] for row in rows]),
+        "total_tokens": total([row[4] for row in rows]),
+        "provider_latency_ms": total([row[5] for row in rows]),
+    }
 
 
 def _aggregate_simulated_demand(group: list[dict[str, Any]]) -> list[dict[str, int | str]]:
