@@ -299,7 +299,7 @@ IDENTITIES: dict[DiagnosticCode, DiagnosticIdentity] = {
     DiagnosticCode.GROUND_TRUTH_DISAGREEMENT: DiagnosticIdentity(
         code=DiagnosticCode.GROUND_TRUTH_DISAGREEMENT,
         owner=DiagnosticOwner.BENCHMARK_INFRASTRUCTURE,
-        actionability=Actionability.REVIEW_REQUIRED,
+        actionability=Actionability.NO_MERCHANT_ACTION,
         severity=Severity.MEDIUM,
         evidence_level=EvidenceLevel.TRUSTED_FACT,
     ),
@@ -515,14 +515,18 @@ def sort_codes(codes: Iterable[DiagnosticCode]) -> tuple[DiagnosticCode, ...]:
 
 
 def engine_identity() -> str:
-    """A labelled digest over everything that gives diagnostic output its meaning.
+    """A labelled digest over the code mappings that give diagnostic output its meaning.
 
     Covers the code set, every identity, the precedence order and the secondary-only rule.
     Changing any of them changes the identity, so a historical diagnosis can always be read
-    against the exact mapping that produced it. Like `evaluator_version`, it is a version
-    stamp over data the engine reads rather than a hash of the engine's own source: the
-    summary templates live beside the rules and change with them, and this digest moves when
-    they do because the mappings move with them.
+    against the exact mapping that produced it.
+
+    Honest about its limit, exactly as `evaluator_version` is: this covers the data tables
+    the engine reads, not the engine's own source. A change to a summary template or to an
+    extraction constant in `diagnostics.traces` can alter output without moving this digest,
+    which is why those constants live beside documented tests rather than inside this hash.
+    It is a version stamp over the vocabulary and its ownership mapping, not a proof that no
+    other line of the engine moved.
     """
     payload = {
         "codes": sorted(code.value for code in DiagnosticCode),

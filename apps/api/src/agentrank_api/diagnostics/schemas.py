@@ -39,11 +39,15 @@ class SimulatedDemandEffectView(BaseModel):
 
     currency: str
     bucket: str
-    amount_minor: int
+    simulated_amount_minor: int
 
     @classmethod
     def from_domain(cls, effect: SimulatedDemandEffect) -> Self:
-        return cls(currency=effect.currency, bucket=effect.bucket, amount_minor=effect.amount_minor)
+        return cls(
+            currency=effect.currency,
+            bucket=effect.bucket,
+            simulated_amount_minor=effect.amount_minor,
+        )
 
 
 class SimulatedDemandBucketView(BaseModel):
@@ -361,12 +365,18 @@ class RepresentationStateView(BaseModel):
     review_required_facts: int
 
 
+class MethodologyWarningView(BaseModel):
+    code: str
+    message: str
+
+
 class LatestExperimentView(BaseModel):
     experiment_id: uuid.UUID
     benchmark_designation: str
     completed_sample_pairs: int
     conclusion_kind: str
     conclusion_statement: str
+    warnings: list[MethodologyWarningView]
 
 
 class MerchantOverviewView(BaseModel):
@@ -380,17 +390,13 @@ class MerchantOverviewView(BaseModel):
     representation_state: RepresentationStateView
 
 
-class MethodologyWarningView(BaseModel):
-    code: str
-    message: str
-
-
 class ArmAggregateView(BaseModel):
     arm: str
     planned_samples: int
     completed_samples: int
     completion_rate_mean: float | None
-    provider_failure_missions: int
+    terminated_provider_outages: int
+    missions_with_provider_errors: int
     model_invocations: int
     tool_calls: int
     resolved_models: tuple[str, ...]
@@ -456,6 +462,10 @@ def overview_view(overview: MerchantOverview) -> MerchantOverviewView:
             completed_sample_pairs=overview.latest_experiment.completed_sample_pairs,
             conclusion_kind=overview.latest_experiment.conclusion_kind,
             conclusion_statement=overview.latest_experiment.conclusion_statement,
+            warnings=[
+                MethodologyWarningView(code=code, message=message)
+                for code, message in overview.latest_experiment.warnings
+            ],
         ),
         representation_state=RepresentationStateView(
             source_snapshot_id=overview.representation_state.source_snapshot_id,
@@ -507,7 +517,8 @@ def experiment_view(result: Any) -> ExperimentComparisonView:
                 planned_samples=arm.planned_samples,
                 completed_samples=arm.completed_samples,
                 completion_rate_mean=arm.completion_rate_mean,
-                provider_failure_missions=arm.provider_failure_missions,
+                terminated_provider_outages=arm.terminated_provider_outages,
+                missions_with_provider_errors=arm.missions_with_provider_errors,
                 model_invocations=arm.model_invocations,
                 tool_calls=arm.tool_calls,
                 resolved_models=arm.resolved_models,

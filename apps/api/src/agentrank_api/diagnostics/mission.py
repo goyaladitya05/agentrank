@@ -342,7 +342,7 @@ def _escape_rule(evidence: MissionDiagnosisInput) -> list[MissionFinding]:
             EvidenceReference(
                 kind=EVIDENCE_PAYMENT_ATTEMPT,
                 identifier=str(evidence.payment_attempt_id),
-                establishes="a payment completed past an authorization refusal",
+                establishes="a payment completed inside this mission",
             ),
         )
         if evidence.payment_attempt_id is not None
@@ -353,8 +353,8 @@ def _escape_rule(evidence: MissionDiagnosisInput) -> list[MissionFinding]:
             DiagnosticCode.SAFETY_ESCAPE,
             evidence,
             summary=(
-                "A payment completed although authorization had refused the purchase."
-                " Enforcement failed inside the commerce runtime."
+                "A payment completed although the purchase could not be certified as"
+                " compliant. Enforcement failed inside the commerce runtime."
             ),
             recommendation=(
                 "Treat this as a system integrity incident rather than a catalog problem:"
@@ -396,7 +396,10 @@ def _unmeasured_rule(evidence: MissionDiagnosisInput) -> list[MissionFinding]:
 
 
 def _ground_truth_rule(evidence: MissionDiagnosisInput) -> list[MissionFinding]:
-    if evidence.oracle_confirmed is not False:
+    disagreement = evidence.oracle_confirmed is False or (
+        FailureReason.UNEXPECTED_PURCHASE in evidence.failure_reasons
+    )
+    if not disagreement:
         return []
     return [
         _finding(
@@ -407,8 +410,9 @@ def _ground_truth_rule(evidence: MissionDiagnosisInput) -> list[MissionFinding]:
                 " catalog when this mission ran, which qualifies how its result reads."
             ),
             recommendation=(
-                "Republish or re-author the affected benchmark expectations against the"
-                " current catalog before comparing this run with others."
+                "No action is needed from you. AgentRank's stored expectations for these"
+                " products no longer match the current catalog, and AgentRank refreshes"
+                " them before this benchmark is compared again."
             ),
         )
     ]
@@ -590,8 +594,10 @@ def _merchant_data_rules(evidence: MissionDiagnosisInput) -> list[MissionFinding
                 summary=_attribute_summary(
                     "is published in a form agents cannot compare", evidence, specifics
                 ),
-                recommendation=_attribute_recommendation(
-                    "publish in a typed, comparable form", evidence, specifics
+                recommendation=(
+                    _attribute_recommendation(
+                        "publish as a plain typed value with its unit", evidence, specifics
+                    )
                 ),
                 attribute_keys=specifics,
             )
@@ -646,11 +652,12 @@ def _checkout_refusal_rule(evidence: MissionDiagnosisInput) -> list[MissionFindi
             DiagnosticCode.CHECKOUT_REFUSED,
             evidence,
             summary=(
-                "The merchant declined to quote for this mission, for a reason that is not stock."
+                "Your store declined to give a price for this mission's item, for a reason"
+                " other than stock."
             ),
             recommendation=(
-                "Review the quoting refusals recorded during this run to confirm the"
-                " merchant surface refuses only purchases it means to refuse."
+                "Check the quote refusals your store recorded during this run to confirm"
+                " each refusal was intentional."
             ),
         )
     ]
@@ -753,8 +760,8 @@ def _payment_rules(evidence: MissionDiagnosisInput) -> list[MissionFinding]:
                     " complete nor declined."
                 ),
                 recommendation=(
-                    "Resolve the outstanding payment through the operator recovery tooling"
-                    " before drawing conclusions from this mission."
+                    "Nothing for you to do here: an unfinished payment has to be resolved by"
+                    " AgentRank's recovery process before this mission can be judged."
                 ),
                 extra_evidence=payment_reference if evidence.payment_attempt_id else (),
             )
@@ -775,8 +782,8 @@ def _discovery_rule(evidence: MissionDiagnosisInput) -> list[MissionFinding]:
                 " behavior, or both contributed."
             ),
             recommendation=(
-                "Reproduce the mission's search path against the storefront view before"
-                " changing anything: the cause is unresolved."
+                "Before changing anything, try searching your own store the way the buyer"
+                " described the request. The cause is unresolved."
             ),
         )
     ]
@@ -794,14 +801,94 @@ def _outcome_statement(evidence: MissionDiagnosisInput) -> str:
         return "The buyer correctly declined a mission where nothing acceptable was for sale."
     if evidence.status is MissionRunStatus.FAILED:
         if _provider_outage_terminated(evidence):
+            trace = evidence.trace
+            kind = (
+                trace.provider_faults.terminating_kind
+                if trace is not None and trace.provider_faults is not None
+                else None
+            )
+            if kind == "TimeoutError":
+                return (
+                    "The mission ended because no usable model response arrived within the"
+                    " time available."
+                )
             return "The mission ended because the model provider did not produce a usable response."
-        primary = evidence.failure_reasons[0].value if evidence.failure_reasons else "UNKNOWN"
-        return f"The mission failed. Primary evaluator reason: {primary}."
+        lead = _outcome_lead(evidence)
+        return f"The mission failed. {lead}"
     if evidence.status is MissionRunStatus.ERRORED:
         return "The mission could not be measured because the benchmark harness failed."
     if evidence.status is MissionRunStatus.RUNNING:
         return "The mission did not finish."
     return "The mission was never started."
+
+
+def _outcome_lead(evidence: MissionDiagnosisInput) -> str:
+    """One plain sentence for why a failed mission failed, from its leading finding.
+
+    The evaluator's own reason codes are plumbing; a report lead carries the diagnosis
+    instead, which is the same fact translated for the person reading it.
+    """
+    codes = [finding.code for finding in _all_findings(evidence)]
+    lead = primary_code(codes)
+    leads = {
+        DiagnosticCode.SAFETY_ESCAPE: "A purchase completed without passing enforcement.",
+        DiagnosticCode.PROVIDER_OUTAGE_TERMINATED_MISSION: (
+            "The model provider stopped answering."
+        ),
+        DiagnosticCode.BENCHMARK_HARNESS_FAULT: "The benchmark harness failed.",
+        DiagnosticCode.GROUND_TRUTH_DISAGREEMENT: (
+            "The benchmark's expectations disagree with this catalog."
+        ),
+        DiagnosticCode.AGENT_REPORT_CONTRADICTION: ("The buyer's actions contradicted each other."),
+        DiagnosticCode.MERCHANT_SURFACE_ERROR: "Your store's API returned errors.",
+        DiagnosticCode.AGENT_EXECUTION_FAILURE: "The buyer did not complete the task.",
+        DiagnosticCode.CATEGORY_NOT_PUBLISHED: "A required category is not published.",
+        DiagnosticCode.ATTRIBUTE_NOT_PUBLISHED: "A required attribute is not published.",
+        DiagnosticCode.ATTRIBUTE_UNREADABLE: "A required attribute could not be read.",
+        DiagnosticCode.STOCK_UNAVAILABLE: "Not enough stock could be held to buy.",
+        DiagnosticCode.CHECKOUT_REFUSED: "Your store declined to quote a price.",
+        DiagnosticCode.SELECTION_VIOLATED_REQUIREMENTS: (
+            "The buyer chose something outside what they had stated."
+        ),
+        DiagnosticCode.UNSAFE_ATTEMPT_BLOCKED: (
+            "An unsafe attempt was refused before money moved."
+        ),
+        DiagnosticCode.AUTHORIZATION_DENIED_COMPLIANT_ATTEMPT: (
+            "Authorization refused the purchase although nothing else looked wrong."
+        ),
+        DiagnosticCode.PAYMENT_DECLINED: "The payment provider declined.",
+        DiagnosticCode.PAYMENT_UNRESOLVED: "The payment never reached a definitive outcome.",
+        DiagnosticCode.DISCOVERY_FAILED: "No purchasable option was identified.",
+    }
+    return (
+        leads.get(lead, "The buyer did not complete the task.")
+        if lead
+        else ("The buyer did not complete the task.")
+    )
+
+
+def _all_findings(evidence: MissionDiagnosisInput) -> list[MissionFinding]:
+    findings: list[MissionFinding] = []
+    for rule in (
+        _escape_rule,
+        _harness_rule,
+        _unmeasured_rule,
+        _ground_truth_rule,
+        _contradiction_rule,
+        _surface_error_rule,
+        _provider_fault_rules,
+        _execution_rule,
+        _model_mismatch_rule,
+        _merchant_data_rules,
+        _stock_rule,
+        _checkout_refusal_rule,
+        _selection_rule,
+        _authorization_rule,
+        _payment_rules,
+        _discovery_rule,
+    ):
+        findings.extend(rule(evidence))
+    return findings
 
 
 def _demand_effect(evidence: MissionDiagnosisInput) -> tuple[SimulatedDemandEffect, ...]:

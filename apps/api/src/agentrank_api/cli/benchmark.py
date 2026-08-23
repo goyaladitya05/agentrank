@@ -705,6 +705,13 @@ async def compare_show(
     aggregates = _comparison_aggregates(reports)
     transitions = _mission_transitions(reports)
     designation = experiment.methodology.get("benchmark_designation", "DEVELOPMENT")
+    # The same deterministic reading the insights API serves, so an operator and a merchant
+    # never disagree about what an experiment's own caveats are.
+    from agentrank_api.diagnostics.service import DiagnosticsService
+
+    diagnosed = await DiagnosticsService(session).experiment_diagnosis(
+        arguments.experiment_id, merchant_id=merchant_id
+    )
     payload: dict[str, Any] = {
         "title": "Compiler Impact Experiment",
         "benchmark_designation": designation,
@@ -718,6 +725,14 @@ async def compare_show(
         "aggregates": aggregates,
         "delta": _comparison_delta(aggregates),
         "mission_transitions": transitions,
+        "methodology_warnings": [
+            {"code": warning.code, "message": warning.message}
+            for warning in diagnosed.diagnosis.warnings
+        ],
+        "conclusion": {
+            "kind": diagnosed.diagnosis.conclusion.kind,
+            "statement": diagnosed.diagnosis.conclusion.statement,
+        },
     }
     if arguments.as_json:
         write_json(out, payload)
@@ -726,6 +741,12 @@ async def compare_show(
         print(f"benchmark   {str(designation).lower()}", file=out)
         print(f"experiment  {payload['experiment_id']}", file=out)
         print(f"buyer       {payload['buyer_configuration_digest']}", file=out)
+        for warning in payload["methodology_warnings"]:
+            print(f"warning     [{warning['code']}] {warning['message']}", file=out)
+        print(
+            f"conclusion  [{payload['conclusion']['kind']}] {payload['conclusion']['statement']}",
+            file=out,
+        )
         for report in reports:
             print(
                 f"sample      pair {report['pair_ordinal']}"
@@ -790,10 +811,11 @@ async def diagnose(
     for finding in diagnostics.findings:
         demand = (
             ", ".join(
-                f"{effect.bucket.lower()} simulated {effect.amount_minor} {effect.currency}"
+                f"{effect.bucket.lower()} simulated demand"
+                f" {effect.amount_minor} minor units {effect.currency}"
                 for effect in finding.simulated_demand
             )
-            or "no simulated demand attributed"
+            or "no simulated demand attributed to this finding's lead diagnosis"
         )
         print(
             f"finding     [{finding.severity.value}] {finding.title}"
@@ -804,14 +826,18 @@ async def diagnose(
         if finding.recommendation is not None:
             print(f"            action: {finding.recommendation}", file=out)
     print("", file=out)
+    diagnosis_width = 24
     print(
-        f"{'MISSION':<{KEY_WIDTH}} {'STATUS':<{STATUS_WIDTH}} {'PRIMARY DIAGNOSIS':<24}",
+        f"{'MISSION':<{KEY_WIDTH}} {'STATUS':<{STATUS_WIDTH}}"
+        f" {'PRIMARY DIAGNOSIS':<{diagnosis_width}}",
         file=out,
     )
     for entry in diagnostics.missions:
         lead = MISSING if entry.primary is None else entry.primary.code.value
+        # Truncated rather than padded past: a code longer than the column breaks the table.
         print(
-            f"{entry.mission_key:<{KEY_WIDTH}} {entry.status.value:<{STATUS_WIDTH}} {lead:<24}",
+            f"{entry.mission_key:<{KEY_WIDTH}} {entry.status.value:<{STATUS_WIDTH}}"
+            f" {lead[:diagnosis_width]:<{diagnosis_width}}",
             file=out,
         )
     return ExitCode.OK

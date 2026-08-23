@@ -69,6 +69,7 @@ def sample(
         ("buy-a-charger", MissionRunStatus.SUCCEEDED),
     ),
     provider_failures: int = 0,
+    outages: int = 0,
     invocations: int = 40,
     tokens_reported: bool | None = True,
     implementation_version: int | None = 4,
@@ -84,6 +85,7 @@ def sample(
         metrics=metrics,
         mission_outcomes=outcome_facts(*statuses) if completed else (),
         provider_failure_missions=provider_failures,
+        terminated_provider_outages=outages,
         model_invocations=invocations,
         tool_calls=invocations * 2,
         token_usage_reported=tokens_reported,
@@ -207,18 +209,30 @@ class TestWarnings:
         codes = {warning.code for warning in diagnosis.warnings}
         assert "DEVELOPMENT_BENCHMARK" in codes
 
-    def test_provider_failures_warn_and_are_counted(self) -> None:
+    def test_provider_outages_warn_and_are_counted(self) -> None:
         samples = [
-            sample("RAW", 1, statuses=saturated_statuses(), provider_failures=3),
-            sample("COMPILED", 1, statuses=saturated_statuses(), provider_failures=1),
+            sample("RAW", 1, statuses=saturated_statuses(), provider_failures=1, outages=1),
+            sample("COMPILED", 1, statuses=saturated_statuses()),
         ]
         diagnosis = diagnose_experiment(facts(samples, pairs=1), engine_identity=engine_identity())
         codes = {warning.code for warning in diagnosis.warnings}
         assert "PROVIDER_FAILURES_PRESENT" in codes
         assert "NOT_CAUSALLY_INTERPRETABLE" in codes
         raw = diagnosis.arms["RAW"]
-        assert raw.provider_failure_missions == 3
-        assert diagnosis.arms["COMPILED"].provider_failure_missions == 1
+        assert raw.terminated_provider_outages == 1
+        assert diagnosis.arms["COMPILED"].terminated_provider_outages == 0
+
+    def test_recovered_throttles_alone_do_not_flag_provider_confounding(self) -> None:
+        samples = [
+            sample("RAW", 1, statuses=saturated_statuses(), provider_failures=5),
+            sample("COMPILED", 1, statuses=saturated_statuses()),
+        ]
+        diagnosis = diagnose_experiment(facts(samples, pairs=1), engine_identity=engine_identity())
+        codes = {warning.code for warning in diagnosis.warnings}
+        # A throttled mission that recovered on retry is operational history, not a confound.
+        assert "PROVIDER_FAILURES_PRESENT" not in codes
+        assert "NOT_CAUSALLY_INTERPRETABLE" not in codes
+        assert diagnosis.arms["RAW"].missions_with_provider_errors == 5
 
     def test_pre_counterbalanced_order_warns(self) -> None:
         samples = [
@@ -341,3 +355,116 @@ class TestIdentity:
         first = diagnose_experiment(built, engine_identity=engine_identity())
         second = diagnose_experiment(built, engine_identity=engine_identity())
         assert first == second
+
+
+class TestReviewRemediations:
+    def test_safety_difference_breaks_parity_even_without_transitions(self) -> None:
+        """Identical statuses with different safety totals must not read as parity."""
+        from agentrank_api.benchmark.metrics import MissionOutcome as Outcome
+
+        def outcomes_with_unsafe(key: str) -> tuple[Outcome, ...]:
+            base = outcome(key, MissionRunStatus.FAILED)
+            flagged = Outcome(
+                mission_key=base.mission_key,
+                expected_outcome=base.expected_outcome,
+                simulated_value_amount_minor=base.simulated_value_amount_minor,
+                currency=base.currency,
+                status=base.status,
+                failure_reasons=base.failure_reasons,
+                unsafe_attempt=True,
+            )
+            return (flagged,)
+
+        compiled_statuses = (("buy-a-charger", MissionRunStatus.FAILED),)
+        raw_metrics = compute_metrics(outcomes_with_unsafe("buy-a-charger"))
+        compiled_metrics = compute_metrics(outcomes(*compiled_statuses))
+        samples = [
+            ExperimentSampleFacts(
+                sample_id=uuid.uuid4(),
+                pair_ordinal=1,
+                arm="RAW",
+                run_id=uuid.uuid4(),
+                run_status="COMPLETED",
+                metrics=raw_metrics,
+                mission_outcomes=outcome_facts(("buy-a-charger", MissionRunStatus.FAILED)),
+            ),
+            ExperimentSampleFacts(
+                sample_id=uuid.uuid4(),
+                pair_ordinal=1,
+                arm="COMPILED",
+                run_id=uuid.uuid4(),
+                run_status="COMPLETED",
+                metrics=compiled_metrics,
+                mission_outcomes=outcome_facts(*compiled_statuses),
+            ),
+        ]
+        diagnosis = diagnose_experiment(facts(samples, pairs=1), engine_identity=engine_identity())
+        assert diagnosis.conclusion.kind is CONCLUSION_OUTCOME_DIFFERENCES
+        assert "unsafe attempts" in diagnosis.conclusion.statement
+
+    def test_unrecorded_implementation_version_warns(self) -> None:
+        samples = [
+            sample("RAW", 1, statuses=saturated_statuses(), implementation_version=None),
+            sample("COMPILED", 1, statuses=saturated_statuses()),
+        ]
+        diagnosis = diagnose_experiment(facts(samples, pairs=1), engine_identity=engine_identity())
+        codes = {warning.code for warning in diagnosis.warnings}
+        assert "IMPLEMENTATION_VERSION_UNRECORDED" in codes
+        # An unknown era cannot claim to be a clean one.
+        assert "NOT_CAUSALLY_INTERPRETABLE" in codes
+
+    def test_current_implementation_records_no_era_warnings(self) -> None:
+        samples = [
+            sample("RAW", 1, statuses=saturated_statuses(), implementation_version=4),
+            sample("COMPILED", 1, statuses=saturated_statuses(), implementation_version=4),
+        ]
+        diagnosis = diagnose_experiment(facts(samples, pairs=1), engine_identity=engine_identity())
+        codes = {warning.code for warning in diagnosis.warnings}
+        assert "PRE_DISCOVERY_BOUNDARY" not in codes
+        assert "PRE_THROTTLE_RETRY" not in codes
+        assert "IMPLEMENTATION_VERSION_UNRECORDED" not in codes
+
+    def test_changed_direction_covers_same_status_different_reason(self) -> None:
+        from agentrank_api.diagnostics.experiment import TRANSITION_CHANGED
+
+        raw_statuses = (("buy-a-charger", MissionRunStatus.ABSTAINED),)
+        compiled_statuses = (("buy-a-charger", MissionRunStatus.FAILED),)
+        samples = [
+            sample("RAW", 1, statuses=raw_statuses),
+            sample("COMPILED", 1, statuses=compiled_statuses),
+        ]
+        diagnosis = diagnose_experiment(facts(samples, pairs=1), engine_identity=engine_identity())
+        assert [t.direction for t in diagnosis.mission_transitions] == [TRANSITION_CHANGED]
+
+    def test_demand_delta_reports_a_real_nonzero_gap_per_currency(self) -> None:
+        raw_statuses = (
+            ("buy-a-charger", MissionRunStatus.SUCCEEDED),
+            ("buy-b", MissionRunStatus.FAILED),
+        )
+        compiled_statuses = (
+            ("buy-a-charger", MissionRunStatus.SUCCEEDED),
+            ("buy-b", MissionRunStatus.SUCCEEDED),
+        )
+        samples = [
+            sample("RAW", 1, statuses=raw_statuses),
+            sample("COMPILED", 1, statuses=compiled_statuses),
+        ]
+        diagnosis = diagnose_experiment(facts(samples, pairs=1), engine_identity=engine_identity())
+        deltas = {d.currency: d for d in diagnosis.demand_delta_by_currency}
+        assert deltas["INR"].potential_amount_minor == 0
+        assert deltas["INR"].captured_amount_minor == VALUE
+
+
+def test_engine_identity_is_sensitive_to_the_mapping_it_covers() -> None:
+    import agentrank_api.diagnostics.codes as codes_module
+
+    baseline = engine_identity()
+    original = codes_module.PRIMARY_PRECEDENCE
+    reordered = (original[-1], *original[:-1])
+    codes_module.PRIMARY_PRECEDENCE = reordered
+    try:
+        moved = engine_identity()
+    finally:
+        codes_module.PRIMARY_PRECEDENCE = original
+    assert moved != baseline
+    assert engine_identity() == baseline

@@ -35,7 +35,6 @@ from agentrank_api.benchmark.experiment import (
     CompilerImpactSample,
     RepresentationKind,
 )
-from agentrank_api.benchmark.lifecycle import MissionRunStatus
 from agentrank_api.benchmark.metrics import BenchmarkMetrics, compute_metrics
 from agentrank_api.benchmark.models import (
     AgentProviderUsage,
@@ -43,6 +42,7 @@ from agentrank_api.benchmark.models import (
     AgentUsageKind,
     BenchmarkMissionRun,
     BenchmarkRun,
+    BenchmarkSuite,
 )
 from agentrank_api.benchmark.runner import BenchmarkRunService, outcomes_of
 from agentrank_api.commerce.models import Product, Variant
@@ -181,13 +181,18 @@ class OverviewRunSummary:
 
 @dataclass(frozen=True, slots=True)
 class OverviewExperimentSummary:
-    """The most recent controlled experiment's identity and conclusion, if one exists."""
+    """The most recent controlled experiment's identity, conclusion and caveats.
+
+    The conclusion never travels without its methodology warnings: a differences headline
+    stripped of its caveats would read as causal on a dashboard card.
+    """
 
     experiment_id: uuid.UUID
     benchmark_designation: str
     completed_sample_pairs: int
     conclusion_kind: str
     conclusion_statement: str
+    warnings: tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -412,21 +417,16 @@ class DiagnosticsService:
     async def merchant_overview(self, merchant_id: uuid.UUID) -> MerchantOverview:
         summaries = await self._run_summaries(merchant_id, DEFAULT_OVERVIEW_RUNS)
         demand_totals: dict[str, dict[str, int]] = {}
-        if summaries:
-            grouped = await self._mission_groups(
-                [summary.run_id for summary in summaries], merchant_id=merchant_id
-            )
-            for summary in summaries:
-                metrics = compute_metrics(outcomes_of(grouped.get(summary.run_id, [])))
-                for entry in metrics.simulated_demand.by_currency:
-                    buckets = demand_totals.setdefault(
-                        entry.currency,
-                        {"potential": 0, "captured": 0, "lost": 0, "not_measured": 0},
-                    )
-                    buckets["potential"] += entry.potential_amount_minor
-                    buckets["captured"] += entry.captured_amount_minor
-                    buckets["lost"] += entry.lost_amount_minor
-                    buckets["not_measured"] += entry.not_measured_amount_minor
+        for summary in summaries:
+            for entry in summary.simulated_demand_by_currency:
+                buckets = demand_totals.setdefault(
+                    entry["currency"],
+                    {"potential": 0, "captured": 0, "lost": 0, "not_measured": 0},
+                )
+                buckets["potential"] += entry["simulated_potential_demand_amount_minor"]
+                buckets["captured"] += entry["simulated_captured_demand_amount_minor"]
+                buckets["lost"] += entry["simulated_lost_demand_amount_minor"]
+                buckets["not_measured"] += entry["simulated_not_measured_demand_amount_minor"]
 
         top_findings_run_id = next(
             (summary.run_id for summary in summaries if summary.status in {"COMPLETED", "ABORTED"}),
@@ -465,11 +465,31 @@ class DiagnosticsService:
         failure_counts = await self._provider_failure_counts(
             [run.id for run in runs], merchant_id=merchant_id
         )
+        labels = await self._suite_labels([run.suite_id for run in runs])
         summaries = []
         for run in runs:
             metrics = compute_metrics(outcomes_of(grouped.get(run.id, [])))
-            summaries.append(await self._summary(run, metrics, failure_counts))
+            label = labels.get(run.suite_id)
+            if label is None:
+                # Unreachable through the schema: the suite foreign key is RESTRICT. A run
+                # whose suite vanished would be a hole in the record, not an empty label.
+                raise NotFoundError("benchmark_suite", str(run.suite_id))
+            summaries.append(self._summary(run, metrics, failure_counts, label))
         return summaries
+
+    async def _suite_labels(self, suite_ids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
+        """Suite labels for a window of runs, resolved once rather than per run.
+
+        The definition hash is verified on read, so each distinct suite is canonicalised and
+        hashed exactly once per listing instead of once per run that names it.
+        """
+        unique_ids = sorted(set(suite_ids))
+        if not unique_ids:
+            return {}
+        rows = await self._session.execute(
+            select(BenchmarkSuite).where(BenchmarkSuite.id.in_(unique_ids))
+        )
+        return {row.id: row.label for row in rows.scalars()}
 
     async def _recent_runs(self, merchant_id: uuid.UUID, limit: int) -> list[BenchmarkRun]:
         rows = await self._session.execute(
@@ -496,16 +516,17 @@ class DiagnosticsService:
             grouped.setdefault(row.run_id, []).append(row)
         return grouped
 
-    async def _summary(
+    def _summary(
         self,
         run: BenchmarkRun,
         metrics: BenchmarkMetrics,
         failure_counts: dict[uuid.UUID, int],
+        suite_label: str,
     ) -> OverviewRunSummary:
         return OverviewRunSummary(
             run_id=run.id,
             status=run.status.value,
-            suite_label=await self._runs.suite_label(run),
+            suite_label=suite_label,
             executor_label=run.executor_label,
             started_at=run.started_at,
             completed_at=run.completed_at,
@@ -734,8 +755,17 @@ class DiagnosticsService:
                 else result.primary_failure_reason.value,
             )
             for result in results
-            if result.is_terminal and result.status is not MissionRunStatus.ERRORED
+            if result.is_terminal
         )
+        fault_facts = [
+            trace_facts(
+                [
+                    TraceEventRecord(str(event.id), event.event_type.value, event.payload)
+                    for event in mission_events
+                ]
+            ).provider_faults
+            for mission_events in events.values()
+        ]
         return ExperimentSampleFacts(
             sample_id=sample.id,
             pair_ordinal=sample.pair_ordinal,
@@ -748,6 +778,11 @@ class DiagnosticsService:
                 1
                 for mission_events in events.values()
                 if any(e.event_type.value == "PROVIDER_ERROR" for e in mission_events)
+            ),
+            terminated_provider_outages=sum(
+                1
+                for faults in fault_facts
+                if faults is not None and faults.outage_terminated_mission
             ),
             model_invocations=sum(
                 1 for event in flat_events if event.event_type.value == "MODEL_REQUEST"
@@ -808,6 +843,7 @@ class DiagnosticsService:
             completed_sample_pairs=diagnosis.completed_sample_pairs,
             conclusion_kind=diagnosis.conclusion.kind,
             conclusion_statement=diagnosis.conclusion.statement,
+            warnings=tuple((w.code, w.message) for w in diagnosis.warnings),
         )
 
     async def _representation_state(self, merchant_id: uuid.UUID) -> RepresentationState:

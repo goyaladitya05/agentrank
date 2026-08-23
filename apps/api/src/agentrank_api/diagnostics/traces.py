@@ -128,16 +128,18 @@ def trace_facts(
     outage_terminated = abort_reason == _PROVIDER_UNAVAILABLE
     faults: ProviderFaultFacts | None = None
     if outage_terminated:
-        # Every recorded provider failure belongs to the outage that ended the mission,
-        # including throttles that were retried first: none of them recovered, because the
-        # mission did not survive them.
+        # The last recorded provider failure is the one that ended the mission. Any earlier
+        # throttle was survived, because the mission went on long enough to record more.
         last = provider_errors[-1] if provider_errors else None
+        survived = provider_errors[:-1] if len(provider_errors) > 1 else []
         faults = ProviderFaultFacts(
             outage_terminated_mission=True,
             terminating_kind=None if last is None else _text(last.payload.get("kind")),
             terminating_detail=None if last is None else _bounded(last.payload.get("detail")),
             terminating_event_id=None if last is None else last.identifier,
-            throttles_recovered=0,
+            throttles_recovered=sum(
+                1 for event in survived if event.payload.get("kind") == _THROTTLED_KIND
+            ),
         )
     elif provider_errors:
         recovered = sum(

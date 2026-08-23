@@ -250,11 +250,15 @@ class TestPayloadHygiene:
         http = client(settings, factory)
         headers = {"Authorization": f"Bearer {token}"}
 
+        detail = http.get(f"/api/v1/insights/runs/{run_id}", headers=headers).json()
+        mission_run_id = detail["missions"][0]["mission_run_id"]
         captured: list[str] = []
         paths = [
             "/api/v1/insights/overview",
             "/api/v1/insights/runs",
             f"/api/v1/insights/runs/{run_id}",
+            f"/api/v1/insights/runs/{run_id}/missions/{mission_run_id}",
+            f"/api/v1/insights/runs/{run_id}/missions/{mission_run_id}/trace",
         ]
         for path in paths:
             response = http.get(path, headers=headers)
@@ -262,9 +266,12 @@ class TestPayloadHygiene:
             captured.append(response.text)
 
         joined = "\n".join(captured)
+        # The presented credential must never be echoed anywhere in any response.
         assert token not in joined
+        assert token.split("_")[-1] not in joined
         assert "secret_hash" not in joined
         assert "postgres" not in joined.lower()
+        assert "authorization" not in joined.lower()
 
     async def test_the_insights_namespace_declares_itself_in_openapi(
         self,

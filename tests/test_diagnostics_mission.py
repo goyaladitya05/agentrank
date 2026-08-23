@@ -394,3 +394,74 @@ class TestMultipleFindings:
             if finding.code is DiagnosticCode.STOCK_UNAVAILABLE
         )
         assert stock.variant_ids == (VARIANT,)
+
+
+class TestAdditionalRequiredCases:
+    def test_agent_report_contradiction_is_a_buyer_finding(self) -> None:
+        diagnosis = diagnose_mission(
+            evidence(failure_reasons=(FailureReason.AGENT_REASONING_ERROR,))
+        )
+        assert diagnosis.primary is not None
+        assert diagnosis.primary.code is DiagnosticCode.AGENT_REPORT_CONTRADICTION
+        assert diagnosis.primary.owner is DiagnosticOwner.BUYER_AGENT
+
+    def test_payment_declined_is_owned_by_the_payment_provider(self) -> None:
+        diagnosis = diagnose_mission(
+            evidence(
+                failure_reasons=(FailureReason.PAYMENT_FAILED,),
+                payment_attempt_id=uuid.uuid4(),
+            )
+        )
+        declined = next(f for f in diagnosis.findings if f.code is DiagnosticCode.PAYMENT_DECLINED)
+        assert declined.owner is DiagnosticOwner.UNKNOWN or (
+            declined.owner is DiagnosticOwner.PAYMENT_PROVIDER
+        )
+        assert declined.actionability is Actionability.NO_MERCHANT_ACTION
+        kinds = {reference.kind for f in diagnosis.findings for reference in f.evidence}
+        assert "payment_attempt" in kinds
+
+    def test_payment_unresolved_requires_no_merchant_action(self) -> None:
+
+        diagnosis = diagnose_mission(
+            evidence(
+                failure_reasons=(FailureReason.PAYMENT_UNRESOLVED,),
+                payment_attempt_id=uuid.uuid4(),
+            )
+        )
+        unresolved = next(
+            f for f in diagnosis.findings if f.code is DiagnosticCode.PAYMENT_UNRESOLVED
+        )
+        assert unresolved.actionability is not Actionability.MERCHANT_ACTION
+        assert "Nothing for you to do" in (unresolved.recommendation or "")
+
+    def test_unexpected_purchase_maps_to_ground_truth_even_without_oracle_check(self) -> None:
+        # A purchase under NO_ACCEPTABLE_PURCHASE means the ground truth was wrong; that
+        # must surface even when nobody recomputed the catalog.
+        diagnosis = diagnose_mission(
+            evidence(
+                expected_outcome=ExpectedOutcome.NO_ACCEPTABLE_PURCHASE,
+                simulated_value_amount_minor=0,
+                failure_reasons=(FailureReason.UNEXPECTED_PURCHASE,),
+                status=MissionRunStatus.FAILED,
+            )
+        )
+        codes = {f.code for f in diagnosis.findings}
+        assert DiagnosticCode.GROUND_TRUTH_DISAGREEMENT in codes
+
+    def test_failed_outcome_lead_does_not_quote_evaluator_codes(self) -> None:
+        diagnosis = diagnose_mission(
+            evidence(failure_reasons=(FailureReason.CHECKOUT_CREATION_FAILED,))
+        )
+        assert "CHECKOUT_CREATION_FAILED" not in diagnosis.outcome
+        assert diagnosis.outcome.startswith("The mission failed.")
+        assert "declined to quote a price" in diagnosis.outcome
+
+    def test_timeout_termination_is_worded_as_a_time_bound(self) -> None:
+        from agentrank_api.diagnostics.traces import TraceEventRecord, trace_facts
+
+        events = [
+            TraceEventRecord("t1", "PROVIDER_ERROR", {"kind": "TimeoutError"}),
+            TraceEventRecord(None, "AGENT_ABORT", {"reason": "provider_unavailable"}),
+        ]
+        diagnosis = diagnose_mission(evidence(trace=trace_facts(events, [])))
+        assert "within the time available" in diagnosis.outcome

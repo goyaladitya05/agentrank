@@ -95,8 +95,9 @@ class TestExtraction:
         facts = trace_facts(events, [usage()])
         assert facts.provider_faults is not None
         assert facts.provider_faults.outage_terminated_mission is True
-        # The retried throttles did not recover; they belong to the outage that ended it.
-        assert facts.provider_faults.throttles_recovered == 0
+        # The two throttled attempts were survived: the mission went on long enough to
+        # record the response and then a later failure that actually ended it.
+        assert facts.provider_faults.throttles_recovered == 2
         assert facts.provider_faults.terminating_kind == "TimeoutError"
         assert facts.provider_faults.terminating_event_id == "trace-fatal"
         assert facts.abort_reason == "provider_unavailable"

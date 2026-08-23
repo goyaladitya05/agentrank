@@ -209,8 +209,8 @@ class TestDemandAttribution:
             finding for finding in findings if finding.code is DiagnosticCode.STOCK_UNAVAILABLE
         )
         by_currency = {effect.currency: effect.amount_minor for effect in stock.simulated_demand}
+        # Exactly the per currency amounts, never one summed figure.
         assert by_currency == {"INR": 1500, "EUR": 700}
-        assert sum(effect.amount_minor for effect in stock.simulated_demand) == 2200
 
     def test_co_occurring_observation_does_not_double_bill_demand(self) -> None:
         diagnoses = [

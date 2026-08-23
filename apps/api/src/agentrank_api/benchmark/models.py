@@ -988,6 +988,9 @@ class AgentProviderUsage(Base):
         CheckConstraint(
             "total_tokens IS NULL OR total_tokens >= 0", name="total_tokens_nonnegative"
         ),
+        # Diagnostics reads every usage row of one run; without this the read scans all
+        # evidence for all merchants, and the table only ever grows.
+        Index(None, "run_id", "merchant_id"),
     )
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)
     merchant_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)

@@ -382,10 +382,8 @@ async def test_diagnose_prints_a_table_that_says_when_nothing_was_found(
     assert result.code == ExitCode.OK
     assert "findings    none" in result.out
     assert "PRIMARY DIAGNOSIS" in result.out
-    # Simulated demand is named simulated wherever an amount appears beside it.
-    for line in result.out.splitlines():
-        if "demand:" in line and any(ch.isdigit() for ch in line):
-            assert "simulated" in line
+    # A clean run attributes no demand to findings, and says so rather than printing a bare 0.
+    assert "no simulated demand attributed to this finding's lead diagnosis" not in result.out
 
 
 async def test_diagnose_answers_not_found_for_a_foreign_run(

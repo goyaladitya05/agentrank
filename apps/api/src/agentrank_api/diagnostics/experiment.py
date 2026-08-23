@@ -68,7 +68,11 @@ class ExperimentSampleFacts:
     run_status: str | None = None
     metrics: BenchmarkMetrics | None = None
     mission_outcomes: tuple[MissionOutcomeFacts, ...] = ()
+    # Missions whose traces recorded any provider error at all, and the narrower set that
+    # actually ended on one. The first is operational history; only the second confounds a
+    # comparison.
     provider_failure_missions: int = 0
+    terminated_provider_outages: int = 0
     model_invocations: int = 0
     tool_calls: int = 0
     # Token reporting is three valued in effect: reported everywhere, absent everywhere, or
@@ -123,7 +127,12 @@ class ArmAggregate:
     completed_samples: int
     completion_rate_mean: float | None
     metrics_totals: BenchmarkMetrics | None
-    provider_failure_missions: int
+    # Missions that ended on a terminating provider outage. Recovered throttles are
+    # deliberately absent here: they are operational history inside an outcome, not a
+    # confound of it, and flagging them would mark healthy retried runs as provider
+    # damaged.
+    terminated_provider_outages: int
+    missions_with_provider_errors: int
     model_invocations: int
     tool_calls: int
     resolved_models: tuple[str, ...]
@@ -234,7 +243,8 @@ def _aggregate_arm(facts: ExperimentFacts, arm: str) -> ArmAggregate:
         completed_samples=len(completed),
         completion_rate_mean=None if not rates else sum(rates) / len(rates),
         metrics_totals=totals,
-        provider_failure_missions=sum(sample.provider_failure_missions for sample in group),
+        terminated_provider_outages=sum(sample.terminated_provider_outages for sample in group),
+        missions_with_provider_errors=sum(sample.provider_failure_missions for sample in group),
         model_invocations=sum(sample.model_invocations for sample in group),
         tool_calls=sum(sample.tool_calls for sample in group),
         resolved_models=tuple(
@@ -411,27 +421,102 @@ def _conclusion(
                 " experiment supports no comparison."
             ),
         )
-    if not transitions:
+    arms = {arm: _aggregate_arm(facts, arm) for arm in (ARM_RAW, ARM_COMPILED)}
+    if not transitions and _safety_and_demand_agree(arms):
         return ComparisonConclusion(
             kind=CONCLUSION_PARITY,
             statement=(
                 f"Across {len(complete)} completed paired sample(s), raw and agent-ready"
-                " representations produced identical mission outcomes, safety results and"
-                " captured simulated demand. No measurable compiler benefit was observed at"
-                " this sample size."
+                " representations produced the same outcome on every mission compared, with"
+                " equal safety totals and equal captured simulated demand. No measurable"
+                " compiler benefit was observed at this sample size."
             ),
         )
+    parts = [f"{len(transitions)} mission outcome difference(s) between arms"]
+    safety_delta = _safety_delta_description(arms)
+    demand_delta = _captured_demand_delta_description(arms)
+    if safety_delta:
+        parts.append(safety_delta)
+    if demand_delta:
+        parts.append(demand_delta)
     gains = sum(1 for t in transitions if t.direction is TRANSITION_COMPILED_GAIN)
     losses = sum(1 for t in transitions if t.direction is TRANSITION_COMPILED_LOSS)
+    direction_note = (
+        f" {gains} favoured the agent-ready representation, {losses} favoured the raw storefront."
+        if transitions
+        else ""
+    )
     return ComparisonConclusion(
         kind=CONCLUSION_OUTCOME_DIFFERENCES,
         statement=(
-            f"Across {len(complete)} completed paired sample(s), {len(transitions)} mission(s)"
-            f" differed between arms: {gains} favoured the agent-ready representation,"
-            f" {losses} favoured the raw storefront. Differences at this sample size are"
-            " observations, not estimates of effect."
+            f"Across {len(complete)} completed paired sample(s): {'; '.join(parts)}."
+            f"{direction_note} Differences at this sample size are observations, not"
+            " estimates of effect."
         ),
     )
+
+
+def _safety_and_demand_agree(arms: dict[str, ArmAggregate]) -> bool:
+    """Whether the arms' safety totals and captured simulated demand are identical.
+
+    PARITY claims both, so both are checked. The totals come from each arm's summed metrics;
+    mission level agreement has already been established by the absence of transitions.
+    """
+    raw, compiled = arms[ARM_RAW].metrics_totals, arms[ARM_COMPILED].metrics_totals
+    if (raw is None) != (compiled is None):
+        return False
+    if raw is None or compiled is None:
+        return True
+    safety_fields = ("unsafe_attempts", "unverified_attempts", "unsafe_completions")
+    if any(getattr(raw, name) != getattr(compiled, name) for name in safety_fields):
+        return False
+    raw_demand = {
+        entry.currency: entry.captured_amount_minor for entry in raw.simulated_demand.by_currency
+    }
+    compiled_demand = {
+        entry.currency: entry.captured_amount_minor
+        for entry in compiled.simulated_demand.by_currency
+    }
+    return raw_demand == compiled_demand
+
+
+def _safety_delta_description(arms: dict[str, ArmAggregate]) -> str | None:
+    raw, compiled = arms[ARM_RAW].metrics_totals, arms[ARM_COMPILED].metrics_totals
+    if raw is None or compiled is None:
+        return None
+    fields = (
+        ("unsafe_attempts", "unsafe attempts"),
+        ("unverified_attempts", "unverifiable attempts"),
+        ("unsafe_completions", "unsafe completions"),
+    )
+    differences = [
+        f"{label} {getattr(raw, name)} vs {getattr(compiled, name)}"
+        for name, label in fields
+        if getattr(raw, name) != getattr(compiled, name)
+    ]
+    return f"safety totals differed ({'; '.join(differences)})" if differences else None
+
+
+def _captured_demand_delta_description(arms: dict[str, ArmAggregate]) -> str | None:
+    def captured(arm: ArmAggregate) -> dict[str, int]:
+        totals = arm.metrics_totals
+        if totals is None:
+            return {}
+        return {
+            entry.currency: entry.captured_amount_minor
+            for entry in totals.simulated_demand.by_currency
+        }
+
+    raw_captured, compiled_captured = captured(arms[ARM_RAW]), captured(arms[ARM_COMPILED])
+    if raw_captured == compiled_captured:
+        return None
+    currencies = sorted(raw_captured.keys() | compiled_captured.keys())
+    described = ", ".join(
+        f"{currency} {compiled_captured.get(currency, 0)} vs {raw_captured.get(currency, 0)}"
+        for currency in currencies
+        if compiled_captured.get(currency, 0) != raw_captured.get(currency, 0)
+    )
+    return f"captured simulated demand differed ({described})"
 
 
 def _warnings(facts: ExperimentFacts, arms: dict[str, ArmAggregate]) -> list[MethodologyWarning]:
@@ -453,15 +538,28 @@ def _warnings(facts: ExperimentFacts, arms: dict[str, ArmAggregate]) -> list[Met
         for sample in facts.samples
         if sample.agent_implementation_version is not None
     }
+    recorded_samples = [
+        sample for sample in facts.samples if sample.agent_implementation_version is not None
+    ]
+    if len(recorded_samples) < len(facts.samples):
+        warnings.append(
+            MethodologyWarning(
+                code="IMPLEMENTATION_VERSION_UNRECORDED",
+                message=(
+                    "Some samples record no buyer implementation version, so their era"
+                    " cannot be established and known methodology defects cannot be ruled"
+                    " out for them."
+                ),
+            )
+        )
     if any(version < IMPLEMENTATION_DISCOVERY_BOUNDARY for version in versions):
         warnings.append(
             MethodologyWarning(
                 code="PRE_DISCOVERY_BOUNDARY",
                 message=(
-                    "This experiment predates the discovery treatment boundary: raw buyers"
-                    " could see structured attribute dictionaries the current storefront"
-                    " hides, so its arms differ from what the same experiment would deliver"
-                    " today."
+                    "This experiment predates a change to what raw storefront buyers could"
+                    " see, so its two halves differ from what the same experiment would"
+                    " deliver today."
                 ),
             )
         )
@@ -487,13 +585,13 @@ def _warnings(facts: ExperimentFacts, arms: dict[str, ArmAggregate]) -> list[Met
             )
         )
 
-    total_provider_failures = sum(arm.provider_failure_missions for arm in arms.values())
-    if total_provider_failures:
+    total_outages = sum(arm.terminated_provider_outages for arm in arms.values())
+    if total_outages:
         warnings.append(
             MethodologyWarning(
                 code="PROVIDER_FAILURES_PRESENT",
                 message=(
-                    f"{total_provider_failures} mission(s) recorded provider failures. Their"
+                    f"{total_outages} mission(s) ended on a model provider outage. Their"
                     " outcomes reflect provider availability as much as either"
                     " representation."
                 ),
@@ -551,7 +649,14 @@ def _warnings(facts: ExperimentFacts, arms: dict[str, ArmAggregate]) -> list[Met
 
     if (
         any(
-            warning.code in {"NOT_COUNTERBALANCED", "PROVIDER_FAILURES_PRESENT"}
+            warning.code
+            in {
+                "NOT_COUNTERBALANCED",
+                "PROVIDER_FAILURES_PRESENT",
+                "PRE_DISCOVERY_BOUNDARY",
+                "RESOLVED_MODEL_MISMATCH",
+                "IMPLEMENTATION_VERSION_UNRECORDED",
+            }
             for warning in warnings
         )
         or incomplete > 0
