@@ -17,6 +17,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from io import StringIO
+from typing import cast
 
 import pytest
 from benchmark_support import VOLTEDGE, VOLTEDGE_DIRECTORY
@@ -360,11 +361,13 @@ async def test_diagnose_reports_findings_ownership_and_provider_health(
 
     assert result.code == ExitCode.OK
     payload = result.json()
+    health = cast(dict[str, object], payload["provider_health"])
+    missions = cast(list[object], payload["missions"])
     assert str(payload["engine_identity"]).startswith("sha256:")
     assert payload["findings"] == []
-    assert payload["provider_health"]["terminated_outages"] == 0
-    assert payload["provider_health"]["recovered_throttles"] == 0
-    assert len(payload["missions"]) == 14
+    assert health["terminated_outages"] == 0
+    assert health["recovered_throttles"] == 0
+    assert len(missions) == 14
 
 
 async def test_diagnose_prints_a_table_that_says_when_nothing_was_found(
