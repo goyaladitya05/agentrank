@@ -8,17 +8,20 @@ import httpx2
 import pytest
 from benchmark_support import brief
 
+from agentrank_api.benchmark import llm as llm_module
 from agentrank_api.benchmark import worker as benchmark_worker
 from agentrank_api.benchmark.agent_trace import AgentExecutionEvidence, safe_payload
 from agentrank_api.benchmark.http_buyer import HttpBuyerCommerceSurface
 from agentrank_api.benchmark.llm import (
     GEMINI_PROVIDER,
+    THROTTLE_RETRY_LIMIT,
     TOOL_SCHEMA_DIGEST,
     TOOL_SCHEMAS,
     AgentConfiguration,
     GeminiInteractionsProvider,
     LLMBuyer,
     ProviderResponse,
+    ProviderThrottledError,
     ProviderToolCall,
     ProviderUnavailableError,
     ScriptedAgentProvider,
@@ -379,3 +382,140 @@ async def test_worker_selects_gemini_from_the_frozen_configuration(
     report = await benchmark_worker.execute(request)
     assert observed == [frozen]
     assert report.error is not None
+
+
+def _buyer(provider: ScriptedAgentProvider, **overrides: object) -> LLMBuyer:
+    configuration = AgentConfiguration(
+        provider="openai-responses",
+        requested_model="gpt-5.6-terra",
+        **overrides,  # type: ignore[arg-type]
+    )
+    return LLMBuyer(
+        provider,
+        cast(HttpBuyerCommerceSurface, object()),
+        mandate_id=uuid.uuid7(),
+        configuration=configuration,
+    )
+
+
+async def test_a_throttled_invocation_retries_without_spending_the_turn_budget() -> None:
+    provider = ScriptedAgentProvider(
+        [
+            ProviderThrottledError("http_429", retry_after_seconds=0),
+            ProviderThrottledError("http_429"),
+            ProviderResponse(
+                "resp_1",
+                "gpt-5.6-terra",
+                (ProviderToolCall("call_1", "abstain", '{"reason":"none"}'),),
+            ),
+        ]
+    )
+    buyer = _buyer(provider, max_model_turns=1)
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(llm_module, "THROTTLE_BASE_WAIT_SECONDS", 0.0)
+    try:
+        report = await buyer.execute(brief(), merchant_id=uuid.uuid7())
+    finally:
+        monkeypatch.undo()
+
+    assert report.abstention is not None
+    assert len(provider.requests) == 3
+    assert [event.event_type for event in buyer.evidence.events] == [
+        "MODEL_REQUEST",
+        "PROVIDER_ERROR",
+        "MODEL_REQUEST",
+        "PROVIDER_ERROR",
+        "MODEL_REQUEST",
+        "MODEL_RESPONSE",
+        "TOOL_CALL",
+        "TOOL_RESULT",
+        "AGENT_FINAL",
+    ]
+    first_throttle = buyer.evidence.events[1].payload
+    assert first_throttle["detail"] == "http_429"
+    assert first_throttle["attempt"] == 1
+    assert first_throttle["retry_after_seconds"] == 0
+    second_throttle = buyer.evidence.events[3].payload
+    assert second_throttle["attempt"] == 2
+    assert second_throttle["retry_after_seconds"] is None
+    # The usage still names the one model response this turn produced.
+    assert [usage.invocation_sequence for usage in buyer.evidence.usages] == [1]
+    assert buyer.evidence.usages[0].trace_sequence == 6
+
+
+async def test_throttle_retries_are_bounded_and_end_as_a_provider_failure() -> None:
+    provider = ScriptedAgentProvider(
+        [ProviderThrottledError("http_429", retry_after_seconds=0) for _ in range(10)]
+    )
+    buyer = _buyer(provider)
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(llm_module, "THROTTLE_BASE_WAIT_SECONDS", 0.0)
+    try:
+        report = await buyer.execute(brief(), merchant_id=uuid.uuid7())
+    finally:
+        monkeypatch.undo()
+
+    assert report.error is not None
+    assert report.abstention is None
+    assert len(provider.requests) == THROTTLE_RETRY_LIMIT
+    throttles = [event for event in buyer.evidence.events if event.event_type == "PROVIDER_ERROR"]
+    # One recorded throttle per attempt, then the terminal failure the buyer ends the mission
+    # with once the retries run out.
+    assert len(throttles) == THROTTLE_RETRY_LIMIT + 1
+    assert [event.payload["attempt"] for event in throttles[:THROTTLE_RETRY_LIMIT]] == [1, 2, 3]
+    assert "attempt" not in throttles[-1].payload
+    assert [event.event_type for event in buyer.evidence.events[-2:]] == [
+        "PROVIDER_ERROR",
+        "AGENT_ABORT",
+    ]
+    assert buyer.evidence.events[-1].payload["reason"] == "provider_unavailable"
+
+
+async def test_a_wait_past_the_mission_deadline_is_never_taken() -> None:
+    provider = ScriptedAgentProvider([ProviderThrottledError("http_429")])
+    buyer = _buyer(provider, deadline_seconds=30.0)
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(llm_module, "THROTTLE_BASE_WAIT_SECONDS", 60.0)
+    try:
+        report = await buyer.execute(brief(), merchant_id=uuid.uuid7())
+    finally:
+        monkeypatch.undo()
+
+    assert report.error is not None
+    # The one request was never retried: the bounded wait would have reached past the deadline.
+    assert len(provider.requests) == 1
+
+
+async def test_gemini_adapter_reports_the_provider_retry_guidance_on_a_429() -> None:
+    def respond(_request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(429, headers={"Retry-After": "7"}, json={"error": {}})
+
+    configuration = AgentConfiguration(provider=GEMINI_PROVIDER, requested_model="gemini-3.7-flash")
+    provider = GeminiInteractionsProvider(configuration, "test-key")
+    await provider._client.aclose()
+    provider._client = httpx2.AsyncClient(
+        transport=httpx2.MockTransport(respond), base_url="https://example.test"
+    )
+    with pytest.raises(ProviderThrottledError) as throttled:
+        await provider.respond(previous_response_id=None, input_items=[mission_input(brief())])
+    await provider.aclose()
+
+    assert str(throttled.value) == "http_429"
+    assert throttled.value.retry_after_seconds == 7.0
+
+
+async def test_gemini_adapter_ignores_an_unusable_retry_header() -> None:
+    def respond(_request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(429, headers={"Retry-After": "soon"}, json={"error": {}})
+
+    configuration = AgentConfiguration(provider=GEMINI_PROVIDER, requested_model="gemini-3.7-flash")
+    provider = GeminiInteractionsProvider(configuration, "test-key")
+    await provider._client.aclose()
+    provider._client = httpx2.AsyncClient(
+        transport=httpx2.MockTransport(respond), base_url="https://example.test"
+    )
+    with pytest.raises(ProviderThrottledError) as throttled:
+        await provider.respond(previous_response_id=None, input_items=[mission_input(brief())])
+    await provider.aclose()
+
+    assert throttled.value.retry_after_seconds is None

@@ -605,7 +605,11 @@ def test_a_worker_observed_provider_failure_is_an_agent_execution_fault(
         served=served,
     )
     executor._agent_evidence = AgentExecutionEvidence(
-        events=[TraceEvent("PROVIDER_ERROR", {"detail": "http_429"})]
+        events=[
+            TraceEvent("MODEL_REQUEST", {"invocation_sequence": 1}),
+            TraceEvent("PROVIDER_ERROR", {"detail": "http_429", "attempt": 3}),
+            TraceEvent("AGENT_ABORT", {"reason": "provider_unavailable", "turn": 1}),
+        ]
     )
 
     fault = executor.fault()
@@ -613,6 +617,30 @@ def test_a_worker_observed_provider_failure_is_an_agent_execution_fault(
     assert fault is not None
     assert fault.origin is FaultOrigin.AGENT
     assert fault.detail == "LLM provider failed: http_429"
+
+
+def test_a_recovered_throttle_is_diagnostic_history_not_a_fault(
+    served: RequestLedger,
+) -> None:
+    """A mission the buyer went on to complete was not ended by the throttle it retried."""
+    executor = IsolatedMissionExecutor(
+        base_url="http://127.0.0.1:1",
+        token="ar_dev_" + "0" * 32 + "_" + "0" * 64,
+        served=served,
+    )
+    executor._agent_evidence = AgentExecutionEvidence(
+        events=[
+            TraceEvent("MODEL_REQUEST", {"invocation_sequence": 1}),
+            TraceEvent("PROVIDER_ERROR", {"detail": "http_429", "attempt": 1}),
+            TraceEvent("MODEL_REQUEST", {"invocation_sequence": 1}),
+            TraceEvent("MODEL_RESPONSE", {"response_id": "resp_1"}),
+            TraceEvent("TOOL_CALL", {"name": "abstain"}),
+            TraceEvent("TOOL_RESULT", {"ended": "abstained"}),
+            TraceEvent("AGENT_FINAL", {"reason": "structured_abstention"}),
+        ]
+    )
+
+    assert executor.fault() is None
 
 
 async def test_a_worker_that_takes_too_long_is_killed_and_attributed(

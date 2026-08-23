@@ -349,10 +349,21 @@ class IsolatedMissionExecutor:
 
 
 def _provider_fault(evidence: AgentExecutionEvidence | None) -> ExecutionFault | None:
-    """Classify a provider outage observed by the fixed worker runtime, not model text."""
-    if evidence is None:
+    """Classify a provider outage observed by the fixed worker runtime, not model text.
+
+    Only a mission that actually ended on the outage is attributed. A throttled invocation that
+    was retried and recovered also records PROVIDER_ERROR events, and those are diagnostic
+    history rather than a fault: the buyer went on to carry the mission out.
+    """
+    if evidence is None or not evidence.events:
         return None
-    event = next((event for event in evidence.events if event.event_type == "PROVIDER_ERROR"), None)
+    last = evidence.events[-1]
+    if last.event_type != "AGENT_ABORT" or last.payload.get("reason") != "provider_unavailable":
+        return None
+    event = next(
+        (event for event in reversed(evidence.events) if event.event_type == "PROVIDER_ERROR"),
+        None,
+    )
     if event is None:
         return None
     detail = event.payload.get("detail")

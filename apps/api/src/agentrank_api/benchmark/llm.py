@@ -37,7 +37,14 @@ from agentrank_api.payments.schemas import CreatePaymentRequest
 PROMPT_VERSION = 1
 TOOL_SCHEMA_VERSION = 1
 EXECUTION_POLICY_VERSION = 1
-AGENT_IMPLEMENTATION_VERSION = 2
+AGENT_IMPLEMENTATION_VERSION = 3
+
+# A throttled provider invocation is retried a bounded number of times inside the mission
+# deadline instead of ending the mission on its first 429. The wait honors the provider's own
+# Retry-After when it is safe and falls back to bounded exponential backoff when it is not.
+THROTTLE_RETRY_LIMIT = 3
+THROTTLE_BASE_WAIT_SECONDS = 5.0
+THROTTLE_MAX_WAIT_SECONDS = 30.0
 OPENAI_PROVIDER = "openai-responses"
 GEMINI_PROVIDER = "google-gemini"
 SUPPORTED_PROVIDERS = frozenset({OPENAI_PROVIDER, GEMINI_PROVIDER})
@@ -339,6 +346,10 @@ class OpenAIResponsesProvider:
         except (httpx2.TimeoutException, httpx2.NetworkError) as error:
             raise ProviderUnavailableError(type(error).__name__) from error
         except httpx2.HTTPStatusError as error:
+            if error.response.status_code == 429:
+                raise ProviderThrottledError(
+                    "http_429", _retry_after_seconds(error.response.headers)
+                ) from error
             raise ProviderUnavailableError(f"http_{error.response.status_code}") from error
         document = response.json()
         if not isinstance(document, dict):
@@ -436,6 +447,10 @@ class GeminiInteractionsProvider:
         except (httpx2.TimeoutException, httpx2.NetworkError) as error:
             raise ProviderUnavailableError(type(error).__name__) from error
         except httpx2.HTTPStatusError as error:
+            if error.response.status_code == 429:
+                raise ProviderThrottledError(
+                    "http_429", _retry_after_seconds(error.response.headers)
+                ) from error
             raise ProviderUnavailableError(f"http_{error.response.status_code}") from error
         try:
             document = response.json()
@@ -550,8 +565,34 @@ class ProviderUnavailableError(RuntimeError):
     pass
 
 
+class ProviderThrottledError(ProviderUnavailableError):
+    """The provider refused to run the request now and may accept it later.
+
+    Carrying the provider's own retry guidance is what lets the buyer wait the right amount
+    of time instead of guessing. The detail stays the safe `http_<status>` label.
+    """
+
+    def __init__(self, detail: str, retry_after_seconds: float | None = None) -> None:
+        super().__init__(detail)
+        self.retry_after_seconds = retry_after_seconds
+
+
 class ProviderProtocolError(RuntimeError):
     pass
+
+
+def _retry_after_seconds(headers: Any) -> float | None:
+    """A bounded Retry-After read from the response, or None when it cannot be trusted."""
+    raw = headers.get("retry-after") if headers is not None else None
+    if not isinstance(raw, str):
+        return None
+    try:
+        seconds = float(raw.strip())
+    except ValueError:
+        return None
+    if not math.isfinite(seconds) or seconds < 0:
+        return None
+    return min(seconds, THROTTLE_MAX_WAIT_SECONDS)
 
 
 def mission_input(
@@ -627,19 +668,8 @@ class LLMBuyer:
                     error=ReportedError(detail="agent deadline exceeded"),
                 )
             try:
-                invocation_started = time.monotonic()
-                self.evidence.add(
-                    "MODEL_REQUEST",
-                    {
-                        "invocation_sequence": turn,
-                        "previous_response_id": previous,
-                        "input": inputs,
-                    },
-                )
-                remaining = self._configuration.deadline_seconds - (time.monotonic() - started)
-                response = await asyncio.wait_for(
-                    self._provider.respond(previous_response_id=previous, input_items=inputs),
-                    timeout=min(self._configuration.provider_timeout_seconds, remaining),
+                response, latency = await self._throttled_respond(
+                    previous, inputs, turn=turn, started=started
                 )
             except (ProviderUnavailableError, ProviderProtocolError, TimeoutError) as error:
                 self.evidence.add(
@@ -658,7 +688,6 @@ class LLMBuyer:
                     payment,
                     error=ReportedError(detail=f"provider unavailable: {error}"),
                 )
-            latency = max(0, round((time.monotonic() - invocation_started) * 1000))
             self.actual_model = response.model or self.actual_model
             response_sequence = self.evidence.add(
                 "MODEL_RESPONSE",
@@ -778,6 +807,67 @@ class LLMBuyer:
             payment,
             error=ReportedError(detail="agent turn budget exceeded"),
         )
+
+    async def _throttled_respond(
+        self,
+        previous: str | None,
+        inputs: list[dict[str, Any]],
+        *,
+        turn: int,
+        started: float,
+    ) -> tuple[ProviderResponse, int]:
+        """Invoke the provider once, retrying a bounded throttle inside the mission deadline.
+
+        Every attempt is recorded as its own MODEL_REQUEST and every throttle as PROVIDER_ERROR,
+        so trace evidence keeps showing exactly what was sent and what came back. Retrying
+        neither consumes the turn budget nor invents a response: when the retries run out or a
+        wait would reach past the deadline, the error is re-raised and the mission ends as an
+        ordinary provider failure.
+        """
+        for attempt in range(1, THROTTLE_RETRY_LIMIT + 1):
+            remaining = self._configuration.deadline_seconds - (time.monotonic() - started)
+            self.evidence.add(
+                "MODEL_REQUEST",
+                {
+                    "invocation_sequence": turn,
+                    "previous_response_id": previous,
+                    "input": inputs,
+                },
+            )
+            invocation_started = time.monotonic()
+            try:
+                response = await asyncio.wait_for(
+                    self._provider.respond(previous_response_id=previous, input_items=inputs),
+                    timeout=min(self._configuration.provider_timeout_seconds, remaining),
+                )
+            except ProviderThrottledError as error:
+                self.evidence.add(
+                    "PROVIDER_ERROR",
+                    {
+                        "invocation_sequence": turn,
+                        "kind": type(error).__name__,
+                        "detail": str(error),
+                        "attempt": attempt,
+                        "retry_after_seconds": error.retry_after_seconds,
+                    },
+                )
+                if attempt == THROTTLE_RETRY_LIMIT:
+                    raise
+                wait = min(
+                    error.retry_after_seconds
+                    if error.retry_after_seconds is not None
+                    else THROTTLE_BASE_WAIT_SECONDS * 2 ** (attempt - 1),
+                    THROTTLE_MAX_WAIT_SECONDS,
+                )
+                if wait >= self._configuration.deadline_seconds - (time.monotonic() - started):
+                    # A wait that reaches past the mission deadline is not a recovery, and
+                    # re-raising keeps the mission's own throttle evidence as the failure.
+                    raise
+                await asyncio.sleep(wait)
+            else:
+                latency = max(0, round((time.monotonic() - invocation_started) * 1000))
+                return response, latency
+        raise AssertionError("unreachable")
 
     async def _tool(self, call: ProviderToolCall) -> tuple[dict[str, Any], dict[str, Any]]:
         try:
