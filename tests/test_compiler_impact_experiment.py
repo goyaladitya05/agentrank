@@ -95,6 +95,26 @@ async def test_experiment_freezes_paired_source_compiler_and_buyer_identities(
     assert compiled.compiler_run_id is not None
 
 
+async def test_evaluation_designation_is_frozen_separately_from_development(
+    session: AsyncSession,
+) -> None:
+    merchant, source, compiled, stored_suite, environment = await prepared(session)
+    config = AgentConfiguration(provider="openai-responses", requested_model="test-model")
+    experiment = await CompilerImpactExperimentService(session).create(
+        merchant_id=merchant.id,
+        suite_id=stored_suite.id,
+        environment=environment,
+        source_snapshot_id=source.id,
+        compiled_representation_id=compiled.id,
+        buyer_configuration=config.payload(),
+        buyer_configuration_digest=config.configuration_digest,
+        sample_count=1,
+        development_benchmark=False,
+    )
+
+    assert experiment.methodology["benchmark_designation"] == "EVALUATION"
+
+
 async def test_manual_ir_cannot_become_the_compiled_treatment(session: AsyncSession) -> None:
     merchant, source, _compiled, stored_suite, environment = await prepared(session)
     manual = await MerchantRepresentationService(session).publish_ir(read_ir(IR_PATH))

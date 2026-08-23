@@ -178,6 +178,7 @@ class CompilerImpactExperimentService:
         buyer_configuration: dict[str, Any],
         buyer_configuration_digest: str,
         sample_count: int,
+        development_benchmark: bool = True,
     ) -> CompilerImpactExperiment:
         source = await self._source(merchant_id, source_snapshot_id)
         merchant = await self._merchant(merchant_id)
@@ -205,7 +206,7 @@ class CompilerImpactExperimentService:
             buyer_configuration_digest=buyer_configuration_digest,
             buyer_configuration=buyer_configuration,
             methodology={
-                "development_benchmark": True,
+                "benchmark_designation": "DEVELOPMENT" if development_benchmark else "EVALUATION",
                 "comparison": "paired alternating raw then compiled samples",
                 "primary_metrics": "existing deterministic benchmark metrics",
                 "simulated_demand": True,

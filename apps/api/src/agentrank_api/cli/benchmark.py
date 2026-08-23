@@ -201,6 +201,11 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
     comparison.add_argument(
         "--provider", choices=(OPENAI_PROVIDER, GEMINI_PROVIDER), default=GEMINI_PROVIDER
     )
+    comparison.add_argument(
+        "--evaluation",
+        action="store_true",
+        help="freeze this comparison as evaluation evidence rather than development evidence",
+    )
     _add_world(comparison)
     _add_json(comparison)
     comparison.set_defaults(command=compare_create)
@@ -483,6 +488,7 @@ async def compare_create(
         buyer_configuration=configuration.payload(),
         buyer_configuration_digest=configuration.configuration_digest,
         sample_count=arguments.sample_count,
+        development_benchmark=not arguments.evaluation,
     )
     payload = {
         "experiment_id": str(experiment.id),
@@ -492,13 +498,16 @@ async def compare_create(
         "buyer_configuration_digest": experiment.buyer_configuration_digest,
         "buyer_configuration": experiment.buyer_configuration,
         "sample_count_per_representation": experiment.sample_count,
-        "development_benchmark": True,
+        "benchmark_designation": experiment.methodology["benchmark_designation"],
     }
     if arguments.as_json:
         write_json(out, payload)
     else:
         print(f"experiment  {payload['experiment_id']}", file=out)
-        print(f"benchmark   {payload['benchmark']} development benchmark, not a holdout", file=out)
+        print(
+            f"benchmark   {payload['benchmark']} {payload['benchmark_designation'].lower()}",
+            file=out,
+        )
         print(f"raw source  {payload['source_snapshot_id']}", file=out)
         print(f"compiled    {payload['compiled_representation_id']}", file=out)
         print(f"buyer       {payload['buyer_configuration_digest']}", file=out)
@@ -644,9 +653,10 @@ async def compare_show(
         reports.append(report)
     aggregates = _comparison_aggregates(reports)
     transitions = _mission_transitions(reports)
+    designation = experiment.methodology.get("benchmark_designation", "DEVELOPMENT")
     payload: dict[str, Any] = {
         "title": "Compiler Impact Experiment",
-        "development_benchmark_warning": "voltedge-core@2 is development evidence, not a holdout",
+        "benchmark_designation": designation,
         "experiment_id": str(experiment.id),
         "buyer_configuration_digest": experiment.buyer_configuration_digest,
         "source_snapshot_id": str(experiment.source_snapshot_id),
@@ -661,7 +671,7 @@ async def compare_show(
         write_json(out, payload)
     else:
         print("Compiler Impact Experiment", file=out)
-        print("warning     voltedge-core@2 is development evidence, not a holdout", file=out)
+        print(f"benchmark   {str(designation).lower()}", file=out)
         print(f"experiment  {payload['experiment_id']}", file=out)
         print(f"buyer       {payload['buyer_configuration_digest']}", file=out)
         for report in reports:
