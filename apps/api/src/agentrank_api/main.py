@@ -25,6 +25,7 @@ from agentrank_api.routes import (
     checkouts,
     commerce,
     constraints,
+    insights,
     mandates,
     payments,
     razorpay,
@@ -174,4 +175,5 @@ def create_app(
     app.include_router(constraints.router)
     app.include_router(payments.router)
     app.include_router(razorpay.router)
+    app.include_router(insights.router)
     return app

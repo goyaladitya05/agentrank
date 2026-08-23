@@ -35,7 +35,7 @@ from agentrank_api.benchmark.experiment import (
     CompilerImpactSample,
     RepresentationKind,
 )
-from agentrank_api.benchmark.lifecycle import TERMINAL_RUN_STATUSES, MissionRunStatus
+from agentrank_api.benchmark.lifecycle import MissionRunStatus
 from agentrank_api.benchmark.metrics import BenchmarkMetrics, compute_metrics
 from agentrank_api.benchmark.models import (
     AgentProviderUsage,
@@ -79,6 +79,7 @@ MISSION_RESOURCE = "benchmark_mission_run"
 EXPERIMENT_RESOURCE = "compiler_impact_experiment"
 
 DEFAULT_OVERVIEW_RUNS = 10
+MAX_OVERVIEW_RUNS = 50
 
 # A trace projection is a bounded page, not an export.
 DEFAULT_TRACE_LIMIT = 100
@@ -401,37 +402,22 @@ class DiagnosticsService:
             diagnosis=diagnosis,
         )
 
+    async def recent_run_summaries(
+        self, merchant_id: uuid.UUID, *, limit: int = DEFAULT_OVERVIEW_RUNS
+    ) -> tuple[OverviewRunSummary, ...]:
+        """Bounded run headlines, newest first, for a listing or an overview."""
+        clamped = min(max(limit, 1), MAX_OVERVIEW_RUNS)
+        return tuple(await self._run_summaries(merchant_id, clamped))
+
     async def merchant_overview(self, merchant_id: uuid.UUID) -> MerchantOverview:
-        run_rows = list(
-            (
-                await self._session.execute(
-                    select(BenchmarkRun)
-                    .where(BenchmarkRun.merchant_id == merchant_id)
-                    .order_by(BenchmarkRun.id.desc())
-                    .limit(50)
-                )
-            ).scalars()
-        )[:10]
-        summaries: list[OverviewRunSummary] = []
+        summaries = await self._run_summaries(merchant_id, DEFAULT_OVERVIEW_RUNS)
         demand_totals: dict[str, dict[str, int]] = {}
-        if run_rows:
-            grouped: dict[uuid.UUID, list[BenchmarkMissionRun]] = {}
-            mission_rows = await self._session.execute(
-                select(BenchmarkMissionRun)
-                .options(joinedload(BenchmarkMissionRun.mission))
-                .where(
-                    BenchmarkMissionRun.run_id.in_([run.id for run in run_rows]),
-                    BenchmarkMissionRun.merchant_id == merchant_id,
-                )
+        if summaries:
+            grouped = await self._mission_groups(
+                [summary.run_id for summary in summaries], merchant_id=merchant_id
             )
-            for row in mission_rows.scalars().unique():
-                grouped.setdefault(row.run_id, []).append(row)
-            failure_counts = await self._provider_failure_counts(
-                [run.id for run in run_rows], merchant_id=merchant_id
-            )
-            for run in run_rows:
-                results = grouped.get(run.id, [])
-                metrics = compute_metrics(outcomes_of(results))
+            for summary in summaries:
+                metrics = compute_metrics(outcomes_of(grouped.get(summary.run_id, [])))
                 for entry in metrics.simulated_demand.by_currency:
                     buckets = demand_totals.setdefault(
                         entry.currency,
@@ -441,12 +427,14 @@ class DiagnosticsService:
                     buckets["captured"] += entry.captured_amount_minor
                     buckets["lost"] += entry.lost_amount_minor
                     buckets["not_measured"] += entry.not_measured_amount_minor
-                summaries.append(await self._overview_run(run, metrics, failure_counts))
 
-        latest_completed = next((run for run in run_rows if _is_terminal(run)), None)
+        top_findings_run_id = next(
+            (summary.run_id for summary in summaries if summary.status in {"COMPLETED", "ABORTED"}),
+            None,
+        )
         top_findings: tuple[MerchantFinding, ...] = ()
-        if latest_completed is not None:
-            detailed = await self.run_diagnostics(latest_completed.id, merchant_id=merchant_id)
+        if top_findings_run_id is not None:
+            detailed = await self.run_diagnostics(top_findings_run_id, merchant_id=merchant_id)
             top_findings = detailed.findings
 
         return MerchantOverview(
@@ -454,7 +442,7 @@ class DiagnosticsService:
             merchant_id=merchant_id,
             runs=tuple(summaries),
             top_findings=top_findings,
-            top_findings_run_id=None if latest_completed is None else latest_completed.id,
+            top_findings_run_id=top_findings_run_id,
             simulated_demand_totals_by_currency=tuple(
                 {
                     "currency": currency,
@@ -469,7 +457,46 @@ class DiagnosticsService:
             representation_state=await self._representation_state(merchant_id),
         )
 
-    async def _overview_run(
+    async def _run_summaries(self, merchant_id: uuid.UUID, limit: int) -> list[OverviewRunSummary]:
+        runs = await self._recent_runs(merchant_id, limit)
+        if not runs:
+            return []
+        grouped = await self._mission_groups([run.id for run in runs], merchant_id=merchant_id)
+        failure_counts = await self._provider_failure_counts(
+            [run.id for run in runs], merchant_id=merchant_id
+        )
+        summaries = []
+        for run in runs:
+            metrics = compute_metrics(outcomes_of(grouped.get(run.id, [])))
+            summaries.append(await self._summary(run, metrics, failure_counts))
+        return summaries
+
+    async def _recent_runs(self, merchant_id: uuid.UUID, limit: int) -> list[BenchmarkRun]:
+        rows = await self._session.execute(
+            select(BenchmarkRun)
+            .where(BenchmarkRun.merchant_id == merchant_id)
+            .order_by(BenchmarkRun.id.desc())
+            .limit(limit)
+        )
+        return list(rows.scalars())
+
+    async def _mission_groups(
+        self, run_ids: list[uuid.UUID], *, merchant_id: uuid.UUID
+    ) -> dict[uuid.UUID, list[BenchmarkMissionRun]]:
+        mission_rows = await self._session.execute(
+            select(BenchmarkMissionRun)
+            .options(joinedload(BenchmarkMissionRun.mission))
+            .where(
+                BenchmarkMissionRun.run_id.in_(run_ids),
+                BenchmarkMissionRun.merchant_id == merchant_id,
+            )
+        )
+        grouped: dict[uuid.UUID, list[BenchmarkMissionRun]] = {}
+        for row in mission_rows.scalars().unique():
+            grouped.setdefault(row.run_id, []).append(row)
+        return grouped
+
+    async def _summary(
         self,
         run: BenchmarkRun,
         metrics: BenchmarkMetrics,
@@ -831,7 +858,3 @@ def _implementation_version(run: BenchmarkRun) -> int | None:
         return None
     version = configuration.get("agent_implementation_version")
     return version if isinstance(version, int) else None
-
-
-def _is_terminal(run: BenchmarkRun) -> bool:
-    return run.status in TERMINAL_RUN_STATUSES

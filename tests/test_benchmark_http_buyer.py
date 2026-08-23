@@ -309,17 +309,30 @@ async def test_no_benchmark_route_is_reachable_over_the_endpoint(
 ) -> None:
     """The oracle has no HTTP surface, and this is what says so about the running server.
 
-    Publishing a suite, starting a run and reading a result have deliberately never been
-    endpoints. An executor with a credential and a base URL therefore has no request it can make
-    that touches a run, a mission definition or an expected outcome.
+    Publishing a suite, starting a run and mutating benchmark state have deliberately never
+    been endpoints. An executor with a credential and a base URL therefore has no request it
+    can make that touches a run's lifecycle, a mission definition or an expected outcome.
+
+    Phase 4A added merchant authenticated *read* diagnostics under `/api/v1/insights`, which
+    legitimately name missions in their paths. The guard therefore keeps refusing every
+    benchmark surface outright and confines `mission` to those read-only insight paths,
+    where no oracle field and no run mutation exists.
     """
     async with httpx2.AsyncClient(base_url=endpoint.base_url) as client:
         published = (await client.get("/openapi.json")).json()
 
     paths = list(published["paths"])
-    assert not [path for path in paths if "benchmark" in path or "mission" in path]
-    assert not [
-        name for name in published.get("components", {}).get("schemas", {}) if "Mission" in name
+    assert not [path for path in paths if "benchmark" in path]
+    mission_paths = [path for path in paths if "mission" in path]
+    assert mission_paths and all(path.startswith("/api/v1/insights/") for path in mission_paths)
+    schemas = published.get("components", {}).get("schemas", {})
+    # No oracle and no definition shape may ever be serializable. The only Mission named
+    # types are the Phase 4A merchant read models.
+    assert not [name for name in schemas if "Oracle" in name]
+    assert [name for name in schemas if "Mission" in name] == [
+        "MissionDiagnosisView",
+        "MissionFindingView",
+        "MissionTransitionView",
     ]
 
 
