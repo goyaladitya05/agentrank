@@ -97,9 +97,7 @@ class ExperimentFacts:
     @property
     def completed_pairs(self) -> int:
         return sum(
-            1
-            for _, pair in self._pairs()
-            if all(sample.completed for sample in pair.values())
+            1 for _, pair in self._pairs() if all(sample.completed for sample in pair.values())
         )
 
     def _pairs(self) -> list[tuple[int, dict[str, ExperimentSampleFacts]]]:
