@@ -16,11 +16,11 @@ from agentrank_api.benchmark.metrics import MissionOutcome, compute_metrics
 from agentrank_api.diagnostics.codes import engine_identity
 from agentrank_api.diagnostics.experiment import (
     CONCLUSION_INCOMPLETE,
-    ExperimentDiagnosis,
     CONCLUSION_OUTCOME_DIFFERENCES,
     CONCLUSION_PARITY,
     TRANSITION_COMPILED_GAIN,
     TRANSITION_COMPILED_LOSS,
+    ExperimentDiagnosis,
     ExperimentFacts,
     ExperimentSampleFacts,
     MissionOutcomeFacts,
