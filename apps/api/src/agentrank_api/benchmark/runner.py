@@ -98,6 +98,7 @@ from agentrank_api.payments.models import (
     PaymentAttemptStatus,
 )
 from agentrank_api.payments.repository import PaymentAttemptRepository
+from agentrank_api.representation.models import CommerceRepresentation
 
 RUN_RESOURCE = "benchmark_run"
 
@@ -143,6 +144,7 @@ class BenchmarkRunService:
         executor: ExecutorIdentity | None = None,
         representation_label: str | None = None,
         agent_configuration: dict[str, object] | None = None,
+        representation: CommerceRepresentation | None = None,
     ) -> BenchmarkRun:
         """Create a run, pin it, and mark it RUNNING.
 
@@ -196,6 +198,7 @@ class BenchmarkRunService:
             catalog_hash=catalog_content_hash(entries),
             evaluator_version=evaluator_version(),
             agent_configuration=agent_configuration,
+            representation=representation,
         )
         run.status = BenchmarkRunStatus.RUNNING
         run.started_at = datetime.now(UTC)

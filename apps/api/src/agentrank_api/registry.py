@@ -21,5 +21,6 @@ from agentrank_api.mandates import models as mandate_models  # noqa: F401
 from agentrank_api.models import Base
 from agentrank_api.payments import models as payment_models  # noqa: F401
 from agentrank_api.razorpay import models as razorpay_models  # noqa: F401
+from agentrank_api.representation import models as representation_models  # noqa: F401
 
 __all__ = ["Base"]

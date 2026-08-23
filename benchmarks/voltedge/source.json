@@ -1,0 +1,62 @@
+{
+  "key": "voltedge-merchant-source",
+  "version": 1,
+  "merchant_slug": "voltedge",
+  "products": [
+    {
+      "external_id": "VE-CHG-100",
+      "title": "VoltEdge 100W GaN Wall Charger",
+      "description": "Compact three-port charger. Two USB-C and one USB-A port share up to 100W. Foldable Indian pins.",
+      "category": "chargers",
+      "variants": [
+        {
+          "sku": "VE-CHG-100-BLK",
+          "label": "Black",
+          "price_amount_minor": 499900,
+          "currency": "INR",
+          "inventory_quantity": 24,
+          "merchant_metadata": {"finish": "black"}
+        },
+        {
+          "sku": "VE-CHG-100-WHT",
+          "label": "White",
+          "price_amount_minor": 519900,
+          "currency": "INR",
+          "inventory_quantity": 8,
+          "merchant_metadata": {"finish": "white"}
+        }
+      ],
+      "merchant_metadata": {"sale_channel": "direct"}
+    },
+    {
+      "external_id": "VE-CBL-USBC",
+      "title": "Braided USB-C to USB-C Cable",
+      "description": "Braided cable with aluminium housings. Rated for charging equipment up to 240W.",
+      "category": "cables",
+      "variants": [
+        {
+          "sku": "VE-CBL-USBC-1M",
+          "label": "1 m",
+          "price_amount_minor": 89900,
+          "currency": "INR",
+          "inventory_quantity": 120,
+          "merchant_metadata": {"listed_length": "1 m"}
+        },
+        {
+          "sku": "VE-CBL-USBC-3M",
+          "label": "3 m",
+          "price_amount_minor": 129900,
+          "currency": "INR",
+          "inventory_quantity": 0,
+          "merchant_metadata": {"listed_length": "3 m"}
+        }
+      ],
+      "merchant_metadata": {}
+    }
+  ],
+  "policy_text": {
+    "shipping": "Orders dispatch within two business days. Delivery estimates are shown at checkout.",
+    "returns": "Unused accessories may be returned within seven days of delivery in original packaging.",
+    "warranty": "Chargers and power banks include a one-year limited warranty against manufacturing defects."
+  }
+}

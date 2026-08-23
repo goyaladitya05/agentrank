@@ -87,7 +87,7 @@ from collections.abc import Sequence
 from typing import TextIO
 
 from agentrank_api.benchmark.authored import AuthoredDefinitionError
-from agentrank_api.cli import benchmark, credentials, payments
+from agentrank_api.cli import benchmark, credentials, payments, representation
 from agentrank_api.cli.command import Command
 from agentrank_api.cli.exits import ExitCode
 from agentrank_api.config import Settings, get_settings
@@ -121,6 +121,9 @@ def build_parser() -> argparse.ArgumentParser:
     credentials.add_commands(groups.add_parser("credentials", help="merchant API key provisioning"))
     benchmark.add_commands(
         groups.add_parser("benchmark", help="benchmark worlds, runs and results")
+    )
+    representation.add_commands(
+        groups.add_parser("representation", help="merchant source and Commerce IR artifacts")
     )
     return parser
 

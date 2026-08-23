@@ -40,6 +40,7 @@ from agentrank_api.benchmark.models import (
     BenchmarkSuite,
 )
 from agentrank_api.commerce.models import Merchant
+from agentrank_api.representation.models import CommerceRepresentation
 
 # A listing is a work list, not an export. The bound is here rather than at a caller so that
 # there is no way to ask for an unbounded read.
@@ -313,6 +314,7 @@ class BenchmarkRunRepository:
         catalog_hash: str | None = None,
         evaluator_version: str | None = None,
         agent_configuration: dict[str, Any] | None = None,
+        representation: CommerceRepresentation | None = None,
     ) -> BenchmarkRun:
         """Write a PENDING run and one PENDING mission run per mission, and flush.
 
@@ -347,11 +349,14 @@ class BenchmarkRunRepository:
                 f" and cannot be the world for a run of {merchant.slug!r}"
             )
         _validate_agent_configuration(executor, agent_configuration)
+        if representation is not None and representation.merchant_id != merchant.id:
+            raise ValueError("benchmark representation must belong to the benchmark merchant")
 
         run = BenchmarkRun(
             merchant_id=merchant.id,
             suite_id=suite.id,
             environment_id=None if environment is None else environment.id,
+            representation_id=None if representation is None else representation.id,
             executor_kind=None if executor is None else executor.kind,
             executor_version=None if executor is None else executor.version,
             executor_revision=None if executor is None else executor.revision,

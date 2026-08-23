@@ -32,6 +32,7 @@ import agentrank_api.inventory.models as inventory_models  # noqa: F401  registe
 import agentrank_api.mandates.models as mandate_models  # noqa: F401  registers tables
 import agentrank_api.payments.models as payment_models  # noqa: F401  registers tables
 import agentrank_api.razorpay.models as razorpay_models  # noqa: F401  registers tables
+import agentrank_api.representation.models as representation_models  # noqa: F401  registers tables
 from agentrank_api.auth.service import MerchantCredentialService
 from agentrank_api.auth.tokens import TokenMarker
 from agentrank_api.config import Settings, get_settings

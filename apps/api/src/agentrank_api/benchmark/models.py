@@ -458,6 +458,12 @@ class BenchmarkRun(Base):
             name="fk_benchmark_run_environment",
             ondelete="RESTRICT",
         ),
+        ForeignKeyConstraint(
+            ["representation_id", "merchant_id"],
+            ["commerce_representation.id", "commerce_representation.merchant_id"],
+            name="fk_benchmark_run_representation",
+            ondelete="RESTRICT",
+        ),
         CheckConstraint(f"status IN ({_RUN_STATUS_VALUES})", name="status_known"),
         CheckConstraint(
             "representation_label IS NULL OR length(btrim(representation_label)) > 0",
@@ -542,6 +548,12 @@ class BenchmarkRun(Base):
             "merchant_id",
             postgresql_where=text("environment_id IS NOT NULL"),
         ),
+        Index(
+            None,
+            "representation_id",
+            "merchant_id",
+            postgresql_where=text("representation_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)
@@ -563,6 +575,7 @@ class BenchmarkRun(Base):
     # executed against a registered world, which is what an ad hoc merchant in a test looks
     # like, and never that the target was fine.
     environment_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    representation_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     representation_label: Mapped[str | None] = mapped_column(
         String(MAX_REPRESENTATION_LABEL_LENGTH), nullable=True
     )
