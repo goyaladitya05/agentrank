@@ -237,6 +237,21 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
     _add_json(comparison_show)
     comparison_show.set_defaults(command=compare_show)
 
+    diagnosing = commands.add_parser(
+        "diagnose",
+        help="one run's deterministic merchant diagnosis: findings, ownership, demand",
+        description=(
+            "Read one benchmark run through the diagnostics engine. Every finding carries its"
+            " owner, its evidence level and whether any merchant action applies, so a provider"
+            " outage never reads as a catalog problem. Derived from persisted evidence on every"
+            " read; nothing here writes."
+        ),
+    )
+    diagnosing.add_argument("run_id", type=uuid.UUID, help="the benchmark run identifier")
+    _add_world(diagnosing)
+    _add_json(diagnosing)
+    diagnosing.set_defaults(command=diagnose)
+
 
 def _add_world(parser: argparse.ArgumentParser) -> None:
     """Where the authored world is, which every command needs and none of them imports.
@@ -730,6 +745,75 @@ async def compare_show(
                 f" {demand['captured_amount_minor']}",
                 file=out,
             )
+    return ExitCode.OK
+
+
+async def diagnose(
+    session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
+    provider: PaymentProvider,
+    arguments: argparse.Namespace,
+    out: TextIO,
+    settings: Settings,
+) -> int:
+    """One run's deterministic diagnosis, for the operator and the merchant alike."""
+    del sessions, provider, settings
+    from agentrank_api.diagnostics.schemas import (
+        RunDiagnosticsView,
+    )
+    from agentrank_api.diagnostics.service import DiagnosticsService
+
+    merchant_id = await _benchmark_merchant(session, read_world(arguments.world))
+    diagnostics = await DiagnosticsService(session).run_diagnostics(
+        arguments.run_id, merchant_id=merchant_id
+    )
+
+    if arguments.as_json:
+        write_json(out, RunDiagnosticsView.from_domain(diagnostics).model_dump(mode="json"))
+        return ExitCode.OK
+
+    health = diagnostics.provider_health
+    print(f"run         {diagnostics.run_id}", file=out)
+    print(f"status      {diagnostics.status}   suite {diagnostics.suite_label}", file=out)
+    print(f"engine      {diagnostics.engine_identity}", file=out)
+    verified = diagnostics.catalog_pin_verified
+    pin = MISSING if verified is None else str(verified).lower()
+    print(f"catalog pin verified: {pin}", file=out)
+    print(
+        f"provider    {health.missions_with_provider_errors} mission(s) with provider errors,"
+        f" {health.terminated_outages} outage(s) ended missions,"
+        f" {health.recovered_throttles} throttle(s) recovered",
+        file=out,
+    )
+    if not diagnostics.findings:
+        print("findings    none", file=out)
+    for finding in diagnostics.findings:
+        demand = (
+            ", ".join(
+                f"{effect.bucket.lower()} simulated {effect.amount_minor} {effect.currency}"
+                for effect in finding.simulated_demand
+            )
+            or "no simulated demand attributed"
+        )
+        print(
+            f"finding     [{finding.severity.value}] {finding.title}"
+            f" owner={finding.owner.value} action={finding.actionability.value}",
+            file=out,
+        )
+        print(f"            demand: {demand}", file=out)
+        if finding.recommendation is not None:
+            print(f"            action: {finding.recommendation}", file=out)
+    print("", file=out)
+    print(
+        f"{'MISSION':<{KEY_WIDTH}} {'STATUS':<{STATUS_WIDTH}} {'PRIMARY DIAGNOSIS':<24}",
+        file=out,
+    )
+    for entry in diagnostics.missions:
+        lead = MISSING if entry.primary is None else entry.primary.code.value
+        print(
+            f"{entry.mission_key:<{KEY_WIDTH}} {entry.status.value:<{STATUS_WIDTH}} {lead:<24}",
+            file=out,
+        )
     return ExitCode.OK
 
 

@@ -339,3 +339,64 @@ async def test_a_mission_line_never_carries_how_the_mission_was_marked(
         assert getattr(record, "mission_key", None)
     completed = [record for record in caplog.records if record.msg == "benchmark run completed"]
     assert [getattr(record, "missions_total", None) for record in completed] == [14]
+
+
+# Diagnosing.
+
+
+async def test_diagnose_reports_findings_ownership_and_provider_health(
+    catalog_settings: Settings, provider: FakePaymentProvider, session: AsyncSession
+) -> None:
+    """The clean reference run reads as clean: no findings, no provider faults.
+
+    The engine identity travels in the output, because a diagnosis without the version that
+    produced it could not be interpreted after the engine's rules change.
+    """
+    await cli(catalog_settings, provider, "benchmark", "seed")
+    executed = await cli(catalog_settings, provider, "benchmark", "run", "--json")
+    run_id = str(executed.json()["run_id"])
+
+    result = await cli(catalog_settings, provider, "benchmark", "diagnose", run_id, "--json")
+
+    assert result.code == ExitCode.OK
+    payload = result.json()
+    assert str(payload["engine_identity"]).startswith("sha256:")
+    assert payload["findings"] == []
+    assert payload["provider_health"]["terminated_outages"] == 0
+    assert payload["provider_health"]["recovered_throttles"] == 0
+    assert len(payload["missions"]) == 14
+
+
+async def test_diagnose_prints_a_table_that_says_when_nothing_was_found(
+    catalog_settings: Settings, provider: FakePaymentProvider, session: AsyncSession
+) -> None:
+    await cli(catalog_settings, provider, "benchmark", "seed")
+    executed = await cli(catalog_settings, provider, "benchmark", "run", "--json")
+    run_id = str(executed.json()["run_id"])
+
+    result = await cli(catalog_settings, provider, "benchmark", "diagnose", run_id)
+
+    assert result.code == ExitCode.OK
+    assert "findings    none" in result.out
+    assert "PRIMARY DIAGNOSIS" in result.out
+    # Simulated demand is named simulated wherever an amount appears beside it.
+    for line in result.out.splitlines():
+        if "demand:" in line and any(ch.isdigit() for ch in line):
+            assert "simulated" in line
+
+
+async def test_diagnose_answers_not_found_for_a_foreign_run(
+    catalog_settings: Settings, provider: FakePaymentProvider
+) -> None:
+    await cli(catalog_settings, provider, "benchmark", "seed")
+
+    result = await cli(
+        catalog_settings,
+        provider,
+        "benchmark",
+        "diagnose",
+        "01900000-0000-7000-8000-000000000000",
+        "--json",
+    )
+
+    assert result.code == ExitCode.NOT_FOUND
