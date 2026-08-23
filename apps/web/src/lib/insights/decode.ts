@@ -408,6 +408,13 @@ export function decodeRunSummary(value: unknown): RunSummary {
   };
 }
 
+export function decodeRunSummaryList(value: unknown): RunSummary[] {
+  if (!Array.isArray(value)) {
+    throw new DecodeError("run summaries: expected an array");
+  }
+  return value.map((item) => decodeRunSummary(item));
+}
+
 function decodeRepresentationState(value: unknown): RepresentationState {
   const source = entry(value, "representation state");
   return {
