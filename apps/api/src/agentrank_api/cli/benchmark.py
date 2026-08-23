@@ -66,7 +66,7 @@ from agentrank_api.benchmark.execution import BenchmarkRunCapability, ExecutorId
 from agentrank_api.benchmark.experiment import CompilerImpactExperimentService
 from agentrank_api.benchmark.isolation import IsolatedMissionExecutor
 from agentrank_api.benchmark.lifecycle import MissionRunStatus
-from agentrank_api.benchmark.llm import AgentConfiguration
+from agentrank_api.benchmark.llm import GEMINI_PROVIDER, OPENAI_PROVIDER, AgentConfiguration
 from agentrank_api.benchmark.metrics import BenchmarkMetrics
 from agentrank_api.benchmark.models import AgentProviderUsage, BenchmarkMissionRun, BenchmarkRun
 from agentrank_api.benchmark.reference_executor import ReferenceMissionExecutor
@@ -143,6 +143,12 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
         help="exact OpenAI Responses model identifier for --executor llm",
     )
     running.add_argument(
+        "--provider",
+        choices=(OPENAI_PROVIDER, GEMINI_PROVIDER),
+        default=OPENAI_PROVIDER,
+        help="runtime LLM provider for --executor llm",
+    )
+    running.add_argument(
         "--isolated",
         action="store_true",
         help=(
@@ -190,7 +196,10 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
     comparison.add_argument("--source-snapshot-id", type=uuid.UUID, required=True)
     comparison.add_argument("--compiled-representation-id", type=uuid.UUID, required=True)
     comparison.add_argument("--sample-count", type=int, choices=(1, 2, 3), default=1)
-    comparison.add_argument("--model", default="gpt-5.6-terra")
+    comparison.add_argument("--model", default="gemini-3.7-flash")
+    comparison.add_argument(
+        "--provider", choices=(OPENAI_PROVIDER, GEMINI_PROVIDER), default=GEMINI_PROVIDER
+    )
     _add_world(comparison)
     _add_json(comparison)
     comparison.set_defaults(command=compare_create)
@@ -318,8 +327,7 @@ async def run(
     if arguments.executor == "llm":
         if not arguments.isolated:
             raise ValueError("the LLM executor is always isolated; pass --isolated")
-        if settings.openai is None:
-            raise ValueError("OPENAI_API_KEY is required for an LLM benchmark sample")
+        _require_provider_key(settings, arguments.provider)
         finished = await _llm_isolated_run(
             session, sessions, service, merchant_id, world, arguments, provider, settings
         )
@@ -405,10 +413,9 @@ async def _llm_isolated_run(
     settings: Settings,
 ) -> BenchmarkRun:
     """Run one sequential LLM sample with trusted mandate provisioning outside the worker."""
-    assert settings.openai is not None
-    configuration = AgentConfiguration(provider="openai-responses", requested_model=arguments.model)
+    configuration = AgentConfiguration(provider=arguments.provider, requested_model=arguments.model)
     identity = ExecutorIdentity(
-        kind="llm-openai", version=1, revision=configuration.configuration_digest
+        kind=_executor_kind(configuration), version=1, revision=configuration.configuration_digest
     )
     served = RequestLedger()
     async with LocalCommerceEndpoint(settings, provider=provider, observer=served) as endpoint:
@@ -429,8 +436,7 @@ async def _llm_isolated_run(
             capability=capability,
             marker=TokenMarker.of(settings.environment),
         ) as token:
-            worker_environment = dict(os.environ)
-            worker_environment["OPENAI_API_KEY"] = settings.openai.api_key.get_secret_value()
+            worker_environment = _worker_environment(settings, configuration.provider)
             executor = IsolatedMissionExecutor(
                 base_url=endpoint.base_url,
                 token=token,
@@ -465,7 +471,7 @@ async def compare_create(
     suite = await BenchmarkSuiteRepository(session).get(world.suite.key, world.suite.version)
     if suite is None:
         raise NotFoundError("benchmark_suite", world.suite.label)
-    configuration = AgentConfiguration(provider="openai-responses", requested_model=arguments.model)
+    configuration = AgentConfiguration(provider=arguments.provider, requested_model=arguments.model)
     environment = await BenchmarkEnvironmentService(session).require_registered(world.fixture)
     experiment = await CompilerImpactExperimentService(session).create(
         merchant_id=merchant_id,
@@ -510,8 +516,6 @@ async def compare_run(
     settings: Settings,
 ) -> int:
     """Execute exactly one next sample, preserving the persisted alternating order."""
-    if settings.openai is None:
-        raise ValueError("OPENAI_API_KEY is required for a live compiler-impact sample")
     world = read_world(arguments.world)
     merchant_id = await _benchmark_merchant(session, world)
     experiments = CompilerImpactExperimentService(session)
@@ -522,10 +526,11 @@ async def compare_run(
             "benchmark world does not match the predeclared compiler impact experiment"
         )
     configuration = AgentConfiguration.from_payload(treatment.experiment.buyer_configuration)
+    _require_provider_key(settings, configuration.provider)
     if configuration.configuration_digest != treatment.experiment.buyer_configuration_digest:
         raise ValueError("compiler impact experiment buyer configuration digest is invalid")
     identity = ExecutorIdentity(
-        kind="llm-openai", version=1, revision=configuration.configuration_digest
+        kind=_executor_kind(configuration), version=1, revision=configuration.configuration_digest
     )
     service = BenchmarkRunService(session)
     served = RequestLedger()
@@ -549,8 +554,7 @@ async def compare_run(
             capability=capability,
             marker=TokenMarker.of(settings.environment),
         ) as token:
-            worker_environment = dict(os.environ)
-            worker_environment["OPENAI_API_KEY"] = settings.openai.api_key.get_secret_value()
+            worker_environment = _worker_environment(settings, configuration.provider)
             executor = IsolatedMissionExecutor(
                 base_url=endpoint.base_url,
                 token=token,
@@ -896,6 +900,32 @@ async def _benchmark_merchant(session: AsyncSession, world: AuthoredWorld) -> uu
     if merchant is None:
         raise NotFoundError("merchant", world.merchant_slug)
     return merchant.id
+
+
+def _executor_kind(configuration: AgentConfiguration) -> str:
+    return "llm-openai" if configuration.provider == OPENAI_PROVIDER else "llm-gemini"
+
+
+def _require_provider_key(settings: Settings, provider: str) -> None:
+    if provider == OPENAI_PROVIDER and settings.openai is None:
+        raise ValueError("OPENAI_API_KEY is required for an OpenAI LLM benchmark sample")
+    if provider == GEMINI_PROVIDER and settings.gemini is None:
+        raise ValueError("GEMINI_API_KEY is required for a Gemini LLM benchmark sample")
+
+
+def _worker_environment(settings: Settings, provider: str) -> dict[str, str]:
+    environment = dict(os.environ)
+    environment.pop("OPENAI_API_KEY", None)
+    environment.pop("GEMINI_API_KEY", None)
+    if provider == OPENAI_PROVIDER:
+        assert settings.openai is not None
+        environment["OPENAI_API_KEY"] = settings.openai.api_key.get_secret_value()
+        return environment
+    if provider == GEMINI_PROVIDER:
+        assert settings.gemini is not None
+        environment["GEMINI_API_KEY"] = settings.gemini.api_key.get_secret_value()
+        return environment
+    raise ValueError("LLM provider is not supported")
 
 
 async def _report(

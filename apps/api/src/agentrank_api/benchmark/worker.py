@@ -59,7 +59,14 @@ from typing import TextIO
 
 from agentrank_api.benchmark.agent_trace import AgentExecutionEvidence
 from agentrank_api.benchmark.http_buyer import HttpBuyerCommerceSurface, authenticated_client
-from agentrank_api.benchmark.llm import AgentConfiguration, LLMBuyer, OpenAIResponsesProvider
+from agentrank_api.benchmark.llm import (
+    GEMINI_PROVIDER,
+    OPENAI_PROVIDER,
+    AgentConfiguration,
+    GeminiInteractionsProvider,
+    LLMBuyer,
+    OpenAIResponsesProvider,
+)
 from agentrank_api.benchmark.reference_executor import ReferenceMissionExecutor
 from agentrank_api.benchmark.report import ExecutorReport
 from agentrank_api.benchmark.wire import (
@@ -110,6 +117,7 @@ PERMITTED_ENVIRONMENT = frozenset(
         # A narrowly scoped application runtime provider secret. It is never a model tool,
         # never crosses stdin, and is absent from reports and traces.
         "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
     }
 )
 
@@ -190,9 +198,6 @@ async def execute_with_evidence(
     surface = HttpBuyerCommerceSurface(client, merchant_id=request.merchant_id)
     async with client:
         if request.strategy == LLM_STRATEGY:
-            key = os.environ.get("OPENAI_API_KEY")
-            if not key:
-                raise ProtocolError("the LLM worker was not given an OpenAI API key")
             assert request.agent_configuration is not None
             try:
                 configuration = AgentConfiguration.from_payload(request.agent_configuration)
@@ -200,7 +205,7 @@ async def execute_with_evidence(
                 raise ProtocolError(
                     "the LLM worker received invalid frozen configuration"
                 ) from malformed
-            provider = OpenAIResponsesProvider(configuration, key)
+            provider = _provider(configuration, os.environ)
             try:
                 buyer = LLMBuyer(
                     provider,
@@ -220,6 +225,22 @@ async def execute_with_evidence(
             request.brief, merchant_id=request.merchant_id
         )
         return report, None
+
+
+def _provider(
+    configuration: AgentConfiguration, environment: Mapping[str, str]
+) -> OpenAIResponsesProvider | GeminiInteractionsProvider:
+    if configuration.provider == OPENAI_PROVIDER:
+        key = environment.get("OPENAI_API_KEY")
+        if not key:
+            raise ProtocolError("the LLM worker was not given an OpenAI API key")
+        return OpenAIResponsesProvider(configuration, key)
+    if configuration.provider == GEMINI_PROVIDER:
+        key = environment.get("GEMINI_API_KEY")
+        if not key:
+            raise ProtocolError("the LLM worker was not given a Gemini API key")
+        return GeminiInteractionsProvider(configuration, key)
+    raise ProtocolError("the LLM worker was given an unsupported provider")
 
 
 async def execute(request: MissionRequest) -> ExecutorReport:

@@ -46,6 +46,13 @@ class OpenAICredentials:
     api_key: SecretStr
 
 
+@dataclass(frozen=True, slots=True)
+class GeminiCredentials:
+    """A runtime Gemini API key, unwrapped only by the isolated worker."""
+
+    api_key: SecretStr
+
+
 class Settings(BaseSettings):
     """Runtime configuration.
 
@@ -80,6 +87,7 @@ class Settings(BaseSettings):
     razorpay_api_base_url: str = Field(default=RAZORPAY_API_BASE_URL, alias="RAZORPAY_API_BASE_URL")
     razorpay_timeout_seconds: float = Field(default=15.0, alias="RAZORPAY_TIMEOUT_SECONDS")
     openai_api_key: SecretStr | None = Field(default=None, alias="OPENAI_API_KEY")
+    gemini_api_key: SecretStr | None = Field(default=None, alias="GEMINI_API_KEY")
 
     @model_validator(mode="after")
     def razorpay_is_test_mode_or_absent(self) -> Self:
@@ -132,6 +140,13 @@ class Settings(BaseSettings):
         """Runtime provider credentials, or None when live LLM runs are not configured."""
         return (
             None if self.openai_api_key is None else OpenAICredentials(api_key=self.openai_api_key)
+        )
+
+    @property
+    def gemini(self) -> GeminiCredentials | None:
+        """Runtime Gemini credentials, or None when live Gemini runs are not configured."""
+        return (
+            None if self.gemini_api_key is None else GeminiCredentials(api_key=self.gemini_api_key)
         )
 
     @property

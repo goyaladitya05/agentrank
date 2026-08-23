@@ -283,6 +283,7 @@ def test_the_allowlist_has_only_the_scoped_runtime_provider_credential() -> None
         "SSL_CERT_FILE",
         "SSL_CERT_DIR",
         "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
     } == PERMITTED_ENVIRONMENT
 
 

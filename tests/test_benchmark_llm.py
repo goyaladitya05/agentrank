@@ -4,6 +4,7 @@ import json
 import uuid
 from typing import cast
 
+import httpx2
 import pytest
 from benchmark_support import brief
 
@@ -11,9 +12,11 @@ from agentrank_api.benchmark import worker as benchmark_worker
 from agentrank_api.benchmark.agent_trace import AgentExecutionEvidence, safe_payload
 from agentrank_api.benchmark.http_buyer import HttpBuyerCommerceSurface
 from agentrank_api.benchmark.llm import (
+    GEMINI_PROVIDER,
     TOOL_SCHEMA_DIGEST,
     TOOL_SCHEMAS,
     AgentConfiguration,
+    GeminiInteractionsProvider,
     LLMBuyer,
     ProviderResponse,
     ProviderToolCall,
@@ -21,6 +24,8 @@ from agentrank_api.benchmark.llm import (
     mission_input,
 )
 from agentrank_api.benchmark.wire import LLM_STRATEGY, MissionRequest
+from agentrank_api.cli.benchmark import _worker_environment
+from agentrank_api.config import Settings
 
 pytestmark = pytest.mark.anyio
 
@@ -35,6 +40,107 @@ def test_agent_configuration_digest_is_semantic_and_secret_free() -> None:
     assert first.configuration_digest != changed.configuration_digest
     assert "key" not in json.dumps(first.payload()).lower()
     assert AgentConfiguration.from_payload(first.payload()) == first
+    gemini = AgentConfiguration(provider=GEMINI_PROVIDER, requested_model="gemini-3.7-flash")
+    assert gemini.configuration_digest != first.configuration_digest
+
+
+async def test_gemini_adapter_maps_function_calls_and_continuations() -> None:
+    requests: list[dict[str, object]] = []
+
+    def respond(request: httpx2.Request) -> httpx2.Response:
+        requests.append(json.loads(request.content))
+        if len(requests) == 1:
+            return httpx2.Response(
+                200,
+                json={
+                    "id": "gemini-response-1",
+                    "model": "gemini-3.7-flash-001",
+                    "status": "requires_action",
+                    "steps": [
+                        {
+                            "type": "function_call",
+                            "id": "call-1",
+                            "name": "abstain",
+                            "arguments": {"reason": "none"},
+                        }
+                    ],
+                    "usage": {"total_tokens": 7},
+                },
+            )
+        return httpx2.Response(
+            200,
+            json={
+                "id": "gemini-response-2",
+                "model": "gemini-3.7-flash-001",
+                "status": "completed",
+                "steps": [{"type": "model_output", "content": [{"type": "text", "text": "done"}]}],
+            },
+        )
+
+    configuration = AgentConfiguration(provider=GEMINI_PROVIDER, requested_model="gemini-3.7-flash")
+    provider = GeminiInteractionsProvider(configuration, "test-key")
+    await provider._client.aclose()
+    provider._client = httpx2.AsyncClient(
+        transport=httpx2.MockTransport(respond), base_url="https://example.test"
+    )
+    first = await provider.respond(previous_response_id=None, input_items=[mission_input(brief())])
+    second = await provider.respond(
+        previous_response_id=first.response_id,
+        input_items=[
+            {
+                "type": "function_call_output",
+                "call_id": first.tool_calls[0].call_id,
+                "output": '{"ended":"abstained"}',
+            }
+        ],
+    )
+    await provider.aclose()
+
+    assert first.tool_calls[0].name == "abstain"
+    assert first.tool_calls[0].arguments == '{"reason":"none"}'
+    assert first.usage == {"total_tokens": 7}
+    assert first.provider_status == "requires_action"
+    assert second.text == "done"
+    assert isinstance(requests[0]["tools"], list)
+    assert requests[0]["tools"][0]["type"] == "function"
+    response_step = cast(list[dict[str, object]], requests[1]["input"])[0]
+    assert response_step["call_id"] == "call-1"
+    assert response_step["name"] == "abstain"
+
+
+async def test_gemini_adapter_rejects_nonterminal_interaction_status() -> None:
+    def respond(_request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, json={"id": "gemini-failed", "status": "failed", "steps": []})
+
+    configuration = AgentConfiguration(provider=GEMINI_PROVIDER, requested_model="gemini-3.7-flash")
+    provider = GeminiInteractionsProvider(configuration, "test-key")
+    await provider._client.aclose()
+    provider._client = httpx2.AsyncClient(
+        transport=httpx2.MockTransport(respond), base_url="https://example.test"
+    )
+    with pytest.raises(RuntimeError, match="status"):
+        await provider.respond(previous_response_id=None, input_items=[mission_input(brief())])
+    await provider.aclose()
+
+
+def test_selected_worker_provider_key_excludes_other_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "parent-openai")
+    monkeypatch.setenv("GEMINI_API_KEY", "parent-gemini")
+    settings = Settings(
+        postgres_password="test-password",
+        openai_api_key="selected-openai",
+        gemini_api_key="selected-gemini",
+    )  # type: ignore[call-arg]
+
+    gemini = _worker_environment(settings, GEMINI_PROVIDER)
+    openai = _worker_environment(settings, "openai-responses")
+
+    assert gemini["GEMINI_API_KEY"] == "selected-gemini"
+    assert "OPENAI_API_KEY" not in gemini
+    assert openai["OPENAI_API_KEY"] == "selected-openai"
+    assert "GEMINI_API_KEY" not in openai
 
 
 def test_agent_configuration_rejects_an_inconsistent_snapshot() -> None:
@@ -210,6 +316,43 @@ async def test_worker_uses_the_frozen_configuration_delivered_over_the_wire(
             agent_configuration=frozen.payload(),
             merchant_information={"products": []},
         ).to_payload()
+    )
+    report = await benchmark_worker.execute(request)
+    assert observed == [frozen]
+    assert report.error is not None
+
+
+async def test_worker_selects_gemini_from_the_frozen_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frozen = AgentConfiguration(provider=GEMINI_PROVIDER, requested_model="gemini-3.7-flash")
+    observed: list[AgentConfiguration] = []
+
+    class FakeProvider:
+        def __init__(self, configuration: AgentConfiguration, api_key: str) -> None:
+            assert api_key == "test-gemini-key"
+            observed.append(configuration)
+
+        async def respond(
+            self, *, previous_response_id: str | None, input_items: list[dict[str, object]]
+        ) -> ProviderResponse:
+            del previous_response_id, input_items
+            return ProviderResponse("response", "gemini-3.7-flash")
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    monkeypatch.setattr(benchmark_worker, "GeminiInteractionsProvider", FakeProvider)
+    request = MissionRequest(
+        brief=brief(),
+        merchant_id=uuid.uuid7(),
+        base_url="http://127.0.0.1:1",
+        token="token",
+        strategy=LLM_STRATEGY,
+        mandate_id=uuid.uuid7(),
+        agent_configuration=frozen.payload(),
+        merchant_information={"products": []},
     )
     report = await benchmark_worker.execute(request)
     assert observed == [frozen]

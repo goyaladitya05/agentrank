@@ -118,17 +118,20 @@ def _nested_integer(value: Any, key: str, nested_key: str) -> int | None:
 def _validate_agent_configuration(
     executor: ExecutorIdentity | None, configuration: dict[str, Any] | None
 ) -> None:
-    if executor is None or executor.kind != "llm-openai":
+    if executor is None or executor.kind not in {"llm-openai", "llm-gemini"}:
         if configuration is not None:
-            raise ValueError("only llm-openai runs may carry agent configuration")
+            raise ValueError("only LLM runs may carry agent configuration")
         return
     if configuration is None:
-        raise ValueError("an llm-openai run requires frozen agent configuration")
+        raise ValueError("an LLM run requires frozen agent configuration")
     # Imported only on the LLM creation path.  The repository is also part of ordinary commerce
     # startup, where importing the HTTP buyer would create a circular service dependency.
     from agentrank_api.benchmark.llm import AgentConfiguration
 
     frozen = AgentConfiguration.from_payload(configuration)
+    expected_kind = "llm-openai" if frozen.provider == "openai-responses" else "llm-gemini"
+    if executor.kind != expected_kind:
+        raise ValueError("LLM executor kind does not match frozen provider configuration")
     if executor.revision != frozen.configuration_digest:
         raise ValueError("LLM executor revision must match frozen agent configuration")
 
