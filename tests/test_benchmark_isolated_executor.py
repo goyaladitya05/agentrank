@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentrank_api.auth.service import MerchantCredentialService
 from agentrank_api.auth.tokens import TokenMarker
+from agentrank_api.benchmark.agent_trace import AgentExecutionEvidence, TraceEvent
 from agentrank_api.benchmark.definitions import (
     AgentMissionBrief,
     BenchmarkMissionDefinition,
@@ -593,6 +594,25 @@ def test_a_server_reported_database_outage_overrides_the_workers_result(
 
     assert fault is not None
     assert fault.origin is FaultOrigin.HARNESS
+
+
+def test_a_worker_observed_provider_failure_is_an_agent_execution_fault(
+    served: RequestLedger,
+) -> None:
+    executor = IsolatedMissionExecutor(
+        base_url="http://127.0.0.1:1",
+        token="ar_dev_" + "0" * 32 + "_" + "0" * 64,
+        served=served,
+    )
+    executor._agent_evidence = AgentExecutionEvidence(
+        events=[TraceEvent("PROVIDER_ERROR", {"detail": "http_429"})]
+    )
+
+    fault = executor.fault()
+
+    assert fault is not None
+    assert fault.origin is FaultOrigin.AGENT
+    assert fault.detail == "LLM provider failed: http_429"
 
 
 async def test_a_worker_that_takes_too_long_is_killed_and_attributed(

@@ -187,6 +187,9 @@ class IsolatedMissionExecutor:
                 detail=f"the merchant answered {failure.status}",
                 operation=failure.path,
             )
+        provider = _provider_fault(self._agent_evidence)
+        if provider is not None:
+            return provider
         return self._fault
 
     def payment_attempted(self) -> bool:
@@ -343,6 +346,19 @@ class IsolatedMissionExecutor:
             # Nothing further is available. Reported through the fault the caller is already
             # raising rather than swallowed silently.
             return
+
+
+def _provider_fault(evidence: AgentExecutionEvidence | None) -> ExecutionFault | None:
+    """Classify a provider outage observed by the fixed worker runtime, not model text."""
+    if evidence is None:
+        return None
+    event = next((event for event in evidence.events if event.event_type == "PROVIDER_ERROR"), None)
+    if event is None:
+        return None
+    detail = event.payload.get("detail")
+    if not isinstance(detail, str) or not detail:
+        detail = "provider failure without detail"
+    return ExecutionFault(origin=FaultOrigin.AGENT, detail=f"LLM provider failed: {detail}")
 
 
 def _exited(code: int | None) -> FaultOrigin:

@@ -37,7 +37,7 @@ from agentrank_api.payments.schemas import CreatePaymentRequest
 PROMPT_VERSION = 1
 TOOL_SCHEMA_VERSION = 1
 EXECUTION_POLICY_VERSION = 1
-AGENT_IMPLEMENTATION_VERSION = 1
+AGENT_IMPLEMENTATION_VERSION = 2
 OPENAI_PROVIDER = "openai-responses"
 GEMINI_PROVIDER = "google-gemini"
 SUPPORTED_PROVIDERS = frozenset({OPENAI_PROVIDER, GEMINI_PROVIDER})
@@ -644,7 +644,11 @@ class LLMBuyer:
             except (ProviderUnavailableError, ProviderProtocolError, TimeoutError) as error:
                 self.evidence.add(
                     "PROVIDER_ERROR",
-                    {"invocation_sequence": turn, "kind": type(error).__name__},
+                    {
+                        "invocation_sequence": turn,
+                        "kind": type(error).__name__,
+                        "detail": str(error),
+                    },
                 )
                 self.evidence.add("AGENT_ABORT", {"reason": "provider_unavailable", "turn": turn})
                 return ExecutorReport(

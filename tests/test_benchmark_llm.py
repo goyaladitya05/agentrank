@@ -20,6 +20,7 @@ from agentrank_api.benchmark.llm import (
     LLMBuyer,
     ProviderResponse,
     ProviderToolCall,
+    ProviderUnavailableError,
     ScriptedAgentProvider,
     mission_input,
 )
@@ -231,6 +232,27 @@ async def test_structured_abstention_is_the_only_model_end_signal() -> None:
         "AGENT_FINAL",
     ]
     assert buyer.evidence.usages[0].trace_sequence == 2
+
+
+async def test_provider_failure_trace_retains_the_safe_failure_detail() -> None:
+    provider = ScriptedAgentProvider([ProviderUnavailableError("http_429")])
+    buyer = LLMBuyer(
+        provider,
+        cast(HttpBuyerCommerceSurface, object()),
+        mandate_id=uuid.uuid7(),
+        configuration=AgentConfiguration(
+            provider="openai-responses", requested_model="gpt-5.6-terra"
+        ),
+    )
+
+    report = await buyer.execute(brief(), merchant_id=uuid.uuid7())
+
+    assert report.error is not None
+    assert buyer.evidence.events[-2].payload == {
+        "invocation_sequence": 1,
+        "kind": "ProviderUnavailableError",
+        "detail": "http_429",
+    }
 
 
 async def test_an_invalid_provider_response_cannot_reach_a_tool() -> None:
