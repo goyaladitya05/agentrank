@@ -16,6 +16,7 @@ from agentrank_api.benchmark.metrics import MissionOutcome, compute_metrics
 from agentrank_api.diagnostics.codes import engine_identity
 from agentrank_api.diagnostics.experiment import (
     CONCLUSION_INCOMPLETE,
+    ExperimentDiagnosis,
     CONCLUSION_OUTCOME_DIFFERENCES,
     CONCLUSION_PARITY,
     TRANSITION_COMPILED_GAIN,
@@ -120,7 +121,7 @@ def failed_status() -> tuple[tuple[str, MissionRunStatus], ...]:
 
 
 class TestCleanParity:
-    def diagnosis(self) -> object:
+    def diagnosis(self) -> ExperimentDiagnosis:
         samples = [
             sample("RAW", 1, statuses=saturated_statuses()),
             sample("COMPILED", 1, statuses=saturated_statuses()),
@@ -131,38 +132,38 @@ class TestCleanParity:
 
     def test_clean_null_experiment_reads_as_honest_parity(self) -> None:
         diagnosis = self.diagnosis()
-        assert diagnosis.conclusion.kind is CONCLUSION_PARITY  # type: ignore[attr-defined]
-        statement = diagnosis.conclusion.statement.lower()  # type: ignore[attr-defined]
+        assert diagnosis.conclusion.kind is CONCLUSION_PARITY
+        statement = diagnosis.conclusion.statement.lower()
         assert "no measurable compiler benefit" in statement
         assert "2 completed paired sample(s)" in statement
 
     def test_sample_count_is_visible_and_no_significance_is_claimed(self) -> None:
         diagnosis = self.diagnosis()
-        assert diagnosis.completed_sample_pairs == 2  # type: ignore[attr-defined]
-        words = diagnosis.conclusion.statement.lower()  # type: ignore[attr-defined]
+        assert diagnosis.completed_sample_pairs == 2
+        words = diagnosis.conclusion.statement.lower()
         assert "significant" not in words
-        codes = {warning.code for warning in diagnosis.warnings}  # type: ignore[attr-defined]
+        codes = {warning.code for warning in diagnosis.warnings}
         assert "SMALL_SAMPLE" not in codes
 
     def test_evaluation_designation_produces_no_development_warning(self) -> None:
         diagnosis = self.diagnosis()
-        codes = {warning.code for warning in diagnosis.warnings}  # type: ignore[attr-defined]
+        codes = {warning.code for warning in diagnosis.warnings}
         assert "DEVELOPMENT_BENCHMARK" not in codes
-        assert diagnosis.benchmark_designation == "EVALUATION"  # type: ignore[attr-defined]
+        assert diagnosis.benchmark_designation == "EVALUATION"
 
     def test_demand_delta_is_zero_per_currency(self) -> None:
         diagnosis = self.diagnosis()
-        deltas = diagnosis.demand_delta_by_currency  # type: ignore[attr-defined]
+        deltas = diagnosis.demand_delta_by_currency
         assert len(deltas) == 1
-        assert deltas[0].currency == CURRENCY  # type: ignore[attr-defined]
-        assert deltas[0].captured_amount_minor == 0  # type: ignore[attr-defined]
+        assert deltas[0].currency == CURRENCY
+        assert deltas[0].captured_amount_minor == 0
 
     def test_interaction_metrics_are_reported_per_arm(self) -> None:
         diagnosis = self.diagnosis()
-        raw = diagnosis.arms["RAW"]  # type: ignore[attr-defined]
-        compiled = diagnosis.arms["COMPILED"]  # type: ignore[attr-defined]
-        assert raw.model_invocations == compiled.model_invocations  # type: ignore[attr-defined]
-        assert raw.tool_calls == compiled.tool_calls == 160  # type: ignore[attr-defined]
+        raw = diagnosis.arms["RAW"]
+        compiled = diagnosis.arms["COMPILED"]
+        assert raw.model_invocations == compiled.model_invocations
+        assert raw.tool_calls == compiled.tool_calls == 160
 
 
 class TestOutcomeDifferences:
