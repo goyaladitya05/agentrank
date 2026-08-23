@@ -45,8 +45,10 @@ from agentrank_api.diagnostics.codes import (
     Severity,
     engine_identity,
     identity_for,
+    primary_code,
     sort_codes,
 )
+from agentrank_api.diagnostics.traces import InteractionSummary, TraceFacts
 
 # Kinds of evidence a finding may cite. These names are stable API surface: a future frontend
 # uses them to resolve references back to concrete rows.
@@ -127,6 +129,7 @@ class MissionDiagnosisInput:
     selection: SelectionFacts | None = None
     required_attributes: tuple[RequiredAttributeFact, ...] = ()
     required_categories: tuple[str, ...] = ()
+    trace: TraceFacts | None = None
 
     @property
     def purchase_was_available(self) -> bool:
@@ -187,7 +190,9 @@ class MissionDiagnosis:
     `outcome` is one honest sentence about what became of the mission, suitable as a report
     lead. `findings` is ordered and may be empty: a correct abstention and a clean success
     carry observations, not findings, and inventing problems for them would make the whole
-    layer noise.
+    layer noise. `interactions` carries the mission's observed interaction cost when trace
+    evidence exists, and is absent for runs that never produced traces, such as reference
+    executor runs.
     """
 
     engine_identity: str
@@ -199,6 +204,7 @@ class MissionDiagnosis:
     primary: MissionFinding | None
     findings: tuple[MissionFinding, ...]
     simulated_demand: tuple[SimulatedDemandEffect, ...] = ()
+    interactions: InteractionSummary | None = None
 
 
 def diagnose_mission(evidence: MissionDiagnosisInput) -> MissionDiagnosis:
@@ -216,7 +222,9 @@ def diagnose_mission(evidence: MissionDiagnosisInput) -> MissionDiagnosis:
         _ground_truth_rule,
         _contradiction_rule,
         _surface_error_rule,
+        _provider_fault_rules,
         _execution_rule,
+        _model_mismatch_rule,
         _merchant_data_rules,
         _stock_rule,
         _checkout_refusal_rule,
@@ -230,6 +238,8 @@ def diagnose_mission(evidence: MissionDiagnosisInput) -> MissionDiagnosis:
         findings.extend(rule(evidence))
     ordered = _ordered(findings)
     demand = _demand_effect(evidence)
+    lead = primary_code(finding.code for finding in ordered)
+    primary = None if lead is None else next(f for f in ordered if f.code is lead)
     return MissionDiagnosis(
         engine_identity=engine_identity(),
         run_id=evidence.run_id,
@@ -237,9 +247,10 @@ def diagnose_mission(evidence: MissionDiagnosisInput) -> MissionDiagnosis:
         mission_key=evidence.mission_key,
         status=evidence.status,
         outcome=_outcome_statement(evidence),
-        primary=ordered[0] if ordered else None,
+        primary=primary,
         findings=tuple(ordered),
         simulated_demand=demand,
+        interactions=None if evidence.trace is None else evidence.trace.interactions,
     )
 
 
@@ -435,8 +446,21 @@ def _surface_error_rule(evidence: MissionDiagnosisInput) -> list[MissionFinding]
     ]
 
 
+def _provider_outage_terminated(evidence: MissionDiagnosisInput) -> bool:
+    trace = evidence.trace
+    return trace is not None and (
+        trace.provider_faults is not None and trace.provider_faults.outage_terminated_mission
+    )
+
+
 def _execution_rule(evidence: MissionDiagnosisInput) -> list[MissionFinding]:
     if FailureReason.AGENT_EXECUTION_ERROR not in evidence.failure_reasons:
+        return []
+    if _provider_outage_terminated(evidence):
+        # The evaluator marked this mission AGENT_EXECUTION_ERROR because that is where the
+        # trusted attribution puts an outage at the buyer boundary. The traces say why it
+        # happened, and filing a merchant or buyer finding beside the outage would be the
+        # misdiagnosis this layer exists to prevent. The outage finding below owns it.
         return []
     return [
         _finding(
@@ -445,6 +469,68 @@ def _execution_rule(evidence: MissionDiagnosisInput) -> list[MissionFinding]:
             summary=(
                 "The buyer did not carry the mission out, and the available evidence does"
                 " not attribute this to infrastructure."
+            ),
+            recommendation=None,
+        )
+    ]
+
+
+def _provider_fault_rules(evidence: MissionDiagnosisInput) -> list[MissionFinding]:
+    trace = evidence.trace
+    if trace is None or trace.provider_faults is None:
+        return []
+    faults = trace.provider_faults
+    if faults.outage_terminated_mission:
+        detail = f" ({faults.terminating_kind})" if faults.terminating_kind else ""
+        outage_evidence = (
+            EvidenceReference(
+                kind=EVIDENCE_TRACE_EVENT,
+                identifier=faults.terminating_event_id or "",
+                establishes="the provider failure the mission ended on",
+            ),
+        )
+        return [
+            _finding(
+                DiagnosticCode.PROVIDER_OUTAGE_TERMINATED_MISSION,
+                evidence,
+                summary=(
+                    "The model provider did not produce a usable response and the mission"
+                    f" ended on that failure{detail}. No merchant action applies."
+                ),
+                recommendation=None,
+                extra_evidence=outage_evidence if faults.terminating_event_id else (),
+            )
+        ]
+    if faults.throttles_recovered > 0:
+        # Operational history beside the outcome, never instead of it.
+        return [
+            _finding(
+                DiagnosticCode.PROVIDER_THROTTLE_RECOVERED,
+                evidence,
+                summary=(
+                    f"The model provider throttled {faults.throttles_recovered} invocation(s)"
+                    " during this mission; retrying recovered them inside the mission"
+                    " deadline."
+                ),
+                recommendation=None,
+            )
+        ]
+    return []
+
+
+def _model_mismatch_rule(evidence: MissionDiagnosisInput) -> list[MissionFinding]:
+    trace = evidence.trace
+    if trace is None or trace.resolved_model_matches_request:
+        return []
+    resolved = ", ".join(trace.resolved_models)
+    requested = trace.requested_model or "the requested model"
+    return [
+        _finding(
+            DiagnosticCode.RESOLVED_MODEL_MISMATCH,
+            evidence,
+            summary=(
+                f"The provider resolved {resolved} where {requested} was requested, which"
+                " qualifies how this mission's results compare with others."
             ),
             recommendation=None,
         )
@@ -707,6 +793,8 @@ def _outcome_statement(evidence: MissionDiagnosisInput) -> str:
             return "The buyer declined, but this mission expected a purchase to be possible."
         return "The buyer correctly declined a mission where nothing acceptable was for sale."
     if evidence.status is MissionRunStatus.FAILED:
+        if _provider_outage_terminated(evidence):
+            return "The mission ended because the model provider did not produce a usable response."
         primary = evidence.failure_reasons[0].value if evidence.failure_reasons else "UNKNOWN"
         return f"The mission failed. Primary evaluator reason: {primary}."
     if evidence.status is MissionRunStatus.ERRORED:
@@ -749,12 +837,14 @@ __all__ = [
     "EVIDENCE_TRACE_EVENT",
     "EVIDENCE_VARIANT",
     "EvidenceReference",
+    "InteractionSummary",
     "MissionDiagnosis",
     "MissionDiagnosisInput",
     "MissionFinding",
     "RequiredAttributeFact",
     "SelectionFacts",
     "SimulatedDemandEffect",
+    "TraceFacts",
     "diagnose_mission",
     "engine_identity",
 ]
