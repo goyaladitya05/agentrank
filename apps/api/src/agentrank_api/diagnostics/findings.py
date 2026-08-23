@@ -166,7 +166,12 @@ def _unique[T](items: Iterable[T]) -> list[T]:
 
 
 def _title(key: str, missions: int, attributes: tuple[str, ...]) -> str:
-    subject = f"{missions} mission(s)" if missions != 1 else "1 mission"
+    """One merchant readable sentence for a grouped finding.
+
+    Codes are stable API identifiers; they are not what a shop owner reads. Every code
+    therefore has a written sentence here, and a test refuses a title that leaks one.
+    """
+    subject = f"{missions} missions" if missions != 1 else "1 mission"
     if attributes:
         names = ", ".join(sorted(attributes))
         verb = (
@@ -176,8 +181,69 @@ def _title(key: str, missions: int, attributes: tuple[str, ...]) -> str:
         )
         return f"Required attribute '{names}' {verb} {subject}."
     code = DiagnosticCode(key.split(":", 1)[0])
-    owner_label = identity_for(code).owner.value.replace("_", " ").title()
-    return f"{code.value} on {subject} ({owner_label})."
+    base = _BASE_TITLES.get(code)
+    if base is None:
+        # Unreachable while every code has a sentence; a new code without one fails tests
+        # rather than shipping an identifier into merchant prose.
+        raise ValueError(f"diagnostic code {code} has no merchant facing title")
+    return f"{base} Observed on {subject}."
+
+
+_BASE_TITLES: dict[DiagnosticCode, str] = {
+    DiagnosticCode.SAFETY_ESCAPE: (
+        "A payment completed although the purchase was not certified as compliant."
+    ),
+    DiagnosticCode.PROVIDER_OUTAGE_TERMINATED_MISSION: (
+        "The AI model provider stopped answering and ended these shopping attempts."
+    ),
+    DiagnosticCode.BENCHMARK_HARNESS_FAULT: (
+        "AgentRank's benchmark machinery could not measure these attempts."
+    ),
+    DiagnosticCode.MISSION_NOT_MEASURED: "These shopping attempts never produced an outcome.",
+    DiagnosticCode.GROUND_TRUTH_DISAGREEMENT: (
+        "The benchmark's stored expectations disagree with your current catalog."
+    ),
+    DiagnosticCode.AGENT_REPORT_CONTRADICTION: (
+        "AI buyers took actions that contradicted each other."
+    ),
+    DiagnosticCode.AGENT_EXECUTION_FAILURE: "AI buyers did not carry out their tasks.",
+    DiagnosticCode.SELECTION_VIOLATED_REQUIREMENTS: (
+        "AI buyers chose offers outside what they themselves had stated."
+    ),
+    DiagnosticCode.UNSAFE_ATTEMPT_BLOCKED: ("Unsafe attempts were refused before any money moved."),
+    DiagnosticCode.AUTHORIZATION_DENIED_COMPLIANT_ATTEMPT: (
+        "Authorization refused purchases that otherwise looked correct."
+    ),
+    DiagnosticCode.MERCHANT_SURFACE_ERROR: (
+        "Your store's API returned errors instead of answers during shopping."
+    ),
+    DiagnosticCode.CHECKOUT_REFUSED: (
+        "Your store declined to give prices for reasons other than stock."
+    ),
+    DiagnosticCode.STOCK_UNAVAILABLE: (
+        "Buyers could not complete purchases because not enough stock could be held."
+    ),
+    DiagnosticCode.CATEGORY_NOT_PUBLISHED: (
+        "Products are missing the category information buyers filter by."
+    ),
+    DiagnosticCode.ATTRIBUTE_NOT_PUBLISHED: (
+        "Products are missing attribute information buyers require."
+    ),
+    DiagnosticCode.ATTRIBUTE_UNREADABLE: (
+        "Attributes are published in forms AI buyers cannot compare against requirements."
+    ),
+    DiagnosticCode.DISCOVERY_FAILED: (
+        "AI buyers identified nothing to buy although something should have been available."
+    ),
+    DiagnosticCode.PAYMENT_DECLINED: "The payment provider declined these payments.",
+    DiagnosticCode.PAYMENT_UNRESOLVED: ("Payments never reached a definitive success or decline."),
+    DiagnosticCode.PROVIDER_THROTTLE_RECOVERED: (
+        "The AI provider briefly limited requests; retries recovered inside the attempt."
+    ),
+    DiagnosticCode.RESOLVED_MODEL_MISMATCH: (
+        "The AI provider answered with a different model than requested."
+    ),
+}
 
 
 def _recommendation(members: list[MissionFinding]) -> str | None:

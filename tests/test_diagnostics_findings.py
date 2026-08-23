@@ -259,3 +259,39 @@ class TestPresentation:
         ]
         finding = aggregate_findings(diagnoses)[0]
         assert "wattage" in finding.title
+
+
+class TestMerchantReadableTitles:
+    def test_no_grouped_title_leaks_a_raw_code_identifier(self) -> None:
+        from agentrank_api.diagnostics.findings import aggregate_findings as aggregate
+
+        reasons = [
+            FailureReason.INVENTORY_UNAVAILABLE,
+            FailureReason.CATEGORY_MISSING,
+            FailureReason.MERCHANT_API_ERROR,
+            FailureReason.PAYMENT_FAILED,
+            FailureReason.PAYMENT_UNRESOLVED,
+            FailureReason.AGENT_REASONING_ERROR,
+            FailureReason.DISCOVERY_FAILURE,
+        ]
+        diagnoses = [
+            diagnosis(f"mission-{reason.value.lower()}", reasons=(reason,)) for reason in reasons
+        ]
+        findings = aggregate(diagnoses)
+        assert len(findings) == len(reasons)
+        for finding in findings:
+            identifiers = [code.value for code in DiagnosticCode]
+            leaked = [value for value in identifiers if value in finding.title]
+            assert leaked == [], finding.title
+
+    def test_every_code_has_a_base_sentence(self) -> None:
+        from agentrank_api.diagnostics.findings import _BASE_TITLES
+
+        # Secondary observations are grouped too, so every code needs a sentence.
+        assert set(_BASE_TITLES) == set(DiagnosticCode)
+
+    def test_singular_mission_reads_naturally(self) -> None:
+        findings = aggregate_findings(
+            [diagnosis("only", reasons=(FailureReason.INVENTORY_UNAVAILABLE,))]
+        )
+        assert "Observed on 1 mission." in findings[0].title
