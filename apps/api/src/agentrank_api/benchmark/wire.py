@@ -12,6 +12,7 @@ merchant_id   which shop
 base_url      where that shop's commerce API is
 token         one merchant credential, scoped to that shop, revoked when the run ends
 strategy      which buyer to be
+discovery     which buyer-facing discovery surface this mission sees (LLM strategy only)
 ```
 
 What is deliberately not in it is the whole point of the boundary. No database URL, no session,
@@ -45,6 +46,7 @@ from typing import Any, Self
 
 from agentrank_api.benchmark.agent_trace import AgentExecutionEvidence
 from agentrank_api.benchmark.definitions import AgentMissionBrief
+from agentrank_api.benchmark.discovery import view_from_payload
 from agentrank_api.benchmark.report import (
     AbstentionCode,
     CheckoutRefusal,
@@ -56,7 +58,7 @@ from agentrank_api.benchmark.report import (
     ReportedSelection,
 )
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 
 # The one buyer that exists. A second becomes another entry here and a branch in the worker, and
 # an unknown name is refused rather than defaulted, because defaulting would silently run a
@@ -90,6 +92,7 @@ class MissionRequest:
     mandate_id: uuid.UUID | None = None
     agent_configuration: dict[str, Any] | None = None
     merchant_information: dict[str, Any] | None = None
+    discovery: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.strategy not in STRATEGIES:
@@ -104,10 +107,18 @@ class MissionRequest:
             raise ValueError("an LLM mission request requires frozen agent configuration")
         if self.strategy == LLM_STRATEGY and self.merchant_information is None:
             raise ValueError("an LLM mission request requires merchant information")
+        if self.strategy == LLM_STRATEGY and self.discovery is None:
+            raise ValueError("an LLM mission request requires its discovery view")
+        # Fail closed on shape as well as presence: a discovery view this build cannot
+        # interpret is a protocol refusal, never an arm run with whatever view arrived.
+        if self.strategy == LLM_STRATEGY:
+            view_from_payload(self.discovery)
         if self.merchant_information is not None:
             _reject_oracle_fields(self.merchant_information)
         if self.strategy != LLM_STRATEGY and self.agent_configuration is not None:
             raise ValueError("only an LLM mission request may carry agent configuration")
+        if self.strategy != LLM_STRATEGY and self.discovery is not None:
+            raise ValueError("only an LLM mission request may carry a discovery view")
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -120,6 +131,7 @@ class MissionRequest:
             "mandate_id": None if self.mandate_id is None else str(self.mandate_id),
             "agent_configuration": self.agent_configuration,
             "merchant_information": self.merchant_information,
+            "discovery": self.discovery,
         }
 
     @classmethod
@@ -137,6 +149,7 @@ class MissionRequest:
                     "mandate_id",
                     "agent_configuration",
                     "merchant_information",
+                    "discovery",
                 }
             ),
         )
@@ -149,6 +162,7 @@ class MissionRequest:
             mandate_id=_optional_id(document, "mandate_id"),
             agent_configuration=_optional_object(document, "agent_configuration"),
             merchant_information=_optional_object(document, "merchant_information"),
+            discovery=_optional_object(document, "discovery"),
         )
 
     def redacted(self) -> dict[str, Any]:

@@ -2,6 +2,7 @@
 
 import json
 import uuid
+from datetime import UTC, datetime
 from typing import cast
 
 import httpx2
@@ -11,6 +12,12 @@ from benchmark_support import brief
 from agentrank_api.benchmark import llm as llm_module
 from agentrank_api.benchmark import worker as benchmark_worker
 from agentrank_api.benchmark.agent_trace import AgentExecutionEvidence, safe_payload
+from agentrank_api.benchmark.discovery import (
+    BuyerDiscoveryView,
+    DiscoveryKind,
+    agent_ready_view,
+    storefront_view,
+)
 from agentrank_api.benchmark.http_buyer import HttpBuyerCommerceSurface
 from agentrank_api.benchmark.llm import (
     GEMINI_PROVIDER,
@@ -27,8 +34,18 @@ from agentrank_api.benchmark.llm import (
     ScriptedAgentProvider,
     mission_input,
 )
+from agentrank_api.benchmark.report import ExecutorReport, ReportedError
 from agentrank_api.benchmark.wire import LLM_STRATEGY, MissionRequest
+from agentrank_api.checkout.models import CheckoutStatus
+from agentrank_api.checkout.schemas import CheckoutLineView, CheckoutView
 from agentrank_api.cli.benchmark import _worker_environment
+from agentrank_api.commerce.schemas import (
+    MerchantSummary,
+    ProductDetail,
+    ProductSearchResponse,
+    ProductSearchResult,
+    VariantView,
+)
 from agentrank_api.config import Settings
 
 pytestmark = pytest.mark.anyio
@@ -223,6 +240,7 @@ async def test_structured_abstention_is_the_only_model_end_signal() -> None:
         configuration=AgentConfiguration(
             provider="openai-responses", requested_model="gpt-5.6-terra"
         ),
+        discovery=storefront_view(),
     )
     report = await buyer.execute(brief(), merchant_id=uuid.uuid7())
     assert report.abstention is not None
@@ -246,6 +264,7 @@ async def test_provider_failure_trace_retains_the_safe_failure_detail() -> None:
         configuration=AgentConfiguration(
             provider="openai-responses", requested_model="gpt-5.6-terra"
         ),
+        discovery=storefront_view(),
     )
 
     report = await buyer.execute(brief(), merchant_id=uuid.uuid7())
@@ -269,6 +288,7 @@ async def test_an_invalid_provider_response_cannot_reach_a_tool() -> None:
         configuration=AgentConfiguration(
             provider="openai-responses", requested_model="gpt-5.6-terra"
         ),
+        discovery=storefront_view(),
     )
     report = await buyer.execute(brief(), merchant_id=uuid.uuid7())
     assert report.error is not None
@@ -299,6 +319,7 @@ async def test_unknown_tool_is_returned_to_the_model_and_cannot_execute() -> Non
         configuration=AgentConfiguration(
             provider="openai-responses", requested_model="gpt-5.6-terra"
         ),
+        discovery=storefront_view(),
     )
     report = await buyer.execute(brief(), merchant_id=uuid.uuid7())
     assert report.abstention is not None
@@ -340,6 +361,7 @@ async def test_worker_uses_the_frozen_configuration_delivered_over_the_wire(
             mandate_id=uuid.uuid7(),
             agent_configuration=frozen.payload(),
             merchant_information={"products": []},
+            discovery={"kind": "STOREFRONT"},
         ).to_payload()
     )
     report = await benchmark_worker.execute(request)
@@ -378,6 +400,7 @@ async def test_worker_selects_gemini_from_the_frozen_configuration(
         mandate_id=uuid.uuid7(),
         agent_configuration=frozen.payload(),
         merchant_information={"products": []},
+        discovery={"kind": "STOREFRONT"},
     )
     report = await benchmark_worker.execute(request)
     assert observed == [frozen]
@@ -395,6 +418,7 @@ def _buyer(provider: ScriptedAgentProvider, **overrides: object) -> LLMBuyer:
         cast(HttpBuyerCommerceSurface, object()),
         mandate_id=uuid.uuid7(),
         configuration=configuration,
+        discovery=storefront_view(),
     )
 
 
@@ -519,3 +543,464 @@ async def test_gemini_adapter_ignores_an_unusable_retry_header() -> None:
     await provider.aclose()
 
     assert throttled.value.retry_after_seconds is None
+
+
+def _search_surface(result: object) -> object:
+    class StubSurface:
+        async def search_products(self, request: object) -> object:
+            return result
+
+    return StubSurface()
+
+
+def _agent_ready() -> BuyerDiscoveryView:
+    return agent_ready_view(
+        uuid.uuid7(),
+        {"VE-CHG-100-BLK": ({"key": "wattage", "kind": "MEASUREMENT", "unit": "W", "value": 100},)},
+    )
+
+
+async def test_a_storefront_buyer_cannot_read_typed_attributes_from_discovery_tools() -> None:
+    variant = VariantView(
+        id=uuid.uuid7(),
+        sku="VE-CHG-100-BLK",
+        label="Black",
+        attributes={"color": "black", "wattage": 100},
+        price_amount_minor=499900,
+        currency="INR",
+        inventory_quantity=20,
+        is_active=True,
+    )
+    search = ProductSearchResponse(
+        results=[
+            ProductSearchResult(
+                id=uuid.uuid7(),
+                external_id="VE-CHG-100",
+                title="100W Multi-Port Charger",
+                description="100W three-port USB-C charger.",
+                category="chargers",
+                is_active=True,
+                merchant=MerchantSummary(id=uuid.uuid7(), slug="voltedge", name="VoltEdge"),
+                eligible_variants=[variant],
+            )
+        ],
+        count=1,
+        limit=20,
+    )
+    provider = ScriptedAgentProvider(
+        [
+            ProviderResponse(
+                "resp_1",
+                "gpt-5.6-terra",
+                (
+                    ProviderToolCall(
+                        "call_1",
+                        "search_products",
+                        '{"query":"charger","max_price_amount_minor":null,"currency":null}',
+                    ),
+                ),
+            ),
+            ProviderResponse(
+                "resp_2",
+                "gpt-5.6-terra",
+                (ProviderToolCall("call_2", "abstain", '{"reason":"none"}'),),
+            ),
+        ]
+    )
+    buyer = LLMBuyer(
+        provider,
+        cast(HttpBuyerCommerceSurface, _search_surface(search)),
+        mandate_id=uuid.uuid7(),
+        configuration=AgentConfiguration(
+            provider="openai-responses", requested_model="gpt-5.6-terra"
+        ),
+        discovery=storefront_view(),
+    )
+
+    report = await buyer.execute(brief(), merchant_id=uuid.uuid7())
+
+    assert report.abstention is not None
+    tool_result = next(
+        event.payload for event in buyer.evidence.events if event.event_type == "TOOL_RESULT"
+    )
+    serialized = json.dumps(tool_result)
+    assert "attributes" not in serialized
+    assert "wattage" not in serialized
+    assert (
+        tool_result["result"]["results"][0]["eligible_variants"][0]["price_amount_minor"] == 499900
+    )
+
+
+async def test_an_agent_ready_buyer_reads_only_the_representation_facts() -> None:
+    variant = VariantView(
+        id=uuid.uuid7(),
+        sku="VE-CHG-100-BLK",
+        label="Black",
+        attributes={"color": "black", "wattage": 100},
+        price_amount_minor=499900,
+        currency="INR",
+        inventory_quantity=20,
+        is_active=True,
+    )
+    search = ProductSearchResponse(
+        results=[
+            ProductSearchResult(
+                id=uuid.uuid7(),
+                external_id="VE-CHG-100",
+                title="100W Multi-Port Charger",
+                description="100W three-port USB-C charger.",
+                category="chargers",
+                is_active=True,
+                merchant=MerchantSummary(id=uuid.uuid7(), slug="voltedge", name="VoltEdge"),
+                eligible_variants=[variant],
+            )
+        ],
+        count=1,
+        limit=20,
+    )
+
+    class StubSurface:
+        async def search_products(self, request: object) -> object:
+            del request
+            return search
+
+    provider = ScriptedAgentProvider(
+        [
+            ProviderResponse(
+                "resp_1",
+                "gpt-5.6-terra",
+                (
+                    ProviderToolCall(
+                        "call_1",
+                        "search_products",
+                        '{"query":"charger","max_price_amount_minor":null,"currency":null}',
+                    ),
+                ),
+            ),
+            ProviderResponse(
+                "resp_2",
+                "gpt-5.6-terra",
+                (ProviderToolCall("call_2", "abstain", '{"reason":"none"}'),),
+            ),
+        ]
+    )
+    buyer = LLMBuyer(
+        provider,
+        cast(HttpBuyerCommerceSurface, StubSurface()),
+        mandate_id=uuid.uuid7(),
+        configuration=AgentConfiguration(
+            provider="openai-responses", requested_model="gpt-5.6-terra"
+        ),
+        discovery=_agent_ready(),
+    )
+
+    report = await buyer.execute(brief(), merchant_id=uuid.uuid7())
+
+    assert report.abstention is not None
+    tool_result = next(
+        event.payload for event in buyer.evidence.events if event.event_type == "TOOL_RESULT"
+    )
+    attributes = tool_result["result"]["results"][0]["eligible_variants"][0]["attributes"]
+    assert attributes == [{"key": "wattage", "kind": "MEASUREMENT", "unit": "W", "value": 100}]
+
+
+async def test_the_quote_channel_hides_attribute_snapshots_for_both_arms_alike() -> None:
+    instant = datetime.now(UTC)
+    checkout_id = uuid.uuid7()
+    line = CheckoutLineView(
+        id=uuid.uuid7(),
+        variant_id=uuid.uuid7(),
+        quantity=1,
+        unit_price_amount_minor=499900,
+        line_amount_minor=499900,
+        currency="INR",
+        product_category="chargers",
+        variant_attributes={"color": "black", "wattage": 100},
+    )
+    quote = CheckoutView(
+        id=checkout_id,
+        merchant_id=uuid.uuid7(),
+        mandate_id=uuid.uuid7(),
+        currency="INR",
+        lines=[line],
+        total_quantity=1,
+        subtotal_amount_minor=499900,
+        shipping_amount_minor=0,
+        discount_amount_minor=0,
+        total_amount_minor=499900,
+        status=CheckoutStatus.OPEN,
+        created_at=instant,
+        expires_at=instant,
+        cancelled_at=None,
+        paid_at=None,
+    )
+
+    class StubSurface:
+        async def create_checkout(self, request: object) -> object:
+            del request
+            return quote
+
+        async def get_checkout(self, checkout_id: uuid.UUID) -> object:
+            return quote
+
+    for view in (storefront_view(), _agent_ready()):
+        provider = ScriptedAgentProvider(
+            [
+                ProviderResponse(
+                    "resp_1",
+                    "gpt-5.6-terra",
+                    (
+                        ProviderToolCall(
+                            "call_1",
+                            "create_checkout",
+                            json.dumps(
+                                {"items": [{"variant_id": str(uuid.uuid7()), "quantity": 1}]}
+                            ),
+                        ),
+                    ),
+                ),
+                ProviderResponse(
+                    "resp_2",
+                    "gpt-5.6-terra",
+                    (
+                        ProviderToolCall(
+                            "call_2",
+                            "inspect_checkout",
+                            json.dumps({"checkout_id": str(checkout_id)}),
+                        ),
+                    ),
+                ),
+                ProviderResponse(
+                    "resp_3",
+                    "gpt-5.6-terra",
+                    (ProviderToolCall("call_3", "abstain", '{"reason":"none"}'),),
+                ),
+            ]
+        )
+        buyer = LLMBuyer(
+            provider,
+            cast(HttpBuyerCommerceSurface, StubSurface()),
+            mandate_id=uuid.uuid7(),
+            configuration=AgentConfiguration(
+                provider="openai-responses", requested_model="gpt-5.6-terra"
+            ),
+            discovery=view,
+        )
+
+        await buyer.execute(brief(), merchant_id=uuid.uuid7())
+
+        results = [
+            event.payload for event in buyer.evidence.events if event.event_type == "TOOL_RESULT"
+        ]
+        quotes = [
+            payload for payload in results if "lines" in json.dumps(payload) and "result" in payload
+        ]
+        assert len(quotes) == 2
+        for payload in quotes:
+            assert "variant_attributes" not in json.dumps(payload)
+            assert payload["result"]["lines"][0]["line_amount_minor"] == 499900
+
+
+async def test_the_worker_binds_exactly_the_discovery_view_it_was_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[object] = []
+
+    class RecordingBuyer:
+        def __init__(
+            self,
+            provider: object,
+            surface: object,
+            *,
+            mandate_id: object,
+            configuration: object,
+            discovery: object,
+        ) -> None:
+            del provider, surface, mandate_id, configuration
+            captured.append(discovery)
+
+        async def execute(self, brief: object, **kwargs: object) -> ExecutorReport:
+            del kwargs
+            self.evidence = AgentExecutionEvidence()
+            return ExecutorReport(uuid.uuid7(), error=ReportedError(detail="stopped"))
+
+    frozen = AgentConfiguration(provider=GEMINI_PROVIDER, requested_model="gemini-3.7-flash")
+    sent = {
+        "kind": "AGENT_READY",
+        "representation_id": str(uuid.uuid7()),
+        "attributes": [
+            {"sku": "SKU-1", "key": "wattage", "kind": "MEASUREMENT", "unit": "W", "value": 100}
+        ],
+    }
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    monkeypatch.setattr(benchmark_worker, "LLMBuyer", RecordingBuyer)
+    request = MissionRequest(
+        brief=brief(),
+        merchant_id=uuid.uuid7(),
+        base_url="http://127.0.0.1:1",
+        token="token",
+        strategy=LLM_STRATEGY,
+        mandate_id=uuid.uuid7(),
+        agent_configuration=frozen.payload(),
+        merchant_information={"products": []},
+        discovery=sent,
+    )
+    await benchmark_worker.execute(request)
+
+    assert len(captured) == 1
+    view = cast(BuyerDiscoveryView, captured[0])
+    assert view.kind is DiscoveryKind.AGENT_READY
+    assert view.attributes_by_sku["SKU-1"][0]["value"] == 100
+
+
+async def test_a_storefront_buyer_cannot_read_typed_attributes_from_product_detail() -> None:
+    variant = VariantView(
+        id=uuid.uuid7(),
+        sku="VE-CHG-100-BLK",
+        label="Black",
+        attributes={"color": "black", "wattage": 100},
+        price_amount_minor=499900,
+        currency="INR",
+        inventory_quantity=20,
+        is_active=True,
+    )
+    detail = ProductDetail(
+        id=uuid.uuid7(),
+        external_id="VE-CHG-100",
+        title="100W Multi-Port Charger",
+        description=None,
+        category="chargers",
+        is_active=True,
+        merchant=MerchantSummary(id=uuid.uuid7(), slug="voltedge", name="VoltEdge"),
+        variants=[variant],
+    )
+
+    class StubSurface:
+        async def get_product(self, product_id: uuid.UUID) -> object:
+            del product_id
+            return detail
+
+    provider = ScriptedAgentProvider(
+        [
+            ProviderResponse(
+                "resp_1",
+                "gpt-5.6-terra",
+                (
+                    ProviderToolCall(
+                        "call_1", "get_product", json.dumps({"product_id": str(uuid.uuid7())})
+                    ),
+                ),
+            ),
+            ProviderResponse(
+                "resp_2",
+                "gpt-5.6-terra",
+                (ProviderToolCall("call_2", "abstain", '{"reason":"none"}'),),
+            ),
+        ]
+    )
+    buyer = LLMBuyer(
+        provider,
+        cast(HttpBuyerCommerceSurface, StubSurface()),
+        mandate_id=uuid.uuid7(),
+        configuration=AgentConfiguration(
+            provider="openai-responses", requested_model="gpt-5.6-terra"
+        ),
+        discovery=storefront_view(),
+    )
+
+    report = await buyer.execute(brief(), merchant_id=uuid.uuid7())
+
+    assert report.abstention is not None
+    tool_result = next(
+        event.payload
+        for event in buyer.evidence.events
+        if event.event_type == "TOOL_RESULT" and event.payload.get("name") == "get_product"
+    )
+    assert "attributes" not in json.dumps(tool_result)
+    assert tool_result["result"]["variants"][0]["inventory_quantity"] == 20
+
+
+async def test_authorization_answers_never_name_the_catalog_values_they_compared() -> None:
+    """A raw buyer probing refusals cannot read typed facts out of violation details."""
+    preparation = {
+        "checkout_id": str(uuid.uuid7()),
+        "ready": False,
+        "authorization": {
+            "allowed": False,
+            "intent_authorization": {
+                "allowed": False,
+                "violations": [
+                    {
+                        # The value is a real IntentViolationCode member.
+                        "code": "REQUIRED_ATTRIBUTE_MISMATCH",
+                        "constraint_id": None,
+                        "line_id": None,
+                        "variant_id": str(uuid.uuid7()),
+                        "attribute": "wattage",
+                        "operator": "GTE",
+                        "expected": 100,
+                        "actual": {"wattage": 45, "color": "black"},
+                    }
+                ],
+            },
+        },
+    }
+
+    class StubSurface:
+        async def prepare_checkout(self, checkout_id: uuid.UUID) -> object:
+            del checkout_id
+
+            class View:
+                def model_dump(self, mode: str) -> dict[str, object]:
+                    del mode
+                    return preparation
+
+            return View()
+
+    for view in (storefront_view(), _agent_ready()):
+        provider = ScriptedAgentProvider(
+            [
+                ProviderResponse(
+                    "resp_1",
+                    "gpt-5.6-terra",
+                    (
+                        ProviderToolCall(
+                            "call_1",
+                            "prepare_checkout",
+                            json.dumps({"checkout_id": str(uuid.uuid7())}),
+                        ),
+                    ),
+                ),
+                ProviderResponse(
+                    "resp_2",
+                    "gpt-5.6-terra",
+                    (ProviderToolCall("call_2", "abstain", '{"reason":"none"}'),),
+                ),
+            ]
+        )
+        buyer = LLMBuyer(
+            provider,
+            cast(HttpBuyerCommerceSurface, StubSurface()),
+            mandate_id=uuid.uuid7(),
+            configuration=AgentConfiguration(
+                provider="openai-responses", requested_model="gpt-5.6-terra"
+            ),
+            discovery=view,
+        )
+
+        report = await buyer.execute(brief(), merchant_id=uuid.uuid7())
+
+        assert report.abstention is not None
+        tool_result = next(
+            event.payload
+            for event in buyer.evidence.events
+            if event.event_type == "TOOL_RESULT" and event.payload.get("name") == "prepare_checkout"
+        )
+        serialized = json.dumps(tool_result)
+        # The catalog value the refusal compared against is gone for both arms alike. (The
+        # evidence sanitizer also masks the whole authorization object by key name, but this
+        # stripping happens before that, at the tool boundary the model itself reads.)
+        assert "actual" not in serialized
+        # The catalog's own values for the quoted variant are gone, not merely renamed.
+        assert "black" not in serialized
+        assert '"wattage": 45' not in serialized

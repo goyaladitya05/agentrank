@@ -4,6 +4,7 @@ import json
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 import pytest
 from benchmark_support import VOLTEDGE, mission, suite
@@ -18,6 +19,7 @@ from agentrank_api.benchmark.experiment import (
     CompilerImpactExperiment,
     CompilerImpactExperimentService,
     CompilerImpactSample,
+    ExperimentTreatment,
     RepresentationKind,
 )
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus
@@ -525,6 +527,7 @@ def test_merchant_information_reaches_the_model_without_an_oracle() -> None:
                 provider="openai-responses", requested_model="test-model"
             ).payload(),
             merchant_information={"products": [], "expected_outcome": "PURCHASE_AVAILABLE"},
+            discovery={"kind": "STOREFRONT"},
         )
 
 
@@ -637,3 +640,75 @@ async def test_provider_failure_missions_are_counted_from_traces_not_reports(
     await session.commit()
 
     assert await _provider_failed_missions(session, run_id=run.id, merchant_id=merchant.id) == 1
+
+
+def test_each_frozen_sample_gets_its_own_discovery_surface() -> None:
+    """RAW runs the storefront; COMPILED runs exactly its pinned representation."""
+    from agentrank_api.cli.benchmark import _treatment_discovery
+    from agentrank_api.representation.models import CommerceRepresentation
+
+    representation_id = uuid.uuid7()
+    payload = {
+        "products": [
+            {
+                "variants": [
+                    {
+                        "sku": "VE-CHG-100-BLK",
+                        "attributes": [
+                            {
+                                "key": "wattage",
+                                "kind": "MEASUREMENT",
+                                "unit": "W",
+                                "fact": {"value": 100},
+                            }
+                        ],
+                    }
+                ]
+            }
+        ]
+    }
+    representation = CommerceRepresentation(
+        id=representation_id,
+        merchant_id=uuid.uuid7(),
+        producer="COMPILER",
+        payload=payload,
+    )
+    raw_treatment = ExperimentTreatment(
+        experiment=cast(CompilerImpactExperiment, object()),
+        sample=CompilerImpactSample(
+            experiment_id=uuid.uuid7(),
+            merchant_id=uuid.uuid7(),
+            pair_ordinal=1,
+            execution_ordinal=1,
+            representation_kind=RepresentationKind.RAW,
+        ),
+        projection={"products": []},
+        representation=None,
+    )
+    compiled_treatment = ExperimentTreatment(
+        experiment=cast(CompilerImpactExperiment, object()),
+        sample=CompilerImpactSample(
+            experiment_id=uuid.uuid7(),
+            merchant_id=uuid.uuid7(),
+            pair_ordinal=1,
+            execution_ordinal=2,
+            representation_kind=RepresentationKind.COMPILED,
+            representation_id=representation_id,
+        ),
+        projection={"products": []},
+        representation=representation,
+    )
+
+    assert _treatment_discovery(raw_treatment) == {"kind": "STOREFRONT"}
+    compiled = _treatment_discovery(compiled_treatment)
+    assert compiled["kind"] == "AGENT_READY"
+    assert compiled["representation_id"] == str(representation_id)
+    assert compiled["attributes"] == [
+        {
+            "sku": "VE-CHG-100-BLK",
+            "key": "wattage",
+            "kind": "MEASUREMENT",
+            "unit": "W",
+            "value": 100,
+        }
+    ]

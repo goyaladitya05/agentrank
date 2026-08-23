@@ -135,6 +135,7 @@ class IsolatedMissionExecutor:
         provision_mandate: Callable[[AgentMissionBrief], Awaitable[uuid.UUID]] | None = None,
         agent_configuration: dict[str, object] | None = None,
         merchant_information: dict[str, object] | None = None,
+        discovery: dict[str, object] | None = None,
         timeout: float = DEFAULT_TIMEOUT,
         environment: dict[str, str] | None = None,
         interpreter: str | None = None,
@@ -146,6 +147,7 @@ class IsolatedMissionExecutor:
         self._provision_mandate = provision_mandate
         self._agent_configuration = agent_configuration
         self._merchant_information = merchant_information
+        self._discovery = discovery
         self._timeout = timeout
         self._environment = environment
         self._interpreter = sys.executable if interpreter is None else interpreter
@@ -227,6 +229,7 @@ class IsolatedMissionExecutor:
                 mandate_id=mandate_id,
                 agent_configuration=self._agent_configuration,
                 merchant_information=self._merchant_information,
+                discovery=self._discovery,
             )
             return await self._carry_out(request)
         except _WorkerFailureError as failed:

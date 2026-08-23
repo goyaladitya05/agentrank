@@ -58,6 +58,7 @@ from collections.abc import Mapping
 from typing import TextIO
 
 from agentrank_api.benchmark.agent_trace import AgentExecutionEvidence
+from agentrank_api.benchmark.discovery import view_from_payload
 from agentrank_api.benchmark.http_buyer import HttpBuyerCommerceSurface, authenticated_client
 from agentrank_api.benchmark.llm import (
     GEMINI_PROVIDER,
@@ -212,6 +213,7 @@ async def execute_with_evidence(
                     surface,
                     mandate_id=request.mandate_id,  # type: ignore[arg-type]
                     configuration=configuration,
+                    discovery=view_from_payload(request.discovery),
                 )
                 report = await buyer.execute(
                     request.brief,

@@ -12,6 +12,7 @@ dies, lies or takes too long, which is asserted from the process and the server 
 anything the worker said.
 """
 
+import asyncio
 import json
 import os
 import subprocess
@@ -53,6 +54,7 @@ from agentrank_api.benchmark.isolation import (
     IsolatedMissionExecutor,
 )
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
+from agentrank_api.benchmark.llm import GEMINI_PROVIDER
 from agentrank_api.benchmark.models import BenchmarkRun
 from agentrank_api.benchmark.reference_executor import REFERENCE_EXECUTOR
 from agentrank_api.benchmark.runner import BenchmarkRunService
@@ -506,6 +508,7 @@ async def test_a_mission_request_carries_no_oracle_and_has_nowhere_to_put_one(
         "mandate_id",
         "agent_configuration",
         "merchant_information",
+        "discovery",
     }
     document = json.dumps(payload)
     for forbidden in (
@@ -892,3 +895,35 @@ async def test_every_mission_gets_a_process_that_knows_nothing_about_the_last_on
     assert executor.payment_attempted()
     assert len([served for served in served.served if served.path.endswith("/payments")]) == 1
     assert all(result.status is MissionRunStatus.SUCCEEDED for result in finished.mission_runs)
+
+
+async def test_the_executor_hands_the_worker_exactly_its_discovery_view(
+    monkeypatch: pytest.MonkeyPatch, served: RequestLedger
+) -> None:
+    """The arm's surface travels to the worker untouched, or the mission does not run."""
+    from agentrank_api.benchmark.llm import AgentConfiguration
+    from agentrank_api.benchmark.wire import LLM_STRATEGY
+
+    captured: list[MissionRequest] = []
+
+    async def record_through(self: object, request: object, sandbox: object) -> object:
+        captured.append(request)  # type: ignore[arg-type]
+        raise RuntimeError("not carried out in this test")
+
+    monkeypatch.setattr(IsolatedMissionExecutor, "_through", record_through)
+    configuration = AgentConfiguration(provider=GEMINI_PROVIDER, requested_model="test-model")
+    discovery: dict[str, object] = {"kind": "STOREFRONT"}
+    executor = IsolatedMissionExecutor(
+        base_url="http://127.0.0.1:1",
+        token="ar_dev_" + "0" * 32 + "_" + "0" * 64,
+        served=served,
+        strategy=LLM_STRATEGY,
+        provision_mandate=lambda brief: asyncio.sleep(0, result=uuid.uuid7()),
+        agent_configuration=configuration.payload(),
+        merchant_information={"products": []},
+        discovery=discovery,
+    )
+    await executor(brief(), merchant_id=uuid.uuid7())
+
+    assert len(captured) == 1
+    assert captured[0].discovery == discovery

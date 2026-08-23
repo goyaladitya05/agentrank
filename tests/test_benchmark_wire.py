@@ -5,6 +5,7 @@ fact must fail here before it can become a new way for an executor to state its 
 """
 
 import uuid
+from typing import cast
 
 import pytest
 
@@ -61,3 +62,59 @@ def test_the_worker_protocol_refuses_forged_commerce_facts(
 
     with pytest.raises(ProtocolError, match="unknown fields"):
         report_from_payload(payload)
+
+
+def _llm_request_kwargs() -> dict[str, object]:
+    from benchmark_support import brief
+
+    from agentrank_api.benchmark.llm import AgentConfiguration
+
+    document: dict[str, object] = {
+        "brief": brief(),
+        "merchant_id": uuid.uuid7(),
+        "base_url": "http://127.0.0.1:1",
+        "token": "token",
+        "strategy": "llm",
+        "mandate_id": uuid.uuid7(),
+        "agent_configuration": AgentConfiguration(
+            provider="openai-responses", requested_model="test-model"
+        ).payload(),
+        "merchant_information": {"products": []},
+        "discovery": {"kind": "STOREFRONT"},
+    }
+    return document
+
+
+def test_an_llm_request_without_its_discovery_view_is_refused() -> None:
+    from agentrank_api.benchmark.wire import MissionRequest
+
+    arguments = _llm_request_kwargs()
+    del arguments["discovery"]
+    with pytest.raises(ValueError, match="discovery view"):
+        MissionRequest(**arguments)  # type: ignore[arg-type]
+
+
+def test_a_discovery_view_that_this_build_cannot_interpret_is_refused() -> None:
+    from agentrank_api.benchmark.wire import MissionRequest
+
+    for malformed in (
+        {"kind": "SOMETHING_ELSE"},
+        {"kind": "AGENT_READY", "representation_id": "not-a-uuid", "attributes": []},
+    ):
+        with pytest.raises(ValueError):
+            MissionRequest(**{**_llm_request_kwargs(), "discovery": malformed})  # type: ignore[arg-type]
+
+
+def test_a_reference_buyer_never_carries_a_discovery_view() -> None:
+    from agentrank_api.benchmark.definitions import AgentMissionBrief
+    from agentrank_api.benchmark.wire import MissionRequest
+
+    with pytest.raises(ValueError, match="discovery view"):
+        MissionRequest(
+            brief=cast(AgentMissionBrief, _llm_request_kwargs()["brief"]),
+            merchant_id=uuid.uuid7(),
+            base_url="http://127.0.0.1:1",
+            token="token",
+            strategy="reference",
+            discovery={"kind": "STOREFRONT"},
+        )

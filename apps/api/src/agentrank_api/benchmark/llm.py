@@ -19,6 +19,7 @@ from pydantic import ValidationError
 
 from agentrank_api.benchmark.agent_trace import AgentExecutionEvidence, ProviderUsage
 from agentrank_api.benchmark.definitions import AgentMissionBrief
+from agentrank_api.benchmark.discovery import BuyerDiscoveryView, discover, quoted
 from agentrank_api.benchmark.http_buyer import HttpBuyerCommerceSurface
 from agentrank_api.benchmark.report import (
     AbstentionCode,
@@ -37,7 +38,7 @@ from agentrank_api.payments.schemas import CreatePaymentRequest
 PROMPT_VERSION = 1
 TOOL_SCHEMA_VERSION = 1
 EXECUTION_POLICY_VERSION = 1
-AGENT_IMPLEMENTATION_VERSION = 3
+AGENT_IMPLEMENTATION_VERSION = 4
 
 # A throttled provider invocation is retried a bounded number of times inside the mission
 # deadline instead of ending the mission on its first 429. The wait honors the provider's own
@@ -633,6 +634,7 @@ class LLMBuyer:
         *,
         mandate_id: uuid.UUID,
         configuration: AgentConfiguration,
+        discovery: BuyerDiscoveryView,
     ) -> None:
         self._provider, self._surface, self._mandate_id, self._configuration = (
             provider,
@@ -640,6 +642,7 @@ class LLMBuyer:
             mandate_id,
             configuration,
         )
+        self._discovery = discovery
         self.actual_model: str | None = None
         self.evidence = AgentExecutionEvidence()
 
@@ -881,37 +884,38 @@ class LLMBuyer:
                 request = ProductSearchRequest(limit=20, **arguments)
                 search = await self._surface.search_products(request)
                 return {
-                    **search.model_dump(mode="json"),
+                    **discover(self._discovery, search.model_dump(mode="json")),
                     "truncated": search.count == search.limit,
                 }, {}
             if call.name == "get_product":
-                return (
-                    await self._surface.get_product(uuid.UUID(str(arguments["product_id"])))
-                ).model_dump(mode="json"), {}
+                detail = await self._surface.get_product(uuid.UUID(str(arguments["product_id"])))
+                return discover(self._discovery, detail.model_dump(mode="json")), {}
             if call.name == "create_checkout":
                 items = [CheckoutItemInput.model_validate(item) for item in arguments["items"]]
                 quote = await self._surface.create_checkout(
                     CreateCheckoutRequest(mandate_id=self._mandate_id, items=items)
                 )
                 selected = items[0]
-                return quote.model_dump(mode="json"), {
+                return quoted(quote.model_dump(mode="json")), {
                     "selection": ReportedSelection(selected.variant_id, selected.quantity),
                     "checkout": ReportedCheckout(checkout_id=quote.id),
                 }
             if call.name == "inspect_checkout":
-                return (
-                    await self._surface.get_checkout(uuid.UUID(str(arguments["checkout_id"])))
-                ).model_dump(mode="json"), {}
+                checkout = await self._surface.get_checkout(
+                    uuid.UUID(str(arguments["checkout_id"]))
+                )
+                return quoted(checkout.model_dump(mode="json")), {}
             if call.name == "prepare_checkout":
-                return (
-                    await self._surface.prepare_checkout(uuid.UUID(str(arguments["checkout_id"])))
-                ).model_dump(mode="json"), {}
+                preparation = await self._surface.prepare_checkout(
+                    uuid.UUID(str(arguments["checkout_id"]))
+                )
+                return quoted(preparation.model_dump(mode="json")), {}
             if call.name == "complete_checkout":
                 checkout_id = uuid.UUID(str(arguments["checkout_id"]))
                 payment = await self._surface.complete_checkout(
                     checkout_id, CreatePaymentRequest(idempotency_key=f"ar-llm-{checkout_id.hex}")
                 )
-                return payment.model_dump(mode="json"), (
+                return quoted(payment.model_dump(mode="json")), (
                     {"payment": ReportedPayment(payment.attempt.id)}
                     if payment.attempt is not None
                     else {}

@@ -56,6 +56,7 @@ from agentrank_api.auth.tokens import TokenMarker
 from agentrank_api.benchmark.authored import AuthoredWorld, publish_world, read_world
 from agentrank_api.benchmark.authorization import provision
 from agentrank_api.benchmark.buyer import MerchantBuyerSurface
+from agentrank_api.benchmark.discovery import buyer_discovery_view, to_payload
 from agentrank_api.benchmark.endpoint import (
     LocalCommerceEndpoint,
     RequestLedger,
@@ -63,7 +64,10 @@ from agentrank_api.benchmark.endpoint import (
 )
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
 from agentrank_api.benchmark.execution import BenchmarkRunCapability, ExecutorIdentity
-from agentrank_api.benchmark.experiment import CompilerImpactExperimentService
+from agentrank_api.benchmark.experiment import (
+    CompilerImpactExperimentService,
+    ExperimentTreatment,
+)
 from agentrank_api.benchmark.isolation import IsolatedMissionExecutor
 from agentrank_api.benchmark.lifecycle import MissionRunStatus
 from agentrank_api.benchmark.llm import GEMINI_PROVIDER, OPENAI_PROVIDER, AgentConfiguration
@@ -524,6 +528,24 @@ async def compare_create(
     return ExitCode.OK
 
 
+def _treatment_discovery(treatment: ExperimentTreatment) -> dict[str, Any]:
+    """The discovery surface one frozen sample must be run against.
+
+    Decided by the sample's persisted arm identity and nothing else, so neither arm can be
+    built with the other's surface by accident or by a caller's preference. A raw sample gets
+    the ordinary storefront; a compiled sample gets exactly its pinned representation.
+    """
+    return to_payload(
+        buyer_discovery_view(
+            representation_kind=treatment.sample.representation_kind.value,
+            representation_id=treatment.sample.representation_id,
+            representation_payload=(
+                None if treatment.representation is None else treatment.representation.payload
+            ),
+        )
+    )
+
+
 async def compare_run(
     session: AsyncSession,
     sessions: async_sessionmaker[AsyncSession],
@@ -580,6 +602,7 @@ async def compare_run(
                 provision_mandate=lambda brief: provision(trusted, brief),
                 agent_configuration=configuration.payload(),
                 merchant_information=treatment.projection,
+                discovery=_treatment_discovery(treatment),
                 environment=worker_environment,
             )
             executor.identity = identity
