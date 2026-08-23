@@ -50,6 +50,10 @@ uv run python -m agentrank_api.cli benchmark seed
 uv run python -m agentrank_api.cli benchmark run --representation-label baseline
 uv run python -m agentrank_api.cli benchmark show <run-id>
 uv run python -m agentrank_api.cli benchmark abort <run-id>
+uv run python -m agentrank_api.cli compiler run --merchant-slug voltedge --source-id <source-id>
+uv run python -m agentrank_api.cli compiler show --merchant-slug voltedge <run-id>
+uv run python -m agentrank_api.cli compiler review --merchant-slug voltedge <candidate-id> accept
+uv run python -m agentrank_api.cli compiler publish --merchant-slug voltedge <run-id>
 ```
 
 Exit codes are meant to be acted on by a script as well as read by a person:
@@ -87,7 +91,7 @@ from collections.abc import Sequence
 from typing import TextIO
 
 from agentrank_api.benchmark.authored import AuthoredDefinitionError
-from agentrank_api.cli import benchmark, credentials, payments, representation
+from agentrank_api.cli import benchmark, compiler, credentials, payments, representation
 from agentrank_api.cli.command import Command
 from agentrank_api.cli.exits import ExitCode
 from agentrank_api.config import Settings, get_settings
@@ -124,6 +128,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     representation.add_commands(
         groups.add_parser("representation", help="merchant source and Commerce IR artifacts")
+    )
+    compiler.add_commands(
+        groups.add_parser("compiler", help="merchant compiler and review workflow")
     )
     return parser
 

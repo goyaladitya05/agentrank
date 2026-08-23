@@ -79,9 +79,19 @@ class CommerceRepresentation(Base):
             name="fk_commerce_representation_source",
             ondelete="RESTRICT",
         ),
+        ForeignKeyConstraint(
+            ["compiler_run_id", "merchant_id"],
+            ["compiler_run.id", "compiler_run.merchant_id"],
+            name="fk_commerce_representation_compiler_run",
+            ondelete="RESTRICT",
+        ),
         CheckConstraint(f"content_hash ~ '{HASH_PATTERN}'", name="content_hash_format"),
         CheckConstraint("producer IN ('MANUAL_FIXTURE', 'COMPILER')", name="producer_known"),
         CheckConstraint("length(btrim(producer_version)) > 0", name="producer_version_not_blank"),
+        CheckConstraint(
+            "(producer = 'COMPILER') = (compiler_run_id IS NOT NULL)",
+            name="compiler_representation_run_binding",
+        ),
         CheckConstraint("jsonb_typeof(payload) = 'object'", name="payload_object"),
         Index(None, "merchant_id"),
         Index(None, "source_snapshot_id", "merchant_id"),
@@ -90,8 +100,9 @@ class CommerceRepresentation(Base):
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)
     merchant_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
     source_snapshot_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    compiler_run_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     producer: Mapped[RepresentationProducer] = mapped_column(PRODUCER, nullable=False)
-    producer_version: Mapped[str] = mapped_column(String(MAX_KEY_LENGTH), nullable=False)
+    producer_version: Mapped[str] = mapped_column(String(128), nullable=False)
     content_hash: Mapped[str] = mapped_column(String(HASH_LENGTH), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(

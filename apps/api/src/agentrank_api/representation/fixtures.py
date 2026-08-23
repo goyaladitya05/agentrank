@@ -31,7 +31,11 @@ class RepresentationFixtureError(ValueError):
 
 
 def read_source(path: Path) -> MerchantSourceDefinition:
-    document = _document(path)
+    return parse_source(_document(path))
+
+
+def parse_source(document: dict[str, Any]) -> MerchantSourceDefinition:
+    """Validate a persisted source payload before a compiler interprets it."""
     _only(document, {"key", "version", "merchant_slug", "products", "policy_text"}, "source")
     return MerchantSourceDefinition(
         key=_string(document, "key"),

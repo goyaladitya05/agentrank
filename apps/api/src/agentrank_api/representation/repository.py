@@ -1,6 +1,7 @@
 """Repository access for immutable merchant representations."""
 
 import uuid
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,6 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from agentrank_api.commerce.models import Merchant
 from agentrank_api.representation.definitions import CommerceIRDefinition, MerchantSourceDefinition
 from agentrank_api.representation.models import CommerceRepresentation, MerchantSourceSnapshot
+
+if TYPE_CHECKING:
+    from agentrank_api.compiler.models import CompilerRun
 
 
 class MerchantSourceRepository:
@@ -49,7 +53,11 @@ class CommerceRepresentationRepository:
         self._session = session
 
     async def create(
-        self, *, source: MerchantSourceSnapshot, definition: CommerceIRDefinition
+        self,
+        *,
+        source: MerchantSourceSnapshot,
+        definition: CommerceIRDefinition,
+        compiler_run: CompilerRun | None = None,
     ) -> CommerceRepresentation:
         if (source.source_key, source.source_version, source.content_hash) != (
             definition.source_key,
@@ -57,9 +65,18 @@ class CommerceRepresentationRepository:
             definition.source_hash,
         ):
             raise ValueError("Commerce IR must name the exact source snapshot it was derived from")
+        if (definition.producer.value == "COMPILER") != (compiler_run is not None):
+            raise ValueError("compiler Commerce IR requires its compiler run")
+        if compiler_run is not None and (
+            compiler_run.merchant_id != source.merchant_id
+            or compiler_run.source_snapshot_id != source.id
+            or compiler_run.configuration_digest != definition.producer_version
+        ):
+            raise ValueError("compiler Commerce IR does not match its compiler run")
         row = CommerceRepresentation(
             merchant_id=source.merchant_id,
             source_snapshot_id=source.id,
+            compiler_run_id=None if compiler_run is None else compiler_run.id,
             producer=definition.producer,
             producer_version=definition.producer_version,
             content_hash=definition.content_hash,

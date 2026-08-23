@@ -15,6 +15,7 @@ from agentrank_api.auth import models as auth_models  # noqa: F401
 from agentrank_api.benchmark import models as benchmark_models  # noqa: F401
 from agentrank_api.checkout import models as checkout_models  # noqa: F401
 from agentrank_api.commerce import models as commerce_models  # noqa: F401
+from agentrank_api.compiler import models as compiler_models  # noqa: F401
 from agentrank_api.constraints import models as constraint_models  # noqa: F401
 from agentrank_api.inventory import models as inventory_models  # noqa: F401
 from agentrank_api.mandates import models as mandate_models  # noqa: F401

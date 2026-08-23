@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from agentrank_api.benchmark.definitions import MAX_KEY_LENGTH, validate_key
+from agentrank_api.benchmark.definitions import validate_key
 from agentrank_api.benchmark.identity import HASH_ALGORITHM, canonical_json
 from agentrank_api.money import CURRENCY_PATTERN
 
@@ -309,7 +309,7 @@ class CommerceIRDefinition:
             raise ValueError("Commerce IR must name a valid source identity")
         if not self.producer_version.strip() or not self.products:
             raise ValueError("Commerce IR needs a producer version and products")
-        if len(self.producer_version) > MAX_KEY_LENGTH:
+        if len(self.producer_version) > 128:
             raise ValueError("Commerce IR producer version is too long")
         ids = [product.external_id for product in self.products]
         skus = [variant.sku for product in self.products for variant in product.variants]
