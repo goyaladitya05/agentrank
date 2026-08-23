@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import (
 
 import agentrank_api.audit.models as audit_models  # noqa: F401  registers tables
 import agentrank_api.auth.models as auth_models  # noqa: F401  registers tables
+import agentrank_api.benchmark.experiment as benchmark_experiment  # noqa: F401  registers tables
 import agentrank_api.benchmark.models as benchmark_models  # noqa: F401  registers tables
 import agentrank_api.checkout.models as checkout_models  # noqa: F401  registers tables
 import agentrank_api.commerce.models as commerce_models  # noqa: F401  registers tables

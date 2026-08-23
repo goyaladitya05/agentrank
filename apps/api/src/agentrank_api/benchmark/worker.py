@@ -208,7 +208,11 @@ async def execute_with_evidence(
                     mandate_id=request.mandate_id,  # type: ignore[arg-type]
                     configuration=configuration,
                 )
-                report = await buyer.execute(request.brief, merchant_id=request.merchant_id)
+                report = await buyer.execute(
+                    request.brief,
+                    merchant_id=request.merchant_id,
+                    merchant_information=request.merchant_information,
+                )
                 return report, buyer.evidence
             finally:
                 await provider.aclose()

@@ -48,6 +48,7 @@ import uuid
 from pathlib import Path
 from typing import Any, TextIO
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.auth.service import MerchantCredentialService
@@ -60,13 +61,16 @@ from agentrank_api.benchmark.endpoint import (
     RequestLedger,
     issued_benchmark_credential,
 )
+from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
 from agentrank_api.benchmark.execution import BenchmarkRunCapability, ExecutorIdentity
+from agentrank_api.benchmark.experiment import CompilerImpactExperimentService
 from agentrank_api.benchmark.isolation import IsolatedMissionExecutor
 from agentrank_api.benchmark.lifecycle import MissionRunStatus
 from agentrank_api.benchmark.llm import AgentConfiguration
 from agentrank_api.benchmark.metrics import BenchmarkMetrics
-from agentrank_api.benchmark.models import BenchmarkMissionRun, BenchmarkRun
+from agentrank_api.benchmark.models import AgentProviderUsage, BenchmarkMissionRun, BenchmarkRun
 from agentrank_api.benchmark.reference_executor import ReferenceMissionExecutor
+from agentrank_api.benchmark.repository import BenchmarkSuiteRepository
 from agentrank_api.benchmark.runner import BenchmarkRunService
 from agentrank_api.benchmark.tools import MeasuredBuyerSurface, ToolLedger
 from agentrank_api.benchmark.wire import LLM_STRATEGY
@@ -178,6 +182,36 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
     _add_world(closing)
     _add_json(closing)
     closing.set_defaults(command=abort)
+
+    comparison = commands.add_parser(
+        "compare-create",
+        help="predeclare a controlled raw versus compiler-produced Commerce IR experiment",
+    )
+    comparison.add_argument("--source-snapshot-id", type=uuid.UUID, required=True)
+    comparison.add_argument("--compiled-representation-id", type=uuid.UUID, required=True)
+    comparison.add_argument("--sample-count", type=int, choices=(1, 2, 3), default=1)
+    comparison.add_argument("--model", default="gpt-5.6-terra")
+    _add_world(comparison)
+    _add_json(comparison)
+    comparison.set_defaults(command=compare_create)
+
+    comparison_run = commands.add_parser(
+        "compare-run",
+        help="execute the next predeclared live compiler-impact sample",
+    )
+    comparison_run.add_argument("experiment_id", type=uuid.UUID)
+    _add_world(comparison_run)
+    _add_json(comparison_run)
+    comparison_run.set_defaults(command=compare_run)
+
+    comparison_show = commands.add_parser(
+        "compare-show",
+        help="show predeclared samples, deterministic metrics, and paired transitions",
+    )
+    comparison_show.add_argument("experiment_id", type=uuid.UUID)
+    _add_world(comparison_show)
+    _add_json(comparison_show)
+    comparison_show.set_defaults(command=compare_show)
 
 
 def _add_world(parser: argparse.ArgumentParser) -> None:
@@ -395,8 +429,8 @@ async def _llm_isolated_run(
             capability=capability,
             marker=TokenMarker.of(settings.environment),
         ) as token:
-            environment = dict(os.environ)
-            environment["OPENAI_API_KEY"] = settings.openai.api_key.get_secret_value()
+            worker_environment = dict(os.environ)
+            worker_environment["OPENAI_API_KEY"] = settings.openai.api_key.get_secret_value()
             executor = IsolatedMissionExecutor(
                 base_url=endpoint.base_url,
                 token=token,
@@ -404,7 +438,7 @@ async def _llm_isolated_run(
                 strategy=LLM_STRATEGY,
                 provision_mandate=lambda brief: provision(trusted, brief),
                 agent_configuration=configuration.payload(),
-                environment=environment,
+                environment=worker_environment,
             )
             executor.identity = identity
             return await service.execute_started_suite(
@@ -414,6 +448,380 @@ async def _llm_isolated_run(
                 fixture=world.fixture,
                 witness=executor,
             )
+
+
+async def compare_create(
+    session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
+    provider: PaymentProvider,
+    arguments: argparse.Namespace,
+    out: TextIO,
+    settings: Settings,
+) -> int:
+    """Persist all paired sample identities before any live model call is possible."""
+    del sessions, provider, settings
+    world = read_world(arguments.world)
+    merchant_id = await _benchmark_merchant(session, world)
+    suite = await BenchmarkSuiteRepository(session).get(world.suite.key, world.suite.version)
+    if suite is None:
+        raise NotFoundError("benchmark_suite", world.suite.label)
+    configuration = AgentConfiguration(provider="openai-responses", requested_model=arguments.model)
+    environment = await BenchmarkEnvironmentService(session).require_registered(world.fixture)
+    experiment = await CompilerImpactExperimentService(session).create(
+        merchant_id=merchant_id,
+        suite_id=suite.id,
+        environment=environment,
+        source_snapshot_id=arguments.source_snapshot_id,
+        compiled_representation_id=arguments.compiled_representation_id,
+        buyer_configuration=configuration.payload(),
+        buyer_configuration_digest=configuration.configuration_digest,
+        sample_count=arguments.sample_count,
+    )
+    payload = {
+        "experiment_id": str(experiment.id),
+        "benchmark": world.suite.label,
+        "source_snapshot_id": str(experiment.source_snapshot_id),
+        "compiled_representation_id": str(experiment.compiled_representation_id),
+        "buyer_configuration_digest": experiment.buyer_configuration_digest,
+        "buyer_configuration": experiment.buyer_configuration,
+        "sample_count_per_representation": experiment.sample_count,
+        "development_benchmark": True,
+    }
+    if arguments.as_json:
+        write_json(out, payload)
+    else:
+        print(f"experiment  {payload['experiment_id']}", file=out)
+        print(f"benchmark   {payload['benchmark']} development benchmark, not a holdout", file=out)
+        print(f"raw source  {payload['source_snapshot_id']}", file=out)
+        print(f"compiled    {payload['compiled_representation_id']}", file=out)
+        print(f"buyer       {payload['buyer_configuration_digest']}", file=out)
+        print(
+            f"samples     {payload['sample_count_per_representation']} per representation", file=out
+        )
+    return ExitCode.OK
+
+
+async def compare_run(
+    session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
+    provider: PaymentProvider,
+    arguments: argparse.Namespace,
+    out: TextIO,
+    settings: Settings,
+) -> int:
+    """Execute exactly one next sample, preserving the persisted alternating order."""
+    if settings.openai is None:
+        raise ValueError("OPENAI_API_KEY is required for a live compiler-impact sample")
+    world = read_world(arguments.world)
+    merchant_id = await _benchmark_merchant(session, world)
+    experiments = CompilerImpactExperimentService(session)
+    treatment = await experiments.next_treatment(merchant_id, arguments.experiment_id)
+    environment = await BenchmarkEnvironmentService(session).require_registered(world.fixture)
+    if environment.id != treatment.experiment.environment_id:
+        raise ValueError(
+            "benchmark world does not match the predeclared compiler impact experiment"
+        )
+    configuration = AgentConfiguration.from_payload(treatment.experiment.buyer_configuration)
+    if configuration.configuration_digest != treatment.experiment.buyer_configuration_digest:
+        raise ValueError("compiler impact experiment buyer configuration digest is invalid")
+    identity = ExecutorIdentity(
+        kind="llm-openai", version=1, revision=configuration.configuration_digest
+    )
+    service = BenchmarkRunService(session)
+    served = RequestLedger()
+    async with LocalCommerceEndpoint(settings, provider=provider, observer=served) as endpoint:
+        started = await service.start_suite(
+            suite_key=world.suite.key,
+            suite_version=world.suite.version,
+            fixture=world.fixture,
+            executor=identity,
+            representation_label="merchant-information",
+            agent_configuration=configuration.payload(),
+            representation=treatment.representation,
+        )
+        await experiments.bind_run(treatment, started.id)
+        capability = BenchmarkRunCapability(merchant_id=merchant_id, run_id=started.id)
+        trusted = MerchantBuyerSurface(
+            sessions, merchant_id=merchant_id, provider=provider, benchmark_capability=capability
+        )
+        async with issued_benchmark_credential(
+            MerchantCredentialService(session),
+            capability=capability,
+            marker=TokenMarker.of(settings.environment),
+        ) as token:
+            worker_environment = dict(os.environ)
+            worker_environment["OPENAI_API_KEY"] = settings.openai.api_key.get_secret_value()
+            executor = IsolatedMissionExecutor(
+                base_url=endpoint.base_url,
+                token=token,
+                served=served,
+                strategy=LLM_STRATEGY,
+                provision_mandate=lambda brief: provision(trusted, brief),
+                agent_configuration=configuration.payload(),
+                merchant_information=treatment.projection,
+                environment=worker_environment,
+            )
+            executor.identity = identity
+            finished = await service.execute_started_suite(
+                started.id,
+                executor,
+                merchant_id=merchant_id,
+                fixture=world.fixture,
+                witness=executor,
+            )
+    representation_kind = treatment.sample.representation_kind.value
+    payload: dict[str, str | int] = {
+        "experiment_id": str(treatment.experiment.id),
+        "sample_id": str(treatment.sample.id),
+        "pair_ordinal": treatment.sample.pair_ordinal,
+        "representation_kind": representation_kind,
+        "run_id": str(finished.id),
+    }
+    if arguments.as_json:
+        write_json(out, payload)
+    else:
+        print(f"experiment  {payload['experiment_id']}", file=out)
+        print(
+            f"sample      pair {payload['pair_ordinal']} {representation_kind.lower()}",
+            file=out,
+        )
+        print(f"run         {payload['run_id']}", file=out)
+    return ExitCode.OK
+
+
+async def compare_show(
+    session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
+    provider: PaymentProvider,
+    arguments: argparse.Namespace,
+    out: TextIO,
+    settings: Settings,
+) -> int:
+    """Report every persisted sample without merging away stochastic executions."""
+    del sessions, provider, settings
+    world = read_world(arguments.world)
+    merchant_id = await _benchmark_merchant(session, world)
+    experiments = CompilerImpactExperimentService(session)
+    experiment = await experiments.get(merchant_id, arguments.experiment_id)
+    samples = await experiments.samples(merchant_id, experiment.id)
+    runs = BenchmarkRunService(session)
+    reports: list[dict[str, Any]] = []
+    for sample in samples:
+        report: dict[str, Any] = {
+            "sample_id": str(sample.id),
+            "pair_ordinal": sample.pair_ordinal,
+            "representation_kind": sample.representation_kind.value,
+            "source_snapshot_id": _optional(sample.source_snapshot_id),
+            "representation_id": _optional(sample.representation_id),
+            "run_id": _optional(sample.run_id),
+        }
+        if sample.run_id is not None:
+            loaded = await runs.load(sample.run_id, merchant_id=merchant_id)
+            metrics = await runs.metrics(sample.run_id, merchant_id=merchant_id)
+            suite, environment = await _pins(runs, loaded)
+            report["run"] = _run_json(loaded, metrics, suite, environment)
+            usage_rows = await session.execute(
+                select(AgentProviderUsage.actual_model, AgentProviderUsage.measurement_kind).where(
+                    AgentProviderUsage.run_id == sample.run_id,
+                    AgentProviderUsage.merchant_id == merchant_id,
+                )
+            )
+            report["resolved_models"] = sorted(
+                {model for model, _kind in usage_rows if model is not None}
+            )
+        reports.append(report)
+    aggregates = _comparison_aggregates(reports)
+    transitions = _mission_transitions(reports)
+    payload: dict[str, Any] = {
+        "title": "Compiler Impact Experiment",
+        "development_benchmark_warning": "voltedge-core@2 is development evidence, not a holdout",
+        "experiment_id": str(experiment.id),
+        "buyer_configuration_digest": experiment.buyer_configuration_digest,
+        "source_snapshot_id": str(experiment.source_snapshot_id),
+        "compiled_representation_id": str(experiment.compiled_representation_id),
+        "environment_id": str(experiment.environment_id),
+        "samples": reports,
+        "aggregates": aggregates,
+        "delta": _comparison_delta(aggregates),
+        "mission_transitions": transitions,
+    }
+    if arguments.as_json:
+        write_json(out, payload)
+    else:
+        print("Compiler Impact Experiment", file=out)
+        print("warning     voltedge-core@2 is development evidence, not a holdout", file=out)
+        print(f"experiment  {payload['experiment_id']}", file=out)
+        print(f"buyer       {payload['buyer_configuration_digest']}", file=out)
+        for report in reports:
+            print(
+                f"sample      pair {report['pair_ordinal']}"
+                f" {str(report['representation_kind']).lower()}"
+                f" run {report['run_id'] or MISSING}",
+                file=out,
+            )
+        for kind, aggregate in aggregates.items():
+            print(
+                f"{kind.lower():<11}{aggregate['completed_samples']}/{aggregate['planned_samples']}"
+                f" samples, completion mean {aggregate['task_completion_rate_mean']}",
+                file=out,
+            )
+        for demand in payload["delta"]["simulated_demand_by_currency"]:
+            print(
+                f"delta       {demand['currency']} simulated captured"
+                f" {demand['captured_amount_minor']}",
+                file=out,
+            )
+    return ExitCode.OK
+
+
+def _comparison_aggregates(reports: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for kind in ("RAW", "COMPILED"):
+        group = [report for report in reports if report["representation_kind"] == kind]
+        completed_reports = [
+            report for report in group if report.get("run", {}).get("status") == "COMPLETED"
+        ]
+        completed = [report["run"]["metrics"] for report in completed_reports]
+        rates = [
+            entry["task_completion_rate"]
+            for entry in completed
+            if entry["task_completion_rate"] is not None
+        ]
+        result[kind] = {
+            "planned_samples": len(group),
+            "completed_samples": len(completed),
+            "task_completion_rate_mean": None if not rates else sum(rates) / len(rates),
+            "task_completion_rate_min": None if not rates else min(rates),
+            "task_completion_rate_max": None if not rates else max(rates),
+            "metric_totals": _metric_totals(completed),
+            "primary_failure_counts": _failure_totals(completed),
+            "resolved_models": sorted(
+                {
+                    model
+                    for report in completed_reports
+                    for model in report.get("resolved_models", [])
+                }
+            ),
+            "simulated_demand_by_currency": _aggregate_simulated_demand(completed_reports),
+        }
+    return result
+
+
+def _metric_totals(completed: list[dict[str, Any]]) -> dict[str, int]:
+    names = (
+        "missions_total",
+        "missions_succeeded",
+        "missions_failed",
+        "missions_abstained",
+        "missions_errored",
+        "missions_unfinished",
+        "correct_abstentions",
+        "incorrect_abstentions",
+        "unsafe_attempts",
+        "unverified_attempts",
+        "unsafe_completions",
+        "oracle_disagreements",
+    )
+    return {name: sum(entry[name] for entry in completed) for name in names}
+
+
+def _failure_totals(completed: list[dict[str, Any]]) -> dict[str, int]:
+    totals: dict[str, int] = {}
+    for entry in completed:
+        for reason, count in entry["primary_failure_counts"].items():
+            totals[reason] = totals.get(reason, 0) + count
+    return {reason: totals[reason] for reason in sorted(totals)}
+
+
+def _aggregate_simulated_demand(group: list[dict[str, Any]]) -> list[dict[str, int | str]]:
+    totals: dict[str, dict[str, int]] = {}
+    for report in group:
+        if "run" not in report:
+            continue
+        for entry in report["run"]["simulated_demand"]:
+            currency = entry["currency"]
+            current = totals.setdefault(
+                currency,
+                {
+                    "potential_amount_minor": 0,
+                    "captured_amount_minor": 0,
+                    "lost_amount_minor": 0,
+                    "not_measured_amount_minor": 0,
+                },
+            )
+            for key in current:
+                current[key] += entry[key]
+    return [{"currency": currency, **totals[currency]} for currency in sorted(totals)]
+
+
+def _comparison_delta(aggregates: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    raw, compiled = aggregates["RAW"], aggregates["COMPILED"]
+    raw_demand = {entry["currency"]: entry for entry in raw["simulated_demand_by_currency"]}
+    compiled_demand = {
+        entry["currency"]: entry for entry in compiled["simulated_demand_by_currency"]
+    }
+    demand_delta = []
+    for currency in sorted(raw_demand.keys() | compiled_demand.keys()):
+        baseline, treatment = raw_demand.get(currency, {}), compiled_demand.get(currency, {})
+        demand_delta.append(
+            {
+                "currency": currency,
+                "potential_amount_minor": treatment.get("potential_amount_minor", 0)
+                - baseline.get("potential_amount_minor", 0),
+                "captured_amount_minor": treatment.get("captured_amount_minor", 0)
+                - baseline.get("captured_amount_minor", 0),
+                "lost_amount_minor": treatment.get("lost_amount_minor", 0)
+                - baseline.get("lost_amount_minor", 0),
+                "not_measured_amount_minor": treatment.get("not_measured_amount_minor", 0)
+                - baseline.get("not_measured_amount_minor", 0),
+            }
+        )
+    raw_rate, compiled_rate = (
+        raw["task_completion_rate_mean"],
+        compiled["task_completion_rate_mean"],
+    )
+    return {
+        "task_completion_rate_mean": (
+            None if raw_rate is None or compiled_rate is None else compiled_rate - raw_rate
+        ),
+        "simulated_demand_by_currency": demand_delta,
+        "metric_totals": {
+            name: compiled["metric_totals"][name] - raw["metric_totals"][name]
+            for name in raw["metric_totals"]
+        },
+        "resolved_model_mismatch": raw["resolved_models"] != compiled["resolved_models"],
+    }
+
+
+def _mission_transitions(reports: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_pair: dict[int, dict[str, dict[str, Any]]] = {}
+    for report in reports:
+        if report.get("run", {}).get("status") == "COMPLETED":
+            by_pair.setdefault(report["pair_ordinal"], {})[report["representation_kind"]] = report
+    transitions: list[dict[str, Any]] = []
+    for pair, arms in sorted(by_pair.items()):
+        if set(arms) != {"RAW", "COMPILED"}:
+            continue
+        raw = {mission["mission_key"]: mission for mission in arms["RAW"]["run"]["missions"]}
+        compiled = {
+            mission["mission_key"]: mission for mission in arms["COMPILED"]["run"]["missions"]
+        }
+        transitions.extend(
+            {
+                "pair_ordinal": pair,
+                "mission_key": key,
+                "raw": {
+                    "status": raw[key]["status"],
+                    "failure": raw[key]["primary_failure_reason"],
+                },
+                "compiled": {
+                    "status": compiled[key]["status"],
+                    "failure": compiled[key]["primary_failure_reason"],
+                },
+            }
+            for key in sorted(raw.keys() & compiled.keys())
+        )
+    return transitions
 
 
 async def show(
@@ -566,6 +974,9 @@ def _run_json(
             "unverified_attempts": metrics.unverified_attempts,
             "unsafe_completions": metrics.unsafe_completions,
             "oracle_disagreements": metrics.oracle_disagreements,
+            "primary_failure_counts": {
+                reason.value: count for reason, count in metrics.primary_failure_counts.items()
+            },
         },
         # Simulated buyer demand, authored with the suite. Never revenue, never a forecast and
         # never a measured business result. See docs/benchmark.md.

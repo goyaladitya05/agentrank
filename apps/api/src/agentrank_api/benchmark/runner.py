@@ -294,6 +294,7 @@ class BenchmarkRunService:
         executor: ExecutorIdentity,
         representation_label: str | None = None,
         agent_configuration: dict[str, object] | None = None,
+        representation: CommerceRepresentation | None = None,
     ) -> BenchmarkRun:
         """Prepare a benchmark world and persist its RUNNING claim before a buyer is provisioned.
 
@@ -311,6 +312,7 @@ class BenchmarkRunService:
             executor=executor,
             representation_label=representation_label,
             agent_configuration=agent_configuration,
+            representation=representation,
         )
 
     async def execute_started_suite(

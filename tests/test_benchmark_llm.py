@@ -208,6 +208,7 @@ async def test_worker_uses_the_frozen_configuration_delivered_over_the_wire(
             strategy=LLM_STRATEGY,
             mandate_id=uuid.uuid7(),
             agent_configuration=frozen.payload(),
+            merchant_information={"products": []},
         ).to_payload()
     )
     report = await benchmark_worker.execute(request)

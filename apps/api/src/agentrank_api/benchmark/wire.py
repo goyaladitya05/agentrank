@@ -67,6 +67,7 @@ LLM_STRATEGY = "llm"
 # What stands in for a credential anywhere a request might be written down.
 REDACTED = "redacted"
 STRATEGIES = frozenset({REFERENCE_STRATEGY, LLM_STRATEGY})
+ORACLE_FIELDS = frozenset({"expected_outcome", "simulated_value", "simulated_value_amount_minor"})
 
 
 class ProtocolError(ValueError):
@@ -88,6 +89,7 @@ class MissionRequest:
     strategy: str = REFERENCE_STRATEGY
     mandate_id: uuid.UUID | None = None
     agent_configuration: dict[str, Any] | None = None
+    merchant_information: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.strategy not in STRATEGIES:
@@ -100,6 +102,10 @@ class MissionRequest:
             raise ValueError("an LLM mission request requires a trusted mandate")
         if self.strategy == LLM_STRATEGY and self.agent_configuration is None:
             raise ValueError("an LLM mission request requires frozen agent configuration")
+        if self.strategy == LLM_STRATEGY and self.merchant_information is None:
+            raise ValueError("an LLM mission request requires merchant information")
+        if self.merchant_information is not None:
+            _reject_oracle_fields(self.merchant_information)
         if self.strategy != LLM_STRATEGY and self.agent_configuration is not None:
             raise ValueError("only an LLM mission request may carry agent configuration")
 
@@ -113,6 +119,7 @@ class MissionRequest:
             "brief": self.brief.to_payload(),
             "mandate_id": None if self.mandate_id is None else str(self.mandate_id),
             "agent_configuration": self.agent_configuration,
+            "merchant_information": self.merchant_information,
         }
 
     @classmethod
@@ -129,6 +136,7 @@ class MissionRequest:
                     "brief",
                     "mandate_id",
                     "agent_configuration",
+                    "merchant_information",
                 }
             ),
         )
@@ -140,6 +148,7 @@ class MissionRequest:
             strategy=_text(document, "strategy"),
             mandate_id=_optional_id(document, "mandate_id"),
             agent_configuration=_optional_object(document, "agent_configuration"),
+            merchant_information=_optional_object(document, "merchant_information"),
         )
 
     def redacted(self) -> dict[str, Any]:
@@ -310,6 +319,19 @@ def _optional_object(document: dict[str, Any], name: str) -> dict[str, Any] | No
     if not isinstance(value, dict):
         raise ProtocolError(f"{name} must be an object or null")
     return value
+
+
+def _reject_oracle_fields(value: Any) -> None:
+    """Keep arbitrary merchant prose from becoming a route for benchmark ground truth."""
+    if isinstance(value, dict):
+        forbidden = sorted(ORACLE_FIELDS & set(value))
+        if forbidden:
+            raise ValueError(f"merchant information contains benchmark oracle fields: {forbidden}")
+        for item in value.values():
+            _reject_oracle_fields(item)
+    elif isinstance(value, list):
+        for item in value:
+            _reject_oracle_fields(item)
 
 
 def _read[T](document: dict[str, Any], name: str, build: Callable[[dict[str, Any]], T]) -> T | None:

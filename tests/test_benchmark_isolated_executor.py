@@ -503,6 +503,7 @@ async def test_a_mission_request_carries_no_oracle_and_has_nowhere_to_put_one(
         "brief",
         "mandate_id",
         "agent_configuration",
+        "merchant_information",
     }
     document = json.dumps(payload)
     for forbidden in (
