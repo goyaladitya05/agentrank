@@ -331,8 +331,12 @@ async def test_dropping_the_merchant_predicate_is_what_keeps_another_shop_out(
     """The ownership predicate is load bearing rather than decorative.
 
     A candidate identifier is a UUID somebody else can hold. The same identifier answers for its
-    owner and refuses everybody else at the service the routes call, so removing `merchant_id`
-    from that query turns this test red rather than merely widening what the console can reach.
+    owner and refuses everybody else at the service the routes call.
+
+    Measured by mutation rather than asserted by reading. Removing the merchant predicate from
+    any single query in the review path leaves this green, because the path locks the candidate
+    and then its run and both are scoped: that is defense in depth working. Removing it from all
+    of them turns this red, and the review lineage trigger refuses the write underneath.
     """
     owner, _, candidates = await acceptable_run(session, slug="owner-shop")
     intruder, _, _ = await acceptable_run(session, slug="intruder-shop")
