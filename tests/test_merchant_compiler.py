@@ -139,6 +139,74 @@ async def test_conflicting_wattage_requires_review_and_correction_preserves_prop
     assert (await service.publish(merchant_id, run_id)).compiler_run_id == run_id
 
 
+async def test_correction_cannot_claim_authority_or_rewrite_a_published_run(
+    session: AsyncSession,
+) -> None:
+    merchant, snapshot = await _source(session)
+    original = read_source(SOURCE_PATH)
+    changed = replace(
+        original,
+        version=2,
+        products=(
+            replace(
+                original.products[0], description="Explicitly supports 65W, unlike its 100W title."
+            ),
+            *original.products[1:],
+        ),
+    )
+    snapshot = await MerchantRepresentationService(session).publish_source(changed)
+    service = MerchantCompilerService(session)
+    run = await service.run(merchant.id, snapshot.id)
+    candidate = next(
+        item
+        for item in await service.candidates(merchant.id, run.id)
+        if item.target.endswith(".attribute.wattage")
+        and item.state is CandidateState.REVIEW_REQUIRED
+    )
+    correction = CandidateProposal(
+        target=candidate.target,
+        fact=SemanticFact(
+            value=65,
+            authority=FactAuthority.DERIVED,
+            confidence=FactConfidence.HIGH,
+            review_state=ReviewState.CONFIRMED,
+            provenance=(SourceReference("products[VE-CHG-100].description", "65W"),),
+        ),
+        attribute_kind=AttributeKind.MEASUREMENT,
+        unit="W",
+    )
+    with pytest.raises(ValueError, match="derived, high confidence"):
+        await service.review(
+            merchant.id,
+            candidate.id,
+            ReviewDecision.CORRECT,
+            correction=replace(
+                correction,
+                fact=replace(
+                    correction.fact,
+                    authority=FactAuthority.AUTHORITATIVE,
+                    confidence=FactConfidence.AUTHORITATIVE,
+                    review_state=ReviewState.NOT_REQUIRED,
+                ),
+            ),
+        )
+    await service.review(merchant.id, candidate.id, ReviewDecision.CORRECT, correction=correction)
+    for other in await service.candidates(merchant.id, run.id):
+        if other.id != candidate.id and other.state is CandidateState.REVIEW_REQUIRED:
+            await service.review(
+                merchant.id,
+                other.id,
+                ReviewDecision.CORRECT,
+                correction=replace(correction, target=other.target),
+            )
+    await service.publish(merchant.id, run.id)
+    with pytest.raises(ConflictError) as error:
+        await service.review(
+            merchant.id, candidate.id, ReviewDecision.CORRECT, correction=correction
+        )
+    assert error.value.reason == "compiler_run_already_published"
+
+
 async def test_provenance_must_exist_in_source_and_compiler_is_merchant_scoped(
     session: AsyncSession,
 ) -> None:

@@ -7,6 +7,7 @@ the Docker Compose service, and in CI it is a service container.
 import re
 import socket
 import uuid
+from os import getpid
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from pathlib import Path
 from typing import Protocol
@@ -43,8 +44,10 @@ from agentrank_api.models import Base
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 
-THROWAWAY_DATABASE = "agentrank_migration_test"
-CATALOG_DATABASE = "agentrank_catalog_test"
+# Test runs may overlap locally or in adjacent CI jobs.  A process-specific database prevents
+# one runner's fixture cleanup from truncating or dropping another runner's active test world.
+THROWAWAY_DATABASE = f"agentrank_migration_test_{getpid()}"
+CATALOG_DATABASE = f"agentrank_catalog_test_{getpid()}"
 
 # Table names come from this repository's own metadata, never from a caller.
 _TABLE_LIST = ", ".join(f'"{table.name}"' for table in Base.metadata.sorted_tables)

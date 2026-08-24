@@ -140,9 +140,26 @@ class MerchantCompilerService:
         correction: CandidateProposal | None = None,
         reviewer: str = "SYSTEM",
     ) -> CompilerReview:
-        # A candidate admits one immutable decision.  Locking the candidate makes two browser
-        # tabs observe one ordering: a retry of the winning command returns the same review,
-        # while a different stale command is refused without replacing historical evidence.
+        # Review and publication serialize on the run first, then a candidate.  A published
+        # representation must be the exact reviewed state it names, never a stale snapshot that
+        # a concurrent correction can overtake.
+        candidate = (
+            await self._session.execute(
+                select(CompilerCandidate)
+                .join(CompilerRun, CompilerCandidate.run_id == CompilerRun.id)
+                .where(
+                    CompilerCandidate.id == candidate_id,
+                    CompilerCandidate.merchant_id == merchant_id,
+                    CompilerRun.merchant_id == merchant_id,
+                )
+                .with_for_update(of=CompilerRun)
+            )
+        ).scalar_one_or_none()
+        if candidate is None:
+            raise NotFoundError("compiler_candidate", str(candidate_id))
+        run = await self._run_for_update(merchant_id, candidate.run_id)
+        if run.published_representation_id is not None:
+            raise ConflictError("compiler_run_already_published", str(run.id))
         candidate = (
             await self._session.execute(
                 select(CompilerCandidate)
@@ -152,9 +169,7 @@ class MerchantCompilerService:
                 )
                 .with_for_update()
             )
-        ).scalar_one_or_none()
-        if candidate is None:
-            raise NotFoundError("compiler_candidate", str(candidate_id))
+        ).scalar_one()
         if candidate.state is not CandidateState.REVIEW_REQUIRED:
             raise ConflictError("candidate_does_not_require_review", candidate.target)
         original = _proposal(candidate.proposal)
@@ -169,6 +184,12 @@ class MerchantCompilerService:
                 or correction.requires_correction
             ):
                 raise ValueError("a correction must preserve the candidate type and unit")
+            if (
+                correction.fact.authority is not FactAuthority.DERIVED
+                or correction.fact.confidence is not FactConfidence.HIGH
+                or correction.fact.review_state is not ReviewState.CONFIRMED
+            ):
+                raise ValueError("a correction must be derived, high confidence, and confirmed")
             _validate_target_value(correction)
             source = await self._source_for_run(candidate.run_id, merchant_id)
             self._validate_candidates(
@@ -202,15 +223,7 @@ class MerchantCompilerService:
     async def publish(self, merchant_id: uuid.UUID, run_id: uuid.UUID) -> CommerceRepresentation:
         # Publishing is also a one-way transition.  Serializing on the run prevents two
         # concurrent requests from producing equivalent representations or losing the run link.
-        run = (
-            await self._session.execute(
-                select(CompilerRun)
-                .where(CompilerRun.id == run_id, CompilerRun.merchant_id == merchant_id)
-                .with_for_update()
-            )
-        ).scalar_one_or_none()
-        if run is None:
-            raise NotFoundError("compiler_run", str(run_id))
+        run = await self._run_for_update(merchant_id, run_id)
         if run.status is not CompilerRunStatus.COMPLETED:
             raise ConflictError("compiler_run_not_completed", str(run_id))
         if run.published_representation_id is not None:
@@ -279,6 +292,18 @@ class MerchantCompilerService:
         if source is None:
             raise NotFoundError("merchant_source_snapshot", str(source_id))
         return source
+
+    async def _run_for_update(self, merchant_id: uuid.UUID, run_id: uuid.UUID) -> CompilerRun:
+        run = (
+            await self._session.execute(
+                select(CompilerRun)
+                .where(CompilerRun.id == run_id, CompilerRun.merchant_id == merchant_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if run is None:
+            raise NotFoundError("compiler_run", str(run_id))
+        return run
 
     async def _source_for_run(
         self, run_id: uuid.UUID, merchant_id: uuid.UUID
