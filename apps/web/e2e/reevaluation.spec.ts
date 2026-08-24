@@ -48,6 +48,34 @@ function dispatch(): string {
   );
 }
 
+interface CapturedAction {
+  url: string;
+  headers: Record<string, string>;
+  body: string;
+}
+
+/**
+ * Record the real launch the console sends, so it can be replayed verbatim.
+ *
+ * Scoped to the re-evaluation pages: sign in is a server action too, and replaying that one
+ * would be replaying a merchant API key rather than a benchmark write.
+ */
+function captureLaunch(page: Page, captured: CapturedAction[]): void {
+  page.on("request", (request) => {
+    const headers = request.headers();
+    if (request.method() !== "POST" || headers["next-action"] === undefined) return;
+    if (!request.url().includes("/re-evaluations")) return;
+    if (captured.length > 0) return;
+    const replay: Record<string, string> = {};
+    for (const [name, value] of Object.entries(headers)) {
+      if (name !== "origin" && name !== "host" && name !== "cookie" && !name.startsWith(":")) {
+        replay[name] = value;
+      }
+    }
+    captured.push({ url: request.url(), headers: replay, body: request.postData() ?? "" });
+  });
+}
+
 /** The console navigation, so a link in it is never confused with one in the page body. */
 function nav(page: Page, name: string) {
   return page.getByRole("navigation", { name: "Console" }).getByRole("link", { name });
@@ -88,6 +116,8 @@ async function requestReevaluation(page: Page): Promise<void> {
 test("a merchant publishes, launches a re-evaluation and reads the result against the run before it", async ({
   page,
 }) => {
+  const captured: CapturedAction[] = [];
+  captureLaunch(page, captured);
   await signIn(page);
   await publishRepresentation(page);
 
@@ -128,6 +158,27 @@ test("a merchant publishes, launches a re-evaluation and reads the result agains
   await expect(page.getByText("One run on each side", { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "before", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "after", exact: true })).toBeVisible();
+
+  // The same signed in browser, the same recorded launch, and only the origin changed. One is
+  // executed and answered; the other never reaches the action at all. Neither produces a third
+  // launch: the request key the recorded body carries is one this merchant has already used, so
+  // a replay is the launch it already made rather than a new benchmark run.
+  const action = captured[0];
+  expect(action).toBeDefined();
+  if (action === undefined) return;
+  const sameOrigin = await page.request.post(action.url, {
+    headers: { ...action.headers, origin: "http://127.0.0.1:3001" },
+    data: action.body,
+  });
+  expect(sameOrigin.status()).toBe(200);
+  const crossOrigin = await page.request.post(action.url, {
+    headers: { ...action.headers, origin: "https://attacker.example" },
+    data: action.body,
+  });
+  expect(crossOrigin.status()).not.toBe(200);
+
+  await nav(page, "Re-evaluation").click();
+  await expect(page.locator('[aria-label="Re-evaluations"] tbody tr')).toHaveCount(2);
 });
 
 test("the console shows nothing about a re-evaluation without a signed in session", async ({

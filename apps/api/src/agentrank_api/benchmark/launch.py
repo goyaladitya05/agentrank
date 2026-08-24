@@ -282,6 +282,17 @@ class MerchantReevaluationService:
             )
         else:
             compiler_run = await self._compiler_run(merchant_id, representation)
+            if compiler_run is None:
+                # Held impossible by a check constraint and a RESTRICT foreign key, and still a
+                # named refusal rather than an assertion: a merchant who has published is never
+                # told to publish, and a broken lineage is not a 500.
+                blockers.append(
+                    LaunchBlocker(
+                        "representation_lineage_unreadable",
+                        "The published representation names a compiler run that cannot be read."
+                        " Your operator can see why; this is not something to fix from here.",
+                    )
+                )
 
         suite = await self._current_suite(merchant_id)
         if suite is None:
