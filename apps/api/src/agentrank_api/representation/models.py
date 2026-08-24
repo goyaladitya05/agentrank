@@ -2,9 +2,11 @@
 
 import uuid
 from datetime import datetime
+from enum import StrEnum
 from typing import Any
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     Enum,
@@ -15,6 +17,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -32,6 +35,35 @@ PRODUCER = Enum(
     length=24,
     name="representation_producer",
 )
+
+
+class SourceOrigin(StrEnum):
+    """Which mechanism supplied one piece of merchant source evidence.
+
+    One member, and that is deliberate rather than unfinished. AgentRank has exactly one
+    merchant-facing intake, and an enum that already listed a storefront integration nobody has
+    written would be a column describing a capability this system does not have.
+    """
+
+    MERCHANT_CONSOLE = "MERCHANT_CONSOLE"
+
+
+ORIGIN = Enum(
+    SourceOrigin,
+    native_enum=False,
+    create_constraint=False,
+    validate_strings=True,
+    length=32,
+    name="merchant_source_origin",
+)
+
+# One key per rendered console form. Bounded and character restricted because it arrives from a
+# browser and is stored; the same shape a benchmark launch key has, spelled out here rather than
+# imported so that merchant source evidence keeps no dependency on the benchmark package.
+SUBMISSION_KEY_PATTERN = r"^[0-9a-zA-Z_-]{8,64}$"
+MAX_SUBMISSION_KEY_LENGTH = 64
+
+_ORIGIN_VALUES = ", ".join(f"'{origin.value}'" for origin in SourceOrigin)
 
 
 class MerchantSourceSnapshot(Base):
@@ -112,3 +144,68 @@ class CommerceRepresentation(Base):
     @property
     def label(self) -> str:
         return f"{self.producer.value.lower()}:{self.producer_version}:{self.content_hash}"
+
+
+class MerchantSourceSubmission(Base):
+    """One merchant command that supplied source evidence, and the snapshot it resolved to.
+
+    A snapshot is what the merchant said. This is the command that said it, and the two are
+    separate rows because they are not the same count. Submitting evidence identical to the
+    merchant's current snapshot resolves to that snapshot rather than writing a second copy of
+    it, so many submissions can name one snapshot, and `created_snapshot` records which single
+    command actually produced it.
+
+    The row exists for three things a snapshot cannot carry:
+
+    ```text
+    request identity   one key per merchant, so a double submit is one submission
+    origin             which mechanism supplied the evidence
+    outcome            whether this command created a snapshot or matched the current one
+    ```
+
+    `request_key` is what makes a lost response answerable. The console generates one per
+    rendered form, so pressing submit twice and retrying after a response nobody saw are the
+    same command, and opening the form again is a deliberate second one.
+
+    A snapshot with no submission at all was published by the operator command line, which is
+    how every snapshot before this table came to exist. That absence is read as its origin
+    rather than backfilled with a guess.
+    """
+
+    __tablename__ = "merchant_source_submission"
+    __table_args__ = (
+        # The idempotency key. A repeated or concurrent submit with the same key is the same
+        # submission and resolves to the same snapshot.
+        UniqueConstraint(
+            "merchant_id", "request_key", name="uq_merchant_source_submission_request"
+        ),
+        ForeignKeyConstraint(["merchant_id"], ["merchant.id"], ondelete="RESTRICT"),
+        ForeignKeyConstraint(
+            ["source_snapshot_id", "merchant_id"],
+            ["merchant_source_snapshot.id", "merchant_source_snapshot.merchant_id"],
+            name="fk_merchant_source_submission_snapshot",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(f"request_key ~ '{SUBMISSION_KEY_PATTERN}'", name="request_key_format"),
+        CheckConstraint(f"origin IN ({_ORIGIN_VALUES})", name="origin_known"),
+        # One snapshot is created by one command. Many submissions may name a snapshot, and
+        # exactly one of them may claim to have written it.
+        Index(
+            "uq_merchant_source_submission_creator",
+            "source_snapshot_id",
+            unique=True,
+            postgresql_where=text("created_snapshot"),
+        ),
+        Index(None, "merchant_id"),
+        Index(None, "source_snapshot_id", "merchant_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)
+    merchant_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    request_key: Mapped[str] = mapped_column(String(MAX_SUBMISSION_KEY_LENGTH), nullable=False)
+    source_snapshot_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    origin: Mapped[SourceOrigin] = mapped_column(ORIGIN, nullable=False)
+    created_snapshot: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
