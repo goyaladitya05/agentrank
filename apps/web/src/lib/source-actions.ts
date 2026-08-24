@@ -5,9 +5,10 @@
  *
  * Both are thin adapters over the API, and both keep the same rules the compiler review and
  * re-evaluation actions established: the merchant credential comes from the server side session,
- * the API decides everything, and refusal codes become sentences here rather than in the API,
+ * the API decides everything, and refusal codes become sentences rather than being shown raw,
  * because the API's other caller is an agent and `request_too_large` is not something to show a
- * shopkeeper.
+ * shopkeeper. That translation lives in `@/lib/source-refusal`, which is a pure function of a
+ * status and a body and is tested as one.
  *
  * Three things are specific to supplying evidence.
  *
@@ -31,6 +32,7 @@ import { requireConsoleApiKey } from "@/lib/auth/credential";
 import { apiBaseUrl } from "@/lib/config";
 import { decodeCompilerRun } from "@/lib/compiler";
 import { decodeSourceSubmission } from "@/lib/source";
+import { COMPILE_REFUSALS, SOURCE_REFUSALS, refusal } from "@/lib/source-refusal";
 import type { CompileState, SourceSubmissionState, SourceValues } from "@/lib/source-mutation";
 
 /**
@@ -43,74 +45,6 @@ import type { CompileState, SourceSubmissionState, SourceValues } from "@/lib/so
  * and is the one that decides; this only gets there first.
  */
 const MAX_DOCUMENT_BYTES = 128 * 1024;
-
-const REFUSALS: Record<string, string> = {
-  request_too_large: "This source document is too large to submit. Shorten it and try again.",
-  request_too_deeply_nested:
-    "This document nests further than a source document ever needs to. Check its structure.",
-  length_required: "The console could not send this document. Reload the page and try again.",
-  source_request_key_reused:
-    "This form has already stored a different source document. Reload to start a new submission, then submit your changes.",
-  source_version_conflict:
-    "Another process is publishing source snapshots for your merchant. Reload and try again.",
-  not_found: "Reload this page and try again.",
-  unauthenticated: "Your session has expired. Sign in again to continue.",
-};
-
-interface Refusal {
-  readonly message: string;
-  readonly stale: boolean;
-}
-
-/**
- * A refusal, in words. A schema refusal carries a list of field locations, which is the most
- * useful thing a merchant editing a document can be told, so the first few are named rather than
- * flattened into "invalid document".
- */
-function refusal(status: number, payload: unknown): Refusal {
-  const body =
-    typeof payload === "object" && payload !== null && !Array.isArray(payload)
-      ? (payload as { error?: unknown; detail?: unknown })
-      : {};
-  // A 409 or a 404 means the world moved. A 422 means this request was wrong and the world did
-  // not move, so re-reading the page would only hide what has to be fixed.
-  const stale = status === 409 || status === 404;
-  const code = typeof body.error === "string" ? body.error : null;
-  const known = code === null ? undefined : REFUSALS[code];
-  if (known !== undefined) return { message: known, stale };
-  const named = fieldMessages((payload as { fields?: unknown }).fields);
-  if (named.length > 0) {
-    return { message: `AgentRank refused this document. ${named.join(" ")}`, stale };
-  }
-  if (typeof body.detail === "string") return { message: body.detail, stale };
-  return { message: `AgentRank refused this request (HTTP ${String(status)}).`, stale };
-}
-
-/**
- * Up to three "where: what" sentences out of a schema refusal, and nothing invented.
- *
- * The API answers an unreadable body with a `fields` list of locations and validator sentences,
- * deliberately without the value that failed. Naming the field is the most useful thing a
- * merchant editing a document can be told, and it is the reason this is not flattened into
- * "invalid document".
- */
-function fieldMessages(fields: unknown): string[] {
-  if (!Array.isArray(fields)) return [];
-  const messages: string[] = [];
-  for (const item of fields.slice(0, 3)) {
-    if (typeof item !== "object" || item === null) continue;
-    const entry = item as { location?: unknown; message?: unknown };
-    if (typeof entry.message !== "string") continue;
-    const where = Array.isArray(entry.location)
-      ? entry.location
-          .filter((part) => part !== "body")
-          .map((part) => String(part))
-          .join(".")
-      : "";
-    messages.push(where === "" ? `${entry.message}.` : `${where}: ${entry.message}.`);
-  }
-  return messages;
-}
 
 function refreshed(): void {
   revalidatePath("/sources");
@@ -194,7 +128,7 @@ export async function submitSource(
 
   const payload: unknown = await response.json().catch(() => null);
   if (!response.ok) {
-    const refused = refusal(response.status, payload);
+    const refused = refusal(response.status, payload, SOURCE_REFUSALS);
     if (refused.stale) refreshed();
     return failed(refused.message, values, { stale: refused.stale });
   }
@@ -221,11 +155,6 @@ export async function submitSource(
     values: null,
   };
 }
-
-const COMPILE_REFUSALS: Record<string, string> = {
-  not_found: "This source snapshot is no longer available. Reload to see your current source.",
-  unauthenticated: "Your session has expired. Sign in again to run the compiler.",
-};
 
 const IDLE_FAILURE = {
   ok: false as const,
@@ -260,20 +189,9 @@ export async function startCompilerRun(
 
   const payload: unknown = await response.json().catch(() => null);
   if (!response.ok) {
-    const body =
-      typeof payload === "object" && payload !== null && !Array.isArray(payload)
-        ? (payload as { error?: unknown; detail?: unknown })
-        : {};
-    const code = typeof body.error === "string" ? body.error : null;
-    const stale = response.status === 409 || response.status === 404;
-    const known = code === null ? undefined : COMPILE_REFUSALS[code];
-    const message =
-      known ??
-      (typeof body.detail === "string"
-        ? body.detail
-        : `AgentRank refused this request (HTTP ${String(response.status)}).`);
-    if (stale) revalidatePath(`/sources/${sourceSnapshotId}`);
-    return { ...IDLE_FAILURE, message, stale, unknown: false };
+    const refused = refusal(response.status, payload, COMPILE_REFUSALS);
+    if (refused.stale) revalidatePath(`/sources/${sourceSnapshotId}`);
+    return { ...IDLE_FAILURE, message: refused.message, stale: refused.stale, unknown: false };
   }
 
   let run;

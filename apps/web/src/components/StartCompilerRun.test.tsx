@@ -145,6 +145,15 @@ describe("<CompileAccepted>", () => {
     expect(html).not.toContain("Compiler run finished");
   });
 
+  it("says a run another request is still executing is still executing", () => {
+    for (const runStatus of ["PENDING", "RUNNING"]) {
+      const html = accepted({ runStatus, pendingReviews: 0 });
+      expect(html).toContain("is being compiled");
+      expect(html).not.toContain("could not read this snapshot");
+      expect(html).not.toContain("Compiler run finished");
+    }
+  });
+
   it("says an already published run cannot change", () => {
     const html = accepted({ published: true });
     expect(html).toContain("already compiled and published");

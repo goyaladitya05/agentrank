@@ -100,11 +100,11 @@ export function AlreadyCompiled({ existingRunId }: { existingRunId: string | nul
 /**
  * What a merchant is told when the command was accepted.
  *
- * Four different things happened and they read as four different sentences. A run that could not
- * read its snapshot is answered exactly like one that could, so "the facts it proposed are
- * waiting for your review" would be false for it; so would it be for a document clean enough to
- * need no decisions, and for a snapshot already compiled and published. The API said which one
- * this is and this says it back.
+ * The API answers the same 201 for five different things and they read as five different
+ * sentences. A run that could not read its snapshot; a run another request is still executing,
+ * which a second tab pressing the same button gets; a snapshot already compiled and published; a
+ * document clean enough to need no decisions; and facts waiting. "The facts it proposed are
+ * waiting for your review" is true of exactly one of those, and the API said which.
  */
 export function CompileAccepted({ state }: { state: CompileState }) {
   return (
@@ -127,16 +127,19 @@ export function CompileAccepted({ state }: { state: CompileState }) {
 }
 
 function outcome(state: CompileState): string {
-  if (state.runStatus !== null && state.runStatus !== "COMPLETED") {
+  if (state.runStatus === "FAILED") {
     return "The compiler could not read this snapshot. The run says what stopped it.";
+  }
+  if (state.runStatus === "PENDING" || state.runStatus === "RUNNING") {
+    // Reachable, and only from a second caller. A run is committed RUNNING before the compiler
+    // reads anything, so a request that finds one another request is still executing is answered
+    // with it. Saying it failed would be a guess and saying it finished would be wrong.
+    return "This snapshot is being compiled. Open the run to see where it got to.";
   }
   if (state.published) {
     return "This snapshot was already compiled and published. Its reviewed facts cannot change.";
   }
-  const pending = state.pendingReviews;
-  if (pending === null) {
-    return "Compiler run finished.";
-  }
+  const pending = state.pendingReviews ?? 0;
   if (pending === 0) {
     return "Compiler run finished. Nothing it proposed needs a decision from you.";
   }
