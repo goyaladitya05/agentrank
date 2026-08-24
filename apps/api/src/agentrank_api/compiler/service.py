@@ -19,6 +19,14 @@ from agentrank_api.compiler.models import (
     CompilerRunStatus,
     ReviewDecision,
 )
+from agentrank_api.compiler.targets import (
+    POLICY_PREFIX,
+    product_prefix,
+    variant_attribute_prefix,
+    variant_availability_target,
+    variant_compatibility_prefix,
+    variant_price_target,
+)
 from agentrank_api.errors import ConflictError, NotFoundError
 from agentrank_api.representation.definitions import (
     AttributeKind,
@@ -388,48 +396,48 @@ class MerchantCompilerService:
         for product_index, product in enumerate(source.products):
             variants: list[CommerceVariant] = []
             for variant in product.variants:
-                prefix = f"variant.{variant.sku}."
+                attribute_prefix = variant_attribute_prefix(variant.sku)
+                compatibility_prefix = variant_compatibility_prefix(variant.sku)
                 attributes = tuple(
                     CommerceAttribute(
-                        target.removeprefix(prefix + "attribute."),
+                        target.removeprefix(attribute_prefix),
                         proposal.attribute_kind,
                         proposal.fact,
                         proposal.unit,
                     )
                     for target, proposal in sorted(effective.items())
-                    if target.startswith(prefix + "attribute.")
-                    and proposal.attribute_kind is not None
+                    if target.startswith(attribute_prefix) and proposal.attribute_kind is not None
                 )
                 compatibility = {
-                    target.removeprefix(prefix + "compatibility."): proposal.fact
+                    target.removeprefix(compatibility_prefix): proposal.fact
                     for target, proposal in effective.items()
-                    if target.startswith(prefix + "compatibility.")
+                    if target.startswith(compatibility_prefix)
                 }
                 variants.append(
                     CommerceVariant(
                         sku=variant.sku,
                         label=variant.label,
-                        price=effective[prefix + "price"].fact,
-                        availability=effective[prefix + "availability"].fact,
+                        price=effective[variant_price_target(variant.sku)].fact,
+                        availability=effective[variant_availability_target(variant.sku)].fact,
                         attributes=attributes,
                         compatibility=compatibility,
                     )
                 )
-            product_prefix = f"product.{product.external_id}."
+            fields = product_prefix(product.external_id)
             products.append(
                 CommerceProduct(
                     external_id=product.external_id,
-                    title=effective[product_prefix + "title"].fact,
+                    title=effective[fields + "title"].fact,
                     category=(
-                        effective[product_prefix + "category"].fact
-                        if product_prefix + "category" in effective
+                        effective[fields + "category"].fact
+                        if fields + "category" in effective
                         else None
                     ),
                     variants=tuple(variants),
                     policy_facts={
-                        target.removeprefix("policy."): proposal.fact
+                        target.removeprefix(POLICY_PREFIX): proposal.fact
                         for target, proposal in effective.items()
-                        if product_index == 0 and target.startswith("policy.")
+                        if product_index == 0 and target.startswith(POLICY_PREFIX)
                     },
                 )
             )

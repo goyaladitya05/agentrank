@@ -30,6 +30,7 @@ from agentrank_api.diagnostics.mission import (
     DEMAND_AT_RISK,
     DEMAND_CAPTURED,
     DEMAND_NOT_MEASURED,
+    CompilerLineage,
     MissionDiagnosisInput,
     RequiredAttributeFact,
     SelectionFacts,
@@ -42,6 +43,25 @@ RUN = uuid.uuid4()
 MISSION_RUN = uuid.uuid4()
 VARIANT = uuid.uuid4()
 PRODUCT = uuid.uuid4()
+COMPILER_RUN = uuid.uuid4()
+WATTAGE_CANDIDATE = uuid.uuid4()
+CATEGORY_CANDIDATE = uuid.uuid4()
+
+SELECTED = SelectionFacts(
+    variant_id=VARIANT,
+    sku="VE-CHG-100-BLK",
+    product_id=PRODUCT,
+    product_external_id="VE-CHG-100",
+    attributes={"color": "black"},
+)
+
+LINEAGE = CompilerLineage(
+    compiler_run_id=COMPILER_RUN,
+    candidate_ids_by_target={
+        "variant.VE-CHG-100-BLK.attribute.wattage": WATTAGE_CANDIDATE,
+        "product.VE-CHG-100.category": CATEGORY_CANDIDATE,
+    },
+)
 
 
 def evidence(**overrides: object) -> MissionDiagnosisInput:
@@ -274,6 +294,117 @@ class TestMerchantData:
         )
         assert gap.product_ids == (PRODUCT,)
         assert gap.actionability is Actionability.MERCHANT_ACTION
+
+
+class TestCompilerLinkage:
+    """A finding names a compiler candidate only where the address provably exists."""
+
+    def test_a_missing_attribute_addresses_the_candidate_for_that_variant(self) -> None:
+        diagnosis = diagnose_mission(
+            evidence(
+                failure_reasons=(FailureReason.ATTRIBUTE_MISSING,),
+                required_attributes=(
+                    RequiredAttributeFact("wattage", ConstraintOperator.GTE, 100),
+                ),
+                selection=SELECTED,
+                compiler=LINEAGE,
+            )
+        )
+
+        gap = next(
+            finding
+            for finding in diagnosis.findings
+            if finding.code is DiagnosticCode.ATTRIBUTE_NOT_PUBLISHED
+        )
+        assert len(gap.compiler_references) == 1
+        reference = gap.compiler_references[0]
+        assert reference.compiler_run_id == COMPILER_RUN
+        assert reference.candidate_id == WATTAGE_CANDIDATE
+        assert reference.target == "variant.VE-CHG-100-BLK.attribute.wattage"
+
+    def test_a_category_gap_addresses_the_candidate_for_that_product(self) -> None:
+        diagnosis = diagnose_mission(
+            evidence(
+                failure_reasons=(FailureReason.CATEGORY_MISSING,),
+                selection=SELECTED,
+                compiler=LINEAGE,
+            )
+        )
+
+        gap = next(
+            finding
+            for finding in diagnosis.findings
+            if finding.code is DiagnosticCode.CATEGORY_NOT_PUBLISHED
+        )
+        assert [reference.candidate_id for reference in gap.compiler_references] == [
+            CATEGORY_CANDIDATE
+        ]
+
+    def test_no_reference_when_the_compiler_run_proposes_nothing_at_that_address(self) -> None:
+        diagnosis = diagnose_mission(
+            evidence(
+                failure_reasons=(FailureReason.ATTRIBUTE_MISSING,),
+                required_attributes=(RequiredAttributeFact("depth", ConstraintOperator.GTE, 10),),
+                selection=SELECTED,
+                compiler=LINEAGE,
+            )
+        )
+
+        gap = next(
+            finding
+            for finding in diagnosis.findings
+            if finding.code is DiagnosticCode.ATTRIBUTE_NOT_PUBLISHED
+        )
+        assert gap.attribute_keys == ("depth",)
+        assert gap.compiler_references == ()
+
+    def test_no_reference_when_the_run_has_no_compiler_lineage(self) -> None:
+        diagnosis = diagnose_mission(
+            evidence(
+                failure_reasons=(FailureReason.ATTRIBUTE_MISSING,),
+                required_attributes=(
+                    RequiredAttributeFact("wattage", ConstraintOperator.GTE, 100),
+                ),
+                selection=SELECTED,
+            )
+        )
+
+        gap = next(
+            finding
+            for finding in diagnosis.findings
+            if finding.code is DiagnosticCode.ATTRIBUTE_NOT_PUBLISHED
+        )
+        assert gap.compiler_references == ()
+
+    def test_no_reference_without_a_selection_to_name_a_variant(self) -> None:
+        diagnosis = diagnose_mission(
+            evidence(
+                failure_reasons=(FailureReason.ATTRIBUTE_MISSING,),
+                required_attributes=(
+                    RequiredAttributeFact("wattage", ConstraintOperator.GTE, 100),
+                ),
+                compiler=LINEAGE,
+            )
+        )
+
+        gap = next(
+            finding
+            for finding in diagnosis.findings
+            if finding.code is DiagnosticCode.ATTRIBUTE_NOT_PUBLISHED
+        )
+        assert gap.attribute_keys == ()
+        assert gap.compiler_references == ()
+
+    def test_findings_of_other_kinds_carry_no_compiler_reference(self) -> None:
+        diagnosis = diagnose_mission(
+            evidence(
+                failure_reasons=(FailureReason.DISCOVERY_FAILURE,),
+                selection=SELECTED,
+                compiler=LINEAGE,
+            )
+        )
+
+        assert all(finding.compiler_references == () for finding in diagnosis.findings)
 
 
 class TestInfrastructure:

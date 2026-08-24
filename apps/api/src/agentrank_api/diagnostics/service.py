@@ -58,6 +58,7 @@ from agentrank_api.diagnostics.experiment import (
 )
 from agentrank_api.diagnostics.findings import MerchantFinding, aggregate_findings
 from agentrank_api.diagnostics.mission import (
+    CompilerLineage,
     MissionDiagnosis,
     MissionDiagnosisInput,
     RequiredAttributeFact,
@@ -94,6 +95,7 @@ class _VariantRow:
     variant_id: uuid.UUID
     sku: str
     product_id: uuid.UUID
+    product_external_id: str
     category: str | None
     attributes: dict[str, Any] | None
 
@@ -121,6 +123,10 @@ class RunDiagnostics:
     environment_label: str | None
     representation_id: uuid.UUID | None
     representation_label: str | None
+    # The compiler run that produced the pinned representation, when one produced it. Reached
+    # by foreign key from the run to the representation to its compiler run, so it is provenance
+    # rather than a match, and None whenever any link in that chain is absent.
+    compiler_run_id: uuid.UUID | None
     catalog_hash: str | None
     evaluator_version: str | None
     executor_label: str | None
@@ -250,6 +256,7 @@ class DiagnosticsService:
         usages = await self._provider_usage(run.id, merchant_id=merchant_id)
         variants = await self._selected_variants(run, merchant_id=merchant_id)
         pin_verified = await self._catalog_pin_verified(run, merchant_id=merchant_id)
+        lineage = await self._compiler_lineage(run, merchant_id=merchant_id)
 
         diagnoses: list[MissionDiagnosis] = []
         outages = 0
@@ -272,7 +279,7 @@ class DiagnosticsService:
                     outages += 1
                 else:
                     throttles += facts.provider_faults.throttles_recovered
-            diagnoses.append(self._diagnose_mission(result, variants, facts, pin_verified))
+            diagnoses.append(self._diagnose_mission(result, variants, facts, pin_verified, lineage))
 
         resolved_models = sorted(
             {
@@ -308,6 +315,7 @@ class DiagnosticsService:
             environment_label=environment_label,
             representation_id=run.representation_id,
             representation_label=run.representation_label,
+            compiler_run_id=None if lineage is None else lineage.compiler_run_id,
             catalog_hash=run.catalog_hash,
             evaluator_version=run.evaluator_version,
             executor_label=run.executor_label,
@@ -597,6 +605,7 @@ class DiagnosticsService:
         variants: dict[uuid.UUID, _VariantRow],
         facts: TraceFacts,
         pin_verified: bool | None,
+        lineage: CompilerLineage | None,
     ) -> MissionDiagnosis:
         brief = result.mission.to_brief()
         selection: SelectionFacts | None = None
@@ -608,6 +617,7 @@ class DiagnosticsService:
                     variant_id=result.selected_variant_id,
                     sku=row.sku,
                     product_id=row.product_id,
+                    product_external_id=row.product_external_id,
                     # Attributes and category are values, not identities: they are quoted
                     # only while the catalog pin says today's rows are yesterday's.
                     category=row.category if readable else None,
@@ -639,6 +649,7 @@ class DiagnosticsService:
                 c.category for c in brief.hard_constraints if isinstance(c, AllowedCategory)
             ),
             trace=facts,
+            compiler=lineage,
         )
         return diagnose_mission(evidence)
 
@@ -682,7 +693,14 @@ class DiagnosticsService:
         if not identifiers:
             return {}
         rows = await self._session.execute(
-            select(Variant.id, Variant.sku, Product.id, Product.category, Variant.attributes)
+            select(
+                Variant.id,
+                Variant.sku,
+                Product.id,
+                Product.external_id,
+                Product.category,
+                Variant.attributes,
+            )
             .join(Product, Product.id == Variant.product_id)
             .where(Variant.merchant_id == merchant_id, Variant.id.in_(identifiers))
         )
@@ -691,11 +709,59 @@ class DiagnosticsService:
                 variant_id=row[0],
                 sku=row[1],
                 product_id=row[2],
-                category=row[3],
-                attributes=dict(row[4]) if row[4] is not None else {},
+                product_external_id=row[3],
+                category=row[4],
+                attributes=dict(row[5]) if row[5] is not None else {},
             )
             for row in rows.all()
         }
+
+    async def _compiler_lineage(
+        self, run: BenchmarkRun, *, merchant_id: uuid.UUID
+    ) -> CompilerLineage | None:
+        """The compiler run behind this run's pinned representation, and its candidate index.
+
+        Every step is a key lookup and none of them is a search. The run names one
+        representation, the representation names the compiler run that produced it, and that
+        run's candidates are indexed by the address each proposes to fill. A run that pinned no
+        representation, or pinned a hand authored one, has no compiler run behind it and gets
+        None, which is what makes an absent link mean something.
+
+        Merchant scoped at both reads, so a representation identifier belonging to somebody else
+        resolves to nothing rather than to their compiler work. The composite foreign key on the
+        run already makes that impossible to store; scoping the read as well means the invariant
+        does not rest on one layer.
+
+        Two statements per run rather than per finding, and the second is indexed by
+        `compiler_candidate.run_id`, so this does not grow with the number of missions or the
+        number of findings.
+        """
+        if run.representation_id is None:
+            return None
+        representation = (
+            await self._session.execute(
+                select(CommerceRepresentation).where(
+                    CommerceRepresentation.id == run.representation_id,
+                    CommerceRepresentation.merchant_id == merchant_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if (
+            representation is None
+            or representation.producer is not RepresentationProducer.COMPILER
+            or representation.compiler_run_id is None
+        ):
+            return None
+        rows = await self._session.execute(
+            select(CompilerCandidate.target, CompilerCandidate.id).where(
+                CompilerCandidate.run_id == representation.compiler_run_id,
+                CompilerCandidate.merchant_id == merchant_id,
+            )
+        )
+        return CompilerLineage(
+            compiler_run_id=representation.compiler_run_id,
+            candidate_ids_by_target={row.target: row.id for row in rows.all()},
+        )
 
     async def _catalog_pin_verified(
         self, run: BenchmarkRun, *, merchant_id: uuid.UUID

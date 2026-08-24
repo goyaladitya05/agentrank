@@ -136,7 +136,9 @@ function CandidateTable({ run }: { run: CompilerRun }) {
         </thead>
         <tbody>
           {run.candidates.map((candidate) => (
-            <tr key={candidate.candidate_id}>
+            // Addressable by identifier, so a diagnostic finding that names this exact
+            // candidate can link straight to the row rather than to the table.
+            <tr key={candidate.candidate_id} id={candidate.candidate_id}>
               <td>
                 <strong>{candidate.product_or_variant}</strong>
                 <br />

@@ -11,6 +11,7 @@
 import type {
   ActionabilityValue,
   ArmAggregate,
+  CompilerReference,
   ComparisonConclusion,
   CurrencyDelta,
   DiagnosticOwnerValue,
@@ -217,6 +218,15 @@ function decodeEvidenceReference(value: unknown): EvidenceReference {
   };
 }
 
+function decodeCompilerReference(value: unknown): CompilerReference {
+  const source = entry(value, "compiler reference");
+  return {
+    compiler_run_id: string(source, "compiler_run_id"),
+    candidate_id: string(source, "candidate_id"),
+    target: string(source, "target"),
+  };
+}
+
 function decodeMissionFinding(value: unknown): MissionFinding {
   const source = entry(value, "mission finding");
   return {
@@ -231,6 +241,7 @@ function decodeMissionFinding(value: unknown): MissionFinding {
     product_ids: strings(source, "product_ids"),
     variant_ids: strings(source, "variant_ids"),
     evidence: objects(source, "evidence").map(decodeEvidenceReference),
+    compiler_references: objects(source, "compiler_references").map(decodeCompilerReference),
   };
 }
 
@@ -304,6 +315,7 @@ export function decodeMerchantFinding(value: unknown): MerchantFinding {
     variant_ids: strings(source, "variant_ids"),
     attribute_keys: strings(source, "attribute_keys"),
     simulated_demand: objects(source, "simulated_demand").map(decodeSimulatedDemandEffect),
+    compiler_references: objects(source, "compiler_references").map(decodeCompilerReference),
   };
 }
 
@@ -328,6 +340,7 @@ export function decodeRunDiagnostics(value: unknown): RunDiagnostics {
     environment_label: optionalString(source, "environment_label"),
     representation_id: optionalString(source, "representation_id"),
     representation_label: optionalString(source, "representation_label"),
+    compiler_run_id: optionalString(source, "compiler_run_id"),
     catalog_hash: optionalString(source, "catalog_hash"),
     evaluator_version: optionalString(source, "evaluator_version"),
     executor_label: optionalString(source, "executor_label"),

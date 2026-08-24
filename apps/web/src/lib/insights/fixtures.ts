@@ -79,6 +79,13 @@ export const OVERVIEW_FIXTURE = {
       variant_ids: ["01997777-7777-7777-8777-777777777777"],
       attribute_keys: ["wattage"],
       simulated_demand: [{ currency: "INR", bucket: "lost", simulated_amount_minor: 419900 }],
+      compiler_references: [
+        {
+          compiler_run_id: "01a0aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa1",
+          candidate_id: "01a0bbbb-bbbb-7bbb-8bbb-bbbbbbbbbbb1",
+          target: "variant.VE-CHG-100-BLK.attribute.wattage",
+        },
+      ],
     },
     {
       key: "PROVIDER_OUTAGE_TERMINATED_MISSION:01998888",
@@ -96,6 +103,7 @@ export const OVERVIEW_FIXTURE = {
       variant_ids: [],
       attribute_keys: [],
       simulated_demand: [],
+      compiler_references: [],
     },
   ],
   top_findings_run_id: "01992222-2222-7222-8222-222222222222",
@@ -146,6 +154,7 @@ export const RUN_DIAGNOSTICS_FIXTURE = {
   environment_label: "voltedge-catalog@1 (fixture sha256:abc123)",
   representation_id: "01a00000-0000-7000-8000-000000000002",
   representation_label: "VoltEdge agent-ready IR",
+  compiler_run_id: "01a0aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa1",
   catalog_hash: "sha256:def456",
   evaluator_version: "vocabulary sha256:789",
   executor_label: "gemini-flash-lite buyer v4",
@@ -216,6 +225,13 @@ export const RUN_DIAGNOSTICS_FIXTURE = {
               establishes: "the selected variant the diagnosis names",
             },
           ],
+          compiler_references: [
+            {
+              compiler_run_id: "01a0aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa1",
+              candidate_id: "01a0bbbb-bbbb-7bbb-8bbb-bbbbbbbbbbb1",
+              target: "variant.VE-CHG-100-BLK.attribute.wattage",
+            },
+          ],
         },
         {
           code: "PROVIDER_THROTTLE_RECOVERED",
@@ -236,6 +252,7 @@ export const RUN_DIAGNOSTICS_FIXTURE = {
               establishes: "a throttle that was retried and recovered",
             },
           ],
+          compiler_references: [],
         },
       ],
       simulated_demand: [{ currency: "INR", bucket: "lost", simulated_amount_minor: 259900 }],
@@ -271,6 +288,7 @@ export const RUN_DIAGNOSTICS_FIXTURE = {
               establishes: "a terminating provider failure",
             },
           ],
+          compiler_references: [],
         },
       ],
       simulated_demand: [],

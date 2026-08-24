@@ -74,6 +74,31 @@ describe("<RunDetailContent>", () => {
     expect(isOutcomeFilter(undefined)).toBe(false);
   });
 
+  it("links a finding to the exact compiler fact behind the representation it tested", () => {
+    const html = render();
+    expect(html).toContain(
+      "/compiler/runs/01a0aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa1#01a0bbbb-bbbb-7bbb-8bbb-bbbbbbbbbbb1",
+    );
+    expect(html).toContain("variant.VE-CHG-100-BLK.attribute.wattage");
+  });
+
+  it("offers no compiler action on findings the API could not address", () => {
+    const stripped = {
+      ...RUN_DIAGNOSTICS_FIXTURE,
+      findings: RUN_DIAGNOSTICS_FIXTURE.findings.map((finding) => ({
+        ...finding,
+        compiler_references: [],
+      })),
+    };
+    const html = renderToStaticMarkup(
+      <RunDetailContent data={decodeRunDiagnostics(stripped)} filter="ALL" />,
+    );
+    expect(html).not.toContain("/compiler/runs/");
+    expect(html).not.toContain("Compiler facts behind the representation this run tested");
+    // The finding itself is unchanged: no link is not no problem.
+    expect(html).toContain("wattage");
+  });
+
   it("renders simulated demand per currency without summing", () => {
     const html = render();
     expect(html).toContain("INR\u00a021,000.00");

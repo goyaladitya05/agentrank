@@ -5,6 +5,15 @@ from collections import defaultdict
 
 from agentrank_api.compiler.definitions import CandidateProposal
 from agentrank_api.compiler.models import CandidateState
+from agentrank_api.compiler.targets import (
+    policy_target,
+    product_category_target,
+    product_title_target,
+    variant_attribute_target,
+    variant_availability_target,
+    variant_compatibility_target,
+    variant_price_target,
+)
 from agentrank_api.representation.definitions import (
     AttributeKind,
     FactAuthority,
@@ -55,7 +64,7 @@ def extract(source: MerchantSourceDefinition) -> list[tuple[CandidateProposal, C
         output.append(
             (
                 CandidateProposal(
-                    f"product.{product.external_id}.title",
+                    product_title_target(product.external_id),
                     _authoritative(product.title, f"{prefix}.title"),
                 ),
                 CandidateState.ACCEPTED,
@@ -65,7 +74,7 @@ def extract(source: MerchantSourceDefinition) -> list[tuple[CandidateProposal, C
             output.append(
                 (
                     CandidateProposal(
-                        f"product.{product.external_id}.category",
+                        product_category_target(product.external_id),
                         _authoritative(product.category, f"{prefix}.category"),
                     ),
                     CandidateState.ACCEPTED,
@@ -77,7 +86,7 @@ def extract(source: MerchantSourceDefinition) -> list[tuple[CandidateProposal, C
                 [
                     (
                         CandidateProposal(
-                            f"variant.{variant.sku}.price",
+                            variant_price_target(variant.sku),
                             _authoritative(
                                 {
                                     "amount_minor": variant.price_amount_minor,
@@ -90,7 +99,7 @@ def extract(source: MerchantSourceDefinition) -> list[tuple[CandidateProposal, C
                     ),
                     (
                         CandidateProposal(
-                            f"variant.{variant.sku}.availability",
+                            variant_availability_target(variant.sku),
                             _authoritative(
                                 ValueState.TRUE.value
                                 if variant.inventory_quantity > 0
@@ -107,7 +116,7 @@ def extract(source: MerchantSourceDefinition) -> list[tuple[CandidateProposal, C
                 output.append(
                     (
                         CandidateProposal(
-                            f"variant.{variant.sku}.attribute.color",
+                            variant_attribute_target(variant.sku, "color"),
                             _authoritative(
                                 finish.lower(), f"{variant_prefix}.merchant_metadata.finish"
                             ),
@@ -122,7 +131,7 @@ def extract(source: MerchantSourceDefinition) -> list[tuple[CandidateProposal, C
                     output.append(
                         (
                             CandidateProposal(
-                                f"variant.{variant.sku}.attribute.length",
+                                variant_attribute_target(variant.sku, "length"),
                                 _derived(
                                     int(match.group(1)),
                                     f"{variant_prefix}.label",
@@ -148,7 +157,7 @@ def extract(source: MerchantSourceDefinition) -> list[tuple[CandidateProposal, C
             output.append(
                 (
                     CandidateProposal(
-                        "policy.warranty_months",
+                        policy_target("warranty_months"),
                         _derived(12, "policy_text.warranty", match.group(0)),
                         AttributeKind.INTEGER,
                     ),
@@ -185,7 +194,7 @@ def _semantic_product(
             output.append(
                 (
                     CandidateProposal(
-                        f"variant.{variant_sku}.attribute.wattage",
+                        variant_attribute_target(variant_sku, "wattage"),
                         _derived(value, field, excerpt),
                         AttributeKind.MEASUREMENT,
                         "W",
@@ -200,7 +209,7 @@ def _semantic_product(
             output.append(
                 (
                     CandidateProposal(
-                        f"variant.{variant_sku}.attribute.wattage",
+                        variant_attribute_target(variant_sku, "wattage"),
                         _review(0, field, excerpt),
                         AttributeKind.MEASUREMENT,
                         "W",
@@ -218,7 +227,7 @@ def _semantic_product(
                 output.append(
                     (
                         CandidateProposal(
-                            f"variant.{variant_sku}.attribute.ports",
+                            variant_attribute_target(variant_sku, "ports"),
                             _derived(value, f"{source_prefix}.description", ports.group(0)),
                             AttributeKind.INTEGER,
                         ),
@@ -234,7 +243,7 @@ def _semantic_product(
                 output.append(
                     (
                         CandidateProposal(
-                            f"variant.{variant_sku}.compatibility.usb-c-pd",
+                            variant_compatibility_target(variant_sku, "usb-c-pd"),
                             _review(ValueState.TRUE.value, field, pd_match.group(0)),
                         ),
                         CandidateState.REVIEW_REQUIRED,
@@ -248,7 +257,7 @@ def _semantic_product(
                 output.append(
                     (
                         CandidateProposal(
-                            f"variant.{variant_sku}.compatibility.usb-c",
+                            variant_compatibility_target(variant_sku, "usb-c"),
                             _derived(ValueState.TRUE.value, field, cable_match.group(0)),
                         ),
                         CandidateState.ACCEPTED,

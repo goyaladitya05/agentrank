@@ -41,6 +41,7 @@ from agentrank_api.diagnostics.mission import (
     DEMAND_AT_RISK,
     DEMAND_CAPTURED,
     DEMAND_NOT_MEASURED,
+    CompilerReference,
     MissionDiagnosis,
     MissionFinding,
     SimulatedDemandEffect,
@@ -79,6 +80,10 @@ class MerchantFinding:
     variant_ids: tuple[uuid.UUID, ...]
     attribute_keys: tuple[str, ...]
     simulated_demand: tuple[SimulatedDemandEffect, ...]
+    # Exact compiler candidates this finding can be acted on through, or empty. Empty is the
+    # ordinary case and is honest: most findings have no compiler proposal at their address,
+    # and several kinds of finding have no address at all.
+    compiler_references: tuple[CompilerReference, ...]
 
 
 def aggregate_findings(diagnoses: list[MissionDiagnosis]) -> tuple[MerchantFinding, ...]:
@@ -153,6 +158,9 @@ def _finding(
             _unique(attribute for member in members for attribute in member.attribute_keys)
         ),
         simulated_demand=_demand(contributing, key),
+        compiler_references=tuple(
+            _unique(reference for member in members for reference in member.compiler_references)
+        ),
     )
 
 

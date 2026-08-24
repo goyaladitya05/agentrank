@@ -46,6 +46,19 @@ export interface EvidenceReference {
   readonly establishes: string;
 }
 
+/**
+ * One compiler candidate a merchant can act on a finding through.
+ *
+ * Present only where the API could prove the relationship. An empty list means the compiler
+ * run behind the tested representation proposes nothing at this finding's address, or that the
+ * run under diagnosis was not measured against a compiler-produced representation at all.
+ */
+export interface CompilerReference {
+  readonly compiler_run_id: string;
+  readonly candidate_id: string;
+  readonly target: string;
+}
+
 export interface MissionFinding {
   readonly code: string;
   readonly owner: DiagnosticOwnerValue;
@@ -58,6 +71,7 @@ export interface MissionFinding {
   readonly product_ids: readonly string[];
   readonly variant_ids: readonly string[];
   readonly evidence: readonly EvidenceReference[];
+  readonly compiler_references: readonly CompilerReference[];
 }
 
 export interface MissionDiagnosis {
@@ -113,6 +127,7 @@ export interface MerchantFinding {
   readonly variant_ids: readonly string[];
   readonly attribute_keys: readonly string[];
   readonly simulated_demand: readonly SimulatedDemandEffect[];
+  readonly compiler_references: readonly CompilerReference[];
 }
 
 export interface RunProviderHealth {
@@ -131,6 +146,7 @@ export interface RunDiagnostics {
   readonly environment_label: string | null;
   readonly representation_id: string | null;
   readonly representation_label: string | null;
+  readonly compiler_run_id: string | null;
   readonly catalog_hash: string | null;
   readonly evaluator_version: string | null;
   readonly executor_label: string | null;

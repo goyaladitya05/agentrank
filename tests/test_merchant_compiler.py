@@ -14,6 +14,13 @@ from agentrank_api.compiler.definitions import CandidateProposal
 from agentrank_api.compiler.extraction import extract
 from agentrank_api.compiler.models import CandidateState, ReviewDecision
 from agentrank_api.compiler.service import MerchantCompilerService
+from agentrank_api.compiler.targets import (
+    product_category_target,
+    variant_attribute_target,
+    variant_availability_target,
+    variant_compatibility_target,
+    variant_price_target,
+)
 from agentrank_api.errors import ConflictError, NotFoundError
 from agentrank_api.representation.definitions import (
     AttributeKind,
@@ -299,3 +306,42 @@ def test_instruction_like_merchant_prose_is_not_interpreted_as_semantic_evidence
     targets = {proposal.target for proposal, _ in extract(negated)}
     assert "variant.VE-CHG-100-BLK.attribute.wattage" not in targets
     assert "variant.VE-CHG-100-BLK.attribute.ports" not in targets
+
+
+def test_every_extracted_target_is_written_in_the_shared_grammar() -> None:
+    """Nothing writes a candidate address by hand.
+
+    The extractor writes targets, the publisher reads them back to assemble the IR, and the
+    diagnostics read model constructs one to look a candidate up by. A second copy of the format
+    would not fail loudly: the lookup would simply stop matching and every finding would read as
+    having no compiler work behind it. So the grammar is asserted to be the only writer.
+    """
+    definition = read_source(SOURCE_PATH)
+    expected: set[str] = set()
+    for product in definition.products:
+        expected.add(product_category_target(product.external_id))
+        for variant in product.variants:
+            expected.add(variant_price_target(variant.sku))
+            expected.add(variant_availability_target(variant.sku))
+            for key in ("color", "length", "wattage", "ports"):
+                expected.add(variant_attribute_target(variant.sku, key))
+            for capability in ("usb-c", "usb-c-pd"):
+                expected.add(variant_compatibility_target(variant.sku, capability))
+
+    produced = {proposal.target for proposal, _ in extract(definition)}
+    unaddressable = {
+        target
+        for target in produced
+        if not target.startswith("product.") and not target.startswith("policy.")
+    }
+    assert unaddressable
+    assert unaddressable <= expected
+
+
+def test_a_variant_attribute_target_names_exactly_one_variant_and_one_attribute() -> None:
+    """Two variants of one product get two addresses, so one fact never answers for both."""
+    black = variant_attribute_target("VE-CHG-100-BLK", "wattage")
+    white = variant_attribute_target("VE-CHG-100-WHT", "wattage")
+    ports = variant_attribute_target("VE-CHG-100-BLK", "ports")
+    assert black == "variant.VE-CHG-100-BLK.attribute.wattage"
+    assert len({black, white, ports}) == 3

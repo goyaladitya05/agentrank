@@ -22,6 +22,7 @@ from agentrank_api.diagnostics.codes import Actionability, DiagnosticOwner, Evid
 from agentrank_api.diagnostics.experiment import ExperimentDiagnosis
 from agentrank_api.diagnostics.findings import MerchantFinding
 from agentrank_api.diagnostics.mission import (
+    CompilerReference,
     MissionDiagnosis,
     MissionFinding,
     SimulatedDemandEffect,
@@ -66,6 +67,28 @@ class EvidenceReferenceView(BaseModel):
     establishes: str
 
 
+class CompilerReferenceView(BaseModel):
+    """One compiler candidate a merchant can act on this finding through.
+
+    Present only where the relationship is provable: the run pinned a compiler-produced
+    representation, and that representation's compiler run holds a proposal at exactly the
+    address this finding names. An empty list means no such proposal exists, never that one
+    was not looked for.
+    """
+
+    compiler_run_id: uuid.UUID
+    candidate_id: uuid.UUID
+    target: str
+
+    @classmethod
+    def from_domain(cls, reference: CompilerReference) -> Self:
+        return cls(
+            compiler_run_id=reference.compiler_run_id,
+            candidate_id=reference.candidate_id,
+            target=reference.target,
+        )
+
+
 class MissionFindingView(BaseModel):
     code: str
     owner: DiagnosticOwner
@@ -78,6 +101,7 @@ class MissionFindingView(BaseModel):
     product_ids: tuple[uuid.UUID, ...]
     variant_ids: tuple[uuid.UUID, ...]
     evidence: list[EvidenceReferenceView]
+    compiler_references: list[CompilerReferenceView]
 
     @classmethod
     def from_domain(cls, finding: MissionFinding) -> Self:
@@ -99,6 +123,10 @@ class MissionFindingView(BaseModel):
                     establishes=reference.establishes,
                 )
                 for reference in finding.evidence
+            ],
+            compiler_references=[
+                CompilerReferenceView.from_domain(reference)
+                for reference in finding.compiler_references
             ],
         )
 
@@ -206,6 +234,7 @@ class MerchantFindingView(BaseModel):
     variant_ids: tuple[uuid.UUID, ...]
     attribute_keys: tuple[str, ...]
     simulated_demand: list[SimulatedDemandEffectView]
+    compiler_references: list[CompilerReferenceView]
 
     @classmethod
     def from_domain(cls, finding: MerchantFinding) -> Self:
@@ -225,6 +254,10 @@ class MerchantFindingView(BaseModel):
             attribute_keys=finding.attribute_keys,
             simulated_demand=[
                 SimulatedDemandEffectView.from_domain(effect) for effect in finding.simulated_demand
+            ],
+            compiler_references=[
+                CompilerReferenceView.from_domain(reference)
+                for reference in finding.compiler_references
             ],
         )
 
@@ -247,6 +280,7 @@ class RunDiagnosticsView(BaseModel):
     environment_label: str | None
     representation_id: uuid.UUID | None
     representation_label: str | None
+    compiler_run_id: uuid.UUID | None
     catalog_hash: str | None
     evaluator_version: str | None
     executor_label: str | None
@@ -275,6 +309,7 @@ class RunDiagnosticsView(BaseModel):
             environment_label=diagnostics.environment_label,
             representation_id=diagnostics.representation_id,
             representation_label=diagnostics.representation_label,
+            compiler_run_id=diagnostics.compiler_run_id,
             catalog_hash=diagnostics.catalog_hash,
             evaluator_version=diagnostics.evaluator_version,
             executor_label=diagnostics.executor_label,

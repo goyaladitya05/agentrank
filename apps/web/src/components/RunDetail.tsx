@@ -91,6 +91,7 @@ export function RunDetailContent({
             <IdRow label="Engine identity" value={data.engine_identity} />
             <IdRow label="Representation id" value={data.representation_id} />
             <IdRow label="Representation label" value={data.representation_label} />
+            <IdRow label="Compiler run id" value={data.compiler_run_id} />
             <IdRow label="Catalog hash" value={data.catalog_hash} />
             <IdRow label="Evaluator version" value={data.evaluator_version} />
             <IdRow label="Executor revision" value={data.executor_revision} />

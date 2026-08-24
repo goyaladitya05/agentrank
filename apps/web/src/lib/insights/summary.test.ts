@@ -19,6 +19,7 @@ function finding(actionability: MerchantFinding["actionability"]): MerchantFindi
     variant_ids: [],
     attribute_keys: [],
     simulated_demand: [],
+    compiler_references: [],
   };
 }
 

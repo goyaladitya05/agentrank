@@ -36,6 +36,7 @@ from typing import Any
 from agentrank_api.benchmark.definitions import ExpectedOutcome
 from agentrank_api.benchmark.failures import FailureReason
 from agentrank_api.benchmark.lifecycle import TERMINAL_MISSION_STATUSES, MissionRunStatus
+from agentrank_api.compiler.targets import product_category_target, variant_attribute_target
 from agentrank_api.constraints.rules import ConstraintOperator, compare, lookup_attribute
 from agentrank_api.diagnostics.codes import (
     Actionability,
@@ -77,6 +78,48 @@ class EvidenceReference:
 
 
 @dataclass(frozen=True, slots=True)
+class CompilerReference:
+    """One compiler candidate that would answer this finding, addressed exactly.
+
+    Not a suggestion and not a match. The compiler run is reached by lineage, from the
+    representation the benchmark run pinned to the compiler run that produced it, and the
+    candidate is reached inside that run by its own `(run_id, target)` unique key. A reference
+    exists when both hold and does not exist otherwise, so the absence of one means "this
+    compiler run has no proposal at that address" rather than "we did not look hard enough".
+    """
+
+    compiler_run_id: uuid.UUID
+    candidate_id: uuid.UUID
+    target: str
+
+
+@dataclass(frozen=True, slots=True)
+class CompilerLineage:
+    """The compiler run behind the representation one benchmark run was measured with.
+
+    `candidate_ids_by_target` is that run's candidates indexed by the address each one
+    proposes to fill. It is a lookup table rather than a search: a diagnosis constructs the
+    one target its evidence names and either finds it here or emits no reference at all.
+
+    None of this is a route from the benchmark into the compiler. The index is read from
+    compiler rows and travels one way, into a diagnosis; nothing a benchmark knows is written
+    back, and no compiler decision is taken from it.
+    """
+
+    compiler_run_id: uuid.UUID
+    candidate_ids_by_target: Mapping[str, uuid.UUID]
+
+    def reference(self, target: str) -> CompilerReference | None:
+        """The candidate at exactly this address, or None when this run proposes nothing there."""
+        candidate_id = self.candidate_ids_by_target.get(target)
+        if candidate_id is None:
+            return None
+        return CompilerReference(
+            compiler_run_id=self.compiler_run_id, candidate_id=candidate_id, target=target
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class RequiredAttributeFact:
     """One attribute requirement the mission stated, in comparison vocabulary."""
 
@@ -99,6 +142,10 @@ class SelectionFacts:
     variant_id: uuid.UUID
     sku: str | None = None
     product_id: uuid.UUID | None = None
+    # The merchant's own product identifier, which is what a compiler candidate target is
+    # written in. Held beside the database identifier rather than instead of it: one addresses
+    # a row and the other addresses a proposal about the same product.
+    product_external_id: str | None = None
     category: str | None = None
     attributes: Mapping[str, Any] | None = None
 
@@ -130,6 +177,7 @@ class MissionDiagnosisInput:
     required_attributes: tuple[RequiredAttributeFact, ...] = ()
     required_categories: tuple[str, ...] = ()
     trace: TraceFacts | None = None
+    compiler: CompilerLineage | None = None
 
     @property
     def purchase_was_available(self) -> bool:
@@ -181,6 +229,7 @@ class MissionFinding:
     product_ids: tuple[uuid.UUID, ...] = ()
     variant_ids: tuple[uuid.UUID, ...] = ()
     evidence: tuple[EvidenceReference, ...] = ()
+    compiler_references: tuple[CompilerReference, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,6 +337,7 @@ def _merged(first: MissionFinding, second: MissionFinding) -> MissionFinding:
         product_ids=_combined(first.product_ids, second.product_ids),
         variant_ids=_combined(first.variant_ids, second.variant_ids),
         evidence=_combined(first.evidence, second.evidence),
+        compiler_references=_combined(first.compiler_references, second.compiler_references),
     )
 
 
@@ -309,6 +359,7 @@ def _finding(
     severity: Severity | None = None,
     attribute_keys: tuple[str, ...] = (),
     extra_evidence: tuple[EvidenceReference, ...] = (),
+    compiler_targets: tuple[str, ...] = (),
 ) -> MissionFinding:
     identity = identity_for(code)
     mission_reference = EvidenceReference(
@@ -319,6 +370,16 @@ def _finding(
     selection = evidence.selection
     products = () if selection is None or selection.product_id is None else (selection.product_id,)
     variants = () if selection is None else (selection.variant_id,)
+    lineage = evidence.compiler
+    references = (
+        ()
+        if lineage is None
+        else tuple(
+            reference
+            for reference in (lineage.reference(target) for target in compiler_targets)
+            if reference is not None
+        )
+    )
     return MissionFinding(
         code=code,
         owner=identity.owner,
@@ -331,6 +392,7 @@ def _finding(
         product_ids=products,
         variant_ids=variants,
         evidence=(mission_reference, *extra_evidence),
+        compiler_references=references,
     )
 
 
@@ -572,6 +634,7 @@ def _merchant_data_rules(evidence: MissionDiagnosisInput) -> list[MissionFinding
                     "Publish a category for the affected product so agents can match it"
                     " against buyer requirements."
                 ),
+                compiler_targets=_category_targets(selection),
             )
         )
     if FailureReason.ATTRIBUTE_MISSING in evidence.failure_reasons:
@@ -583,6 +646,7 @@ def _merchant_data_rules(evidence: MissionDiagnosisInput) -> list[MissionFinding
                 summary=_attribute_summary("is not published", evidence, specifics),
                 recommendation=_attribute_recommendation("add or confirm", evidence, specifics),
                 attribute_keys=specifics,
+                compiler_targets=_attribute_targets(selection, specifics),
             )
         )
     if FailureReason.ATTRIBUTE_UNREADABLE in evidence.failure_reasons:
@@ -600,9 +664,31 @@ def _merchant_data_rules(evidence: MissionDiagnosisInput) -> list[MissionFinding
                     )
                 ),
                 attribute_keys=specifics,
+                compiler_targets=_attribute_targets(selection, specifics),
             )
         )
     return findings
+
+
+def _attribute_targets(
+    selection: SelectionFacts | None, attribute_keys: tuple[str, ...]
+) -> tuple[str, ...]:
+    """The compiler addresses that would carry these attributes for the offer under diagnosis.
+
+    Both halves have to be known. Without a selection nobody knows which variant the mission
+    was measured on, and without a named attribute key the finding is at reason level and names
+    no field, so either gap produces no address rather than a guessed one.
+    """
+    if selection is None or selection.sku is None:
+        return ()
+    return tuple(variant_attribute_target(selection.sku, key) for key in attribute_keys)
+
+
+def _category_targets(selection: SelectionFacts | None) -> tuple[str, ...]:
+    """The compiler address that would carry a category for the product under diagnosis."""
+    if selection is None or selection.product_external_id is None:
+        return ()
+    return (product_category_target(selection.product_external_id),)
 
 
 def _attribute_summary(

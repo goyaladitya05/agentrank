@@ -9,7 +9,7 @@ import {
   severityLabel,
   severityTone,
 } from "@/lib/labels";
-import type { MerchantFinding } from "@/lib/insights/types";
+import type { CompilerReference, MerchantFinding } from "@/lib/insights/types";
 
 import { EmptyState, StatusMark } from "./Primitives";
 import styles from "./console.module.css";
@@ -98,7 +98,38 @@ function FindingArticle({ finding, runId }: { finding: MerchantFinding; runId: s
       {finding.recommendation !== null ? (
         <p className={styles.findingRecommendation}>{finding.recommendation}</p>
       ) : null}
+      <CompilerActions references={finding.compiler_references} />
     </article>
+  );
+}
+
+/**
+ * The compiler facts this finding can be acted on through, when the API could prove any.
+ *
+ * The API decides whether a reference exists; this component never derives one. Nothing is
+ * rendered when the list is empty, because "no compiler action" is the ordinary answer and a
+ * placeholder saying so on every finding would read as a defect rather than as a fact.
+ */
+export function CompilerActions({ references }: { references: readonly CompilerReference[] }) {
+  if (references.length === 0) {
+    return null;
+  }
+  return (
+    <div className={styles.findingActions}>
+      <span>Compiler facts behind the representation this run tested:</span>
+      <ul>
+        {references.map((reference) => (
+          <li key={reference.candidate_id}>
+            <Link
+              className={styles.rowLink}
+              href={`/compiler/runs/${encodeURIComponent(reference.compiler_run_id)}#${encodeURIComponent(reference.candidate_id)}`}
+            >
+              <span className={styles.mono}>{reference.target}</span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { CompilerActions } from "@/components/Findings";
 import { TraceExplorer } from "@/components/Trace";
 import { EmptyState, KeyValueList, Panel, Section, StatusMark } from "@/components/Primitives";
 import styles from "@/components/console.module.css";
@@ -266,6 +267,7 @@ function FindingBlock({
       {finding.recommendation !== null ? (
         <p className={styles.findingRecommendation}>{finding.recommendation}</p>
       ) : null}
+      <CompilerActions references={finding.compiler_references} />
     </article>
   );
 }

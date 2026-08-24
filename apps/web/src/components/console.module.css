@@ -298,6 +298,20 @@
   color: var(--text);
 }
 
+.findingActions {
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+
+.findingActions ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+.findingActions li {
+  margin-top: 2px;
+}
+
 /* Outcome distribution bar. */
 
 .bar {
