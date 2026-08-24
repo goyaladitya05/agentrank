@@ -59,10 +59,10 @@ function refusal(status: number, payload: unknown): Refusal {
   const stale = status === 409 || status === 404;
   if (known !== undefined) return { message: known, stale };
   if (typeof body.detail === "string") return { message: body.detail, stale };
-  return {
-    message: `The compiler refused this command (HTTP ${String(status)}). Refresh to see the current review state.`,
-    stale,
-  };
+  // A refusal this console has no words for still has to say something true. A stale one gets
+  // its own sentence from the component, so only the other kind is told to try again.
+  const advice = stale ? "" : " Check your entry and try again.";
+  return { message: `The compiler refused this command (HTTP ${String(status)}).${advice}`, stale };
 }
 
 async function command(path: string, body?: unknown): Promise<Refusal | null> {
