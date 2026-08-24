@@ -16,6 +16,7 @@ import uuid
 from dataclasses import dataclass
 
 from benchmark_support import mission, suite
+from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentrank_api.benchmark.definitions import BenchmarkMissionDefinition
@@ -26,6 +27,7 @@ from agentrank_api.benchmark.suites import BenchmarkSuiteService
 from agentrank_api.commerce.catalog_fixture import SeedProduct, SeedVariant
 from agentrank_api.commerce.repository import MerchantRepository
 from agentrank_api.compiler.service import MerchantCompilerService
+from agentrank_api.config import Settings
 from agentrank_api.constraints.rules import ConstraintOperator
 from agentrank_api.mandates.intent import RequiredAttribute
 from agentrank_api.representation.definitions import (
@@ -161,4 +163,32 @@ async def build_launch_world(
         source_snapshot_id=snapshot.id,
         compiler_run_id=compiler_run.id,
         representation=representation,
+    )
+
+
+def without_providers(settings: Settings) -> Settings:
+    """Settings with no model provider configured.
+
+    Pinned rather than inherited, because a developer machine with a provider key in `.env` and
+    a CI runner without one would otherwise resolve different buyers and these tests would prove
+    whatever the environment happened to hold.
+    """
+    return settings.model_copy(update={"openai_api_key": None, "gemini_api_key": None})
+
+
+def with_openai(settings: Settings) -> Settings:
+    """Settings that look like a deployment with an OpenAI runtime credential.
+
+    The value is synthetic and never leaves the test database or this process: nothing here
+    reaches a provider, and the launch path records only the requested model.
+    """
+    return settings.model_copy(
+        update={"openai_api_key": SecretStr("test-openai-key"), "gemini_api_key": None}
+    )
+
+
+def with_gemini(settings: Settings) -> Settings:
+    """Settings that look like a deployment with only a Gemini runtime credential."""
+    return settings.model_copy(
+        update={"openai_api_key": None, "gemini_api_key": SecretStr("test-gemini-key")}
     )

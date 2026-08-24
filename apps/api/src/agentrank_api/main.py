@@ -30,6 +30,7 @@ from agentrank_api.routes import (
     mandates,
     payments,
     razorpay,
+    reevaluations,
     system,
 )
 
@@ -86,6 +87,13 @@ def create_app(
         version="0.0.0",
         lifespan=lifespan,
     )
+    # Set here as well as in the lifespan, because none of the three needs a lifecycle: they are
+    # decided when the application is built and nothing closes them. The engine and its session
+    # factory genuinely do need one and stay there. This is what lets a caller that builds an
+    # application without running its lifespan still read the configuration it was built with.
+    app.state.settings = resolved
+    app.state.payment_provider = provider
+    app.state.razorpay_client = transport
 
     @app.exception_handler(AuthenticationError)
     async def handle_unauthenticated(_: Request, error: AuthenticationError) -> JSONResponse:
@@ -178,4 +186,5 @@ def create_app(
     app.include_router(razorpay.router)
     app.include_router(insights.router)
     app.include_router(compiler.router)
+    app.include_router(reevaluations.router)
     return app

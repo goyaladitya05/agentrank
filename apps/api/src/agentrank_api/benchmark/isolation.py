@@ -64,7 +64,11 @@ from agentrank_api.benchmark.agent_trace import AgentExecutionEvidence
 from agentrank_api.benchmark.definitions import AgentMissionBrief
 from agentrank_api.benchmark.endpoint import DATABASE_UNAVAILABLE, RequestLedger
 from agentrank_api.benchmark.evidence import CommerceEvidence
-from agentrank_api.benchmark.execution import ExecutorIdentity, implementation_revision
+from agentrank_api.benchmark.execution import (
+    REFERENCE_ISOLATED_KIND,
+    ExecutorIdentity,
+    implementation_revision,
+)
 from agentrank_api.benchmark.faults import ExecutionFault, FaultOrigin
 from agentrank_api.benchmark.report import ExecutorReport
 from agentrank_api.benchmark.wire import (
@@ -101,7 +105,7 @@ def _revision() -> str:
     )
 
 
-ISOLATED_REFERENCE = ExecutorIdentity(kind="reference-isolated", version=1, revision=_revision())
+ISOLATED_REFERENCE = ExecutorIdentity(kind=REFERENCE_ISOLATED_KIND, version=1, revision=_revision())
 
 # How long one mission may take end to end. Generous enough that a real payment through the real
 # kernel on a loaded machine finishes, short enough that a worker which has stopped answering is

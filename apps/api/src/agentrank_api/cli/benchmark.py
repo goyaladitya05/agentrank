@@ -70,7 +70,12 @@ from agentrank_api.benchmark.experiment import (
 )
 from agentrank_api.benchmark.isolation import IsolatedMissionExecutor
 from agentrank_api.benchmark.lifecycle import MissionRunStatus
-from agentrank_api.benchmark.llm import GEMINI_PROVIDER, OPENAI_PROVIDER, AgentConfiguration
+from agentrank_api.benchmark.llm import (
+    GEMINI_PROVIDER,
+    OPENAI_PROVIDER,
+    AgentConfiguration,
+    executor_kind,
+)
 from agentrank_api.benchmark.metrics import BenchmarkMetrics
 from agentrank_api.benchmark.models import (
     AgentProviderUsage,
@@ -445,7 +450,7 @@ async def _llm_isolated_run(
     """Run one sequential LLM sample with trusted mandate provisioning outside the worker."""
     configuration = AgentConfiguration(provider=arguments.provider, requested_model=arguments.model)
     identity = ExecutorIdentity(
-        kind=_executor_kind(configuration), version=1, revision=configuration.configuration_digest
+        kind=executor_kind(configuration), version=1, revision=configuration.configuration_digest
     )
     served = RequestLedger()
     async with LocalCommerceEndpoint(settings, provider=provider, observer=served) as endpoint:
@@ -584,7 +589,7 @@ async def compare_run(
     if configuration.configuration_digest != treatment.experiment.buyer_configuration_digest:
         raise ValueError("compiler impact experiment buyer configuration digest is invalid")
     identity = ExecutorIdentity(
-        kind=_executor_kind(configuration), version=1, revision=configuration.configuration_digest
+        kind=executor_kind(configuration), version=1, revision=configuration.configuration_digest
     )
     service = BenchmarkRunService(session)
     served = RequestLedger()
@@ -1101,10 +1106,6 @@ async def _benchmark_merchant(session: AsyncSession, world: AuthoredWorld) -> uu
     if merchant is None:
         raise NotFoundError("merchant", world.merchant_slug)
     return merchant.id
-
-
-def _executor_kind(configuration: AgentConfiguration) -> str:
-    return "llm-openai" if configuration.provider == OPENAI_PROVIDER else "llm-gemini"
 
 
 def _require_provider_key(settings: Settings, provider: str) -> None:

@@ -262,6 +262,16 @@ class AgentConfiguration:
         return configuration
 
 
+def executor_kind(configuration: AgentConfiguration) -> str:
+    """Which executor kind a run records for one model buyer.
+
+    Derived from the provider rather than from where the run was started, so a sample launched
+    from the console and one launched from a shell are the same measurement and a comparison
+    across them is not silently comparing two executors.
+    """
+    return "llm-openai" if configuration.provider == OPENAI_PROVIDER else "llm-gemini"
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderToolCall:
     call_id: str

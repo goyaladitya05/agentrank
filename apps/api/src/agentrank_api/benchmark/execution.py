@@ -50,6 +50,11 @@ from agentrank_api.benchmark.report import ExecutorReport
 
 _KEY = re.compile(KEY_PATTERN)
 
+# The kind the isolated scripted buyer records on every run it produces. Here rather than beside
+# the executor itself because a caller deciding whether it can run one should not have to import
+# a module that starts a loopback commerce server to find out what it is called.
+REFERENCE_ISOLATED_KIND = "reference-isolated"
+
 # The same labelled digest shape every other identity in this schema stores, so one check
 # constraint pattern describes a suite hash, a fixture hash, an evaluator version and this.
 REVISION_PATTERN = r"^sha256:[0-9a-f]{64}$"

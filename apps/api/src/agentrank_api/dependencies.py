@@ -87,6 +87,20 @@ def get_razorpay_credentials(request: Request) -> RazorpayCredentials | None:
 RazorpayCredentialsDep = Annotated[RazorpayCredentials | None, Depends(get_razorpay_credentials)]
 
 
+def get_settings(request: Request) -> Settings:
+    """The configuration this application was built with.
+
+    From application state rather than the process cache, for the same reason every other
+    dependency here is: a test points an application at the settings it wants to exercise, and
+    no request can choose them. Routes read declarative values from it, never a secret.
+    """
+    settings: Settings = request.app.state.settings
+    return settings
+
+
+SettingsDep = Annotated[Settings, Depends(get_settings)]
+
+
 # `auto_error=False` because FastAPI's own refusal is the wrong one twice over. It answers 403
 # for a missing header, which says "you may not" to a caller who has not said who they are, and
 # its body is a bare `detail` string rather than this application's structured error shape. With
