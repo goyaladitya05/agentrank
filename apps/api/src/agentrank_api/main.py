@@ -17,10 +17,12 @@ from agentrank_api.errors import (
     NotFoundError,
     UpstreamError,
 )
+from agentrank_api.limits import RequestBodyLimit
 from agentrank_api.payments.provider import PaymentProvider
 from agentrank_api.payments.wiring import build_payment_provider
 from agentrank_api.razorpay.client import HttpRazorpayClient, RazorpayClient
 from agentrank_api.razorpay.wiring import build_razorpay_client
+from agentrank_api.representation.schemas import MAX_SOURCE_REQUEST_BYTES
 from agentrank_api.routes import (
     checkouts,
     commerce,
@@ -31,6 +33,7 @@ from agentrank_api.routes import (
     payments,
     razorpay,
     reevaluations,
+    sources,
     system,
 )
 
@@ -195,6 +198,15 @@ def create_app(
     app.include_router(razorpay.router)
     app.include_router(insights.router)
     app.include_router(compiler.router)
+    app.include_router(sources.router)
     if benchmark_commands:
         app.include_router(reevaluations.router)
+    # In front of routing rather than in a dependency, because FastAPI reads a request body
+    # before it solves dependencies: by the time a schema or a route could look at the size, the
+    # bytes have already been received and held. A merchant source document is the one body this
+    # application accepts that a caller composes freely, so it is the one with a declared bound.
+    app.add_middleware(
+        RequestBodyLimit,
+        limits={("POST", sources.router.prefix): MAX_SOURCE_REQUEST_BYTES},
+    )
     return app
