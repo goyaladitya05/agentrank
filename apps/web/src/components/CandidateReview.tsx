@@ -4,6 +4,7 @@ import { useActionState } from "react";
 
 import styles from "@/components/console.module.css";
 import type { CompilerCandidate } from "@/lib/compiler";
+import { renderValue } from "@/lib/fact-value";
 import { IDLE_MUTATION, type CompilerMutationState } from "@/lib/compiler-mutation";
 
 /**
@@ -214,12 +215,4 @@ function correctedValue(correction: Record<string, unknown> | null): unknown {
   const fact = correction.fact;
   if (typeof fact !== "object" || fact === null) return null;
   return (fact as { value?: unknown }).value ?? null;
-}
-
-/** A fact value is JSON, and a price is an object. Only scalars are worth reading as prose. */
-export function renderValue(value: unknown): string {
-  if (value === null || value === undefined) return "not stated";
-  if (typeof value === "string" || typeof value === "number") return String(value);
-  if (typeof value === "boolean") return value ? "yes" : "no";
-  return JSON.stringify(value);
 }

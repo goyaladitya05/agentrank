@@ -113,3 +113,64 @@ jobs:
 
       - name: Production build
         run: pnpm --filter @agentrank/web build
+
+  browser:
+    name: Browser workflow
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_DB: agentrank
+          POSTGRES_USER: agentrank
+          # CI only, throwaway, and not a secret. It never leaves the runner.
+          POSTGRES_PASSWORD: agentrank_ci_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agentrank -d agentrank"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      AGENTRANK_ENV: ci
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: agentrank
+      POSTGRES_USER: agentrank
+      POSTGRES_PASSWORD: agentrank_ci_password
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Pinned to an exact release. setup-uv does not publish a floating major tag.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+
+      # The pnpm version comes from packageManager in the root package.json.
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Install Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: |
+          uv sync --frozen
+          pnpm install --frozen-lockfile
+
+      # Only the one browser the workflow drives, with the system libraries it needs.
+      - name: Install Chromium
+        run: pnpm --filter @agentrank/web exec playwright install --with-deps chromium
+
+      # The critical merchant review workflow against a real API, a real console build and a
+      # real PostgreSQL. It seeds its own merchant, so it depends on no fixture left behind.
+      - name: Browser workflow
+        run: make test-browser

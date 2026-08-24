@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 
-import { CandidateReview, renderValue } from "@/components/CandidateReview";
+import { CandidateReview } from "@/components/CandidateReview";
 import { InsightFailure } from "@/components/InsightFailure";
 import { EmptyState, KeyValueList, Panel, Section } from "@/components/Primitives";
 import { PublishRepresentation } from "@/components/PublishRepresentation";
@@ -8,6 +8,7 @@ import { TechnicalDetails } from "@/components/TechnicalDetails";
 import styles from "@/components/console.module.css";
 import { publishRun, reviewCandidate } from "@/lib/compiler-actions";
 import { decodeCompilerRun, type CompilerCandidate, type CompilerRun } from "@/lib/compiler";
+import { renderValue } from "@/lib/fact-value";
 import { formatTimestamp } from "@/lib/format";
 import { loadInsight } from "@/lib/insights/load";
 
