@@ -9,17 +9,26 @@
 import { NextResponse } from "next/server";
 
 import { callApi } from "@/lib/agentrank";
+import { requestApiKey } from "@/lib/auth/request";
 
 export async function GET(request: Request): Promise<NextResponse> {
+  const apiKey = await requestApiKey();
+  if (apiKey === null) {
+    return NextResponse.json({ error: "authenticated session required" }, { status: 401 });
+  }
   const checkoutId = new URL(request.url).searchParams.get("checkout_id");
   if (checkoutId === null || checkoutId.length === 0) {
     return NextResponse.json({ error: "checkout_id is required" }, { status: 400 });
   }
 
   try {
-    const result = await callApi(`/api/v1/commerce/checkouts/${encodeURIComponent(checkoutId)}`, {
-      method: "GET",
-    });
+    const result = await callApi(
+      apiKey,
+      `/api/v1/commerce/checkouts/${encodeURIComponent(checkoutId)}`,
+      {
+        method: "GET",
+      },
+    );
     return NextResponse.json(result.body, { status: result.status });
   } catch (error) {
     const detail = error instanceof Error ? error.message : "the console could not call the API";

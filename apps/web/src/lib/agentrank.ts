@@ -1,27 +1,15 @@
 /**
  * Calling the AgentRank API from the Next.js server, with the merchant credential.
  *
- * The credential is read from the server environment and is never sent to the browser. The
- * console fetches the API server side for exactly this reason, which is the same decision the
- * status page made in Phase 0 and the reason there is no CORS configuration anywhere.
- *
- * A missing credential is a configuration error with a sentence rather than a 401 the browser
- * has to interpret. The console is an operations tool and the person running it is the person
- * who can fix it.
+ * The credential comes from the authenticated server-side browser session and is never sent to
+ * browser JavaScript.  A route handler supplies it after it has checked the session and origin.
  */
 
 import { apiBaseUrl } from "@/lib/config";
 
-const CREDENTIAL_VARIABLE = "AGENTRANK_MERCHANT_API_KEY";
-
 export interface ApiResult {
   readonly status: number;
   readonly body: unknown;
-}
-
-export function merchantCredential(): string | null {
-  const token = process.env[CREDENTIAL_VARIABLE];
-  return token && token.length > 0 ? token : null;
 }
 
 /**
@@ -32,20 +20,16 @@ export function merchantCredential(): string | null {
  * cooperate. A wrapper that threw on everything above 299 would flatten those into one message.
  */
 export async function callApi(
+  apiKey: string,
   path: string,
   init: { readonly method: string; readonly body?: unknown },
 ): Promise<ApiResult> {
-  const token = merchantCredential();
-  if (token === null) {
-    throw new Error(`${CREDENTIAL_VARIABLE} is not set, so the console cannot call the API`);
-  }
-
   // `exactOptionalPropertyTypes` is on, so an absent body is an absent key rather than a key
   // holding undefined. The distinction is the whole reason that flag exists.
   const request: RequestInit = {
     method: init.method,
     headers: {
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
     },
     cache: "no-store",

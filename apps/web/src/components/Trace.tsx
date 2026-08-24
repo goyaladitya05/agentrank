@@ -21,7 +21,7 @@ const EVENT_TONES: Record<string, Tone> = {
  *
  * Events render exactly as the API delivered them: sequence, type, recorded time and the
  * redacted payload verbatim as pretty printed JSON. Nothing is inferred between events,
- * nothing is rendered as HTML or Markdown, and a gap in the sequence is reported rather
+ * nothing is rendered as HTML or Markdown, and non-monotonic sequences are reported rather
  * than hidden, because an untrustworthy ordering would make every reading below it wrong.
  */
 export function TraceExplorer({ trace }: { trace: TraceProjection }) {

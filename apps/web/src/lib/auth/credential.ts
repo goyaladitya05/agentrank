@@ -18,11 +18,7 @@ export function environmentApiKey(): string | null {
 
 export async function consoleApiKey(): Promise<string | null> {
   const jar = await cookies();
-  const fromSession = resolveApiKeyForToken(jar.get(SESSION_COOKIE)?.value);
-  if (fromSession !== null) {
-    return fromSession;
-  }
-  return environmentApiKey();
+  return resolveApiKeyForToken(jar.get(SESSION_COOKIE)?.value);
 }
 
 /**

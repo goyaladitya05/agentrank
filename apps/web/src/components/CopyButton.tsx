@@ -21,24 +21,21 @@ export function CopyButton({ value, label = "Copy" }: { value: string; label?: s
     }
   }
 
-  if (copied) {
-    return (
-      <span className={styles.copyDone} role="status">
-        Copied
-      </span>
-    );
-  }
-
   return (
-    <button
-      type="button"
-      className={styles.copyButton}
-      onClick={() => {
-        void copy();
-      }}
-      aria-label={`${label}: ${value}`}
-    >
-      {label}
-    </button>
+    <span className={styles.copyDone}>
+      <button
+        type="button"
+        className={styles.copyButton}
+        onClick={() => {
+          void copy();
+        }}
+        aria-label={`${label}: ${value}`}
+      >
+        {label}
+      </button>
+      <span role="status" aria-live="polite">
+        {copied ? " Copied" : ""}
+      </span>
+    </span>
   );
 }

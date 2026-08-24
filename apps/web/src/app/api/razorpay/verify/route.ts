@@ -10,10 +10,18 @@
 import { NextResponse } from "next/server";
 
 import { callApi } from "@/lib/agentrank";
+import { mutationApiKey } from "@/lib/auth/request";
 
 const REQUIRED = ["razorpay_payment_id", "razorpay_order_id", "razorpay_signature"] as const;
 
 export async function POST(request: Request): Promise<NextResponse> {
+  const apiKey = await mutationApiKey(request);
+  if (apiKey === null) {
+    return NextResponse.json(
+      { error: "authenticated same-origin session required" },
+      { status: 401 },
+    );
+  }
   let payload: unknown;
   try {
     payload = await request.json();
@@ -21,6 +29,9 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json({ error: "the request body was not JSON" }, { status: 400 });
   }
 
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+    return NextResponse.json({ error: "request body must be an object" }, { status: 400 });
+  }
   const fields = payload as Record<string, unknown>;
   const attemptId = fields.payment_attempt_id;
   if (typeof attemptId !== "string" || attemptId.length === 0) {
@@ -38,6 +49,7 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   try {
     const result = await callApi(
+      apiKey,
       `/api/v1/commerce/payments/${encodeURIComponent(attemptId)}/razorpay-checkout/verify`,
       { method: "POST", body: callback },
     );

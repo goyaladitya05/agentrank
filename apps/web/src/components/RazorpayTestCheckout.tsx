@@ -136,6 +136,9 @@ export function RazorpayTestCheckout({ configured }: { readonly configured: bool
         }),
       );
       const checkout = parsePreparation(body);
+      if (!checkout.testMode) {
+        throw new Error("Razorpay did not confirm Test Mode. Checkout was not opened.");
+      }
       setPrepared(checkout);
 
       const Razorpay = window.Razorpay;
@@ -174,10 +177,7 @@ export function RazorpayTestCheckout({ configured }: { readonly configured: bool
     <section className={styles.panel}>
       <Script src={CHECKOUT_SCRIPT} strategy="afterInteractive" />
 
-      <p className={styles.banner}>
-        RAZORPAY TEST MODE. No real money moves. Every payment on this page is a simulated
-        transaction against Razorpay test keys.
-      </p>
+      <p className={styles.banner}>Razorpay mode is verified before checkout opens.</p>
 
       {!configured && (
         <p className={styles.warning}>
@@ -221,7 +221,11 @@ export function RazorpayTestCheckout({ configured }: { readonly configured: bool
         {busy ? "Working" : "Pay with Razorpay (test mode)"}
       </button>
 
-      {error !== null && <p className={styles.error}>{error}</p>}
+      {error !== null && (
+        <p className={styles.error} role="alert">
+          {error}
+        </p>
+      )}
 
       {prepared !== null && (
         <dl className={styles.facts}>

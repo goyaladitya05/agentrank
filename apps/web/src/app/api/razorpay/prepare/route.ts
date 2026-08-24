@@ -9,8 +9,16 @@
 import { NextResponse } from "next/server";
 
 import { callApi } from "@/lib/agentrank";
+import { mutationApiKey } from "@/lib/auth/request";
 
 export async function POST(request: Request): Promise<NextResponse> {
+  const apiKey = await mutationApiKey(request);
+  if (apiKey === null) {
+    return NextResponse.json(
+      { error: "authenticated same-origin session required" },
+      { status: 401 },
+    );
+  }
   let payload: unknown;
   try {
     payload = await request.json();
@@ -18,6 +26,9 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json({ error: "the request body was not JSON" }, { status: 400 });
   }
 
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+    return NextResponse.json({ error: "request body must be an object" }, { status: 400 });
+  }
   const fields = payload as Record<string, unknown>;
   const checkoutId = fields.checkout_id;
   const idempotencyKey = fields.idempotency_key;
@@ -27,6 +38,7 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   try {
     const result = await callApi(
+      apiKey,
       `/api/v1/commerce/checkouts/${encodeURIComponent(checkoutId)}/razorpay-checkout`,
       {
         method: "POST",

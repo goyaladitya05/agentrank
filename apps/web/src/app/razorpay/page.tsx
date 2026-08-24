@@ -1,5 +1,5 @@
 import { RazorpayTestCheckout } from "@/components/RazorpayTestCheckout";
-import { merchantCredential } from "@/lib/agentrank";
+import { requireConsoleApiKey } from "@/lib/auth/credential";
 
 import styles from "./page.module.css";
 
@@ -7,10 +7,8 @@ import styles from "./page.module.css";
 // telling somebody to set a variable they have already set.
 export const dynamic = "force-dynamic";
 
-export default function RazorpayCheckoutPage() {
-  // Whether a credential exists, never the credential. This is a server component and the
-  // boolean is all that crosses into the browser.
-  const configured = merchantCredential() !== null;
+export default async function RazorpayCheckoutPage() {
+  await requireConsoleApiKey();
 
   return (
     <>
@@ -19,7 +17,7 @@ export default function RazorpayCheckoutPage() {
         <span className={styles.target}>razorpay test checkout</span>
       </header>
       <main className={styles.main}>
-        <RazorpayTestCheckout configured={configured} />
+        <RazorpayTestCheckout configured />
       </main>
     </>
   );

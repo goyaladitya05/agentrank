@@ -92,9 +92,8 @@ export function sessionCount(): number {
 }
 
 /**
- * Cookie attributes for the session token. Secure is opt in through configuration so a
- * locally built and served console over plain HTTP keeps working; a real deployment sets
- * AGENTRANK_COOKIE_SECURE=true.
+ * Cookie attributes for the session token. Production is always secure. Local HTTP development
+ * is the only explicit exception, controlled by AGENTRANK_COOKIE_SECURE=false.
  */
 export function sessionCookieOptions(): {
   httpOnly: true;
@@ -108,6 +107,7 @@ export function sessionCookieOptions(): {
     sameSite: "lax",
     path: "/",
     maxAge: SESSION_TTL_SECONDS,
-    secure: process.env.AGENTRANK_COOKIE_SECURE === "true",
+    secure:
+      process.env.AGENTRANK_COOKIE_SECURE !== "false" && process.env.NODE_ENV !== "development",
   };
 }

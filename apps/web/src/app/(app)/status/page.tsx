@@ -1,4 +1,5 @@
 import { SystemStatusTable } from "@/components/SystemStatusTable";
+import { requireConsoleApiKey } from "@/lib/auth/credential";
 import { apiBaseUrl } from "@/lib/config";
 import { fetchSystemStatus } from "@/lib/systemStatus";
 
@@ -8,18 +9,14 @@ import styles from "./page.module.css";
 export const dynamic = "force-dynamic";
 
 export default async function SystemStatusPage() {
+  await requireConsoleApiKey();
   const target = apiBaseUrl();
   const status = await fetchSystemStatus(target);
 
   return (
-    <>
-      <header className={styles.header}>
-        <h1 className={styles.wordmark}>AgentRank</h1>
-        <span className={styles.target}>{target}</span>
-      </header>
-      <main className={styles.main}>
-        <SystemStatusTable components={[status.api, status.database]} />
-      </main>
-    </>
+    <section className={styles.main}>
+      <h1 className={styles.wordmark}>System status</h1>
+      <SystemStatusTable components={[status.api, status.database]} />
+    </section>
   );
 }
