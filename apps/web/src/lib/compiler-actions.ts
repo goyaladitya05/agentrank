@@ -1,13 +1,17 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { redirect } from "next/navigation";
 
 import { requireConsoleApiKey } from "@/lib/auth/credential";
 import { apiBaseUrl } from "@/lib/config";
 import { decodeCompilerRun } from "@/lib/compiler";
 
-async function command(path: string, body?: unknown): Promise<void> {
+export interface CompilerMutationState {
+  readonly ok: boolean;
+  readonly message: string | null;
+}
+
+async function command(path: string, body?: unknown): Promise<CompilerMutationState> {
   const response = await fetch(`${apiBaseUrl().replace(/\/+$/, "")}${path}`, {
     method: "POST",
     headers: {
@@ -18,16 +22,36 @@ async function command(path: string, body?: unknown): Promise<void> {
     cache: "no-store",
   });
   const payload: unknown = await response.json().catch(() => null);
-  if (!response.ok)
-    throw new Error(`Compiler command was refused (HTTP ${String(response.status)}).`);
-  decodeCompilerRun(payload);
+  if (!response.ok) {
+    const detail =
+      typeof payload === "object" && payload !== null && "detail" in payload
+        ? (payload as { detail?: unknown }).detail
+        : null;
+    return {
+      ok: false,
+      message:
+        typeof detail === "string"
+          ? detail
+          : `The compiler command was refused (HTTP ${String(response.status)}). Refresh to see current review state.`,
+    };
+  }
+  try {
+    decodeCompilerRun(payload);
+  } catch {
+    return {
+      ok: false,
+      message: "The compiler returned an unreadable response. Refresh and try again.",
+    };
+  }
+  return { ok: true, message: null };
 }
 
 export async function reviewCandidate(
   runId: string,
   candidateId: string,
+  _: CompilerMutationState,
   formData: FormData,
-): Promise<void> {
+): Promise<CompilerMutationState> {
   const decision = String(formData.get("decision") ?? "");
   if (decision === "correct") {
     const raw = String(formData.get("value") ?? "");
@@ -42,27 +66,47 @@ export async function reviewCandidate(
       (kind === "BOOLEAN" && raw !== "true" && raw !== "false") ||
       (!Number.isFinite(value as number) && (kind === "INTEGER" || kind === "MEASUREMENT"))
     ) {
-      throw new Error("Enter a valid correction value.");
+      return { ok: false, message: "Enter a valid correction value." };
     }
-    await command(`/api/v1/compiler/candidates/${encodeURIComponent(candidateId)}/correct`, {
-      value,
-      provenance_field: String(formData.get("provenance_field") ?? ""),
-      provenance_excerpt: String(formData.get("provenance_excerpt") ?? "") || null,
-    });
+    const result = await command(
+      `/api/v1/compiler/candidates/${encodeURIComponent(candidateId)}/correct`,
+      {
+        value,
+        provenance_field: String(formData.get("provenance_field") ?? ""),
+        provenance_excerpt: String(formData.get("provenance_excerpt") ?? "") || null,
+      },
+    );
+    if (!result.ok) return result;
   } else if (decision === "accept" || decision === "reject") {
-    await command(`/api/v1/compiler/candidates/${encodeURIComponent(candidateId)}/${decision}`);
+    const result = await command(
+      `/api/v1/compiler/candidates/${encodeURIComponent(candidateId)}/${decision}`,
+    );
+    if (!result.ok) return result;
   } else {
-    throw new Error("Unknown compiler review action.");
+    return { ok: false, message: "Unknown compiler review action." };
   }
   revalidatePath(`/compiler/runs/${runId}`);
   revalidatePath("/compiler");
-  redirect(`/compiler/runs/${runId}`);
+  return { ok: true, message: null };
 }
 
-export async function publishRun(runId: string): Promise<void> {
-  await command(`/api/v1/compiler/runs/${encodeURIComponent(runId)}/publish`);
+export async function reviewCandidateForm(
+  runId: string,
+  candidateId: string,
+  formData: FormData,
+): Promise<void> {
+  const result = await reviewCandidate(runId, candidateId, { ok: false, message: null }, formData);
+  if (!result.ok) throw new Error(result.message ?? "The compiler command was refused.");
+}
+
+export async function publishRun(
+  runId: string,
+  _: CompilerMutationState,
+): Promise<CompilerMutationState> {
+  const result = await command(`/api/v1/compiler/runs/${encodeURIComponent(runId)}/publish`);
+  if (!result.ok) return result;
   revalidatePath(`/compiler/runs/${runId}`);
   revalidatePath("/compiler");
   revalidatePath("/overview");
-  redirect(`/compiler/runs/${runId}`);
+  return { ok: true, message: null };
 }

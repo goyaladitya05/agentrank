@@ -4,7 +4,7 @@ import { InsightFailure } from "@/components/InsightFailure";
 import { EmptyState, Panel, Section } from "@/components/Primitives";
 import { PublishRepresentation } from "@/components/PublishRepresentation";
 import styles from "@/components/console.module.css";
-import { publishRun, reviewCandidate } from "@/lib/compiler-actions";
+import { publishRun, reviewCandidateForm } from "@/lib/compiler-actions";
 import { decodeCompilerRun } from "@/lib/compiler";
 import { formatTimestamp } from "@/lib/format";
 import { loadInsight } from "@/lib/insights/load";
@@ -158,7 +158,7 @@ function ReviewForm({
 }) {
   if (candidate.review !== null || candidate.state === "ACCEPTED")
     return <span>{candidate.state}</span>;
-  const action = reviewCandidate.bind(null, runId, candidate.candidate_id);
+  const action = reviewCandidateForm.bind(null, runId, candidate.candidate_id);
   const evidence = candidate.evidence[0];
   return (
     <form action={action}>
