@@ -14,9 +14,13 @@ import pytest
 from conftest import CredentialIssuer, bearer
 from fastapi.testclient import TestClient
 from reevaluation_support import build_launch_world, with_openai, without_providers, world_source
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy import event
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from agentrank_api.benchmark.launch import MerchantReevaluationService
+from agentrank_api.benchmark.launch import (
+    MerchantReevaluationService,
+    ReevaluationWorkerService,
+)
 from agentrank_api.benchmark.llm import OPENAI_PROVIDER
 from agentrank_api.benchmark.reevaluation import BenchmarkReevaluation
 from agentrank_api.benchmark.runner import BenchmarkRunService
@@ -438,3 +442,58 @@ class TestBuyerResolution:
         assert plan["max_model_turns"] is None
         assert plan["mission_deadline_seconds"] is None
         assert plan["launchable"] is True
+
+
+class TestReadCost:
+    async def test_listing_launches_does_not_grow_a_statement_per_launch(
+        self,
+        settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+        catalog_engine: AsyncEngine,
+    ) -> None:
+        """The history list and the launch page are the console's most repeated reads.
+
+        The launch page re-reads itself every few seconds while a run executes, so a read that
+        grew a handful of statements per row would be this console's most wasteful pattern by a
+        wide margin. What is asserted is the property rather than a magic number: reading three
+        launches costs exactly what reading one costs.
+        """
+        pinned = without_providers(settings)
+        world = await build_launch_world(session, "cost-shop")
+        service = MerchantReevaluationService(session, pinned)
+        worker = ReevaluationWorkerService(session)
+        for index in range(3):
+            launch = await service.request(
+                world.merchant_id,
+                representation_id=world.representation.id,
+                request_key=f"cost-request-{index}",
+            )
+            # Settled without a run, so the merchant's one pending slot frees for the next.
+            await worker.settle_failed(launch.id, failure_code="run_aborted")
+
+        counted: list[str] = []
+
+        def record(
+            connection: object,
+            cursor: object,
+            statement: str,
+            parameters: object,
+            context: object,
+            executemany: object,
+        ) -> None:
+            counted.append(statement)
+
+        event.listen(catalog_engine.sync_engine, "before_cursor_execute", record)
+        try:
+            counted.clear()
+            await service.details(world.merchant_id, limit=1)
+            one = len(counted)
+            counted.clear()
+            await service.details(world.merchant_id, limit=3)
+            three = len(counted)
+        finally:
+            event.remove(catalog_engine.sync_engine, "before_cursor_execute", record)
+
+        assert one > 0
+        assert three == one

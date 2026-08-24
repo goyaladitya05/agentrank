@@ -25,23 +25,30 @@ including which merchant this is, comes from the credential and from the databas
 """
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
 from agentrank_api.benchmark.execution import REFERENCE_ISOLATED_KIND
-from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus
+from agentrank_api.benchmark.lifecycle import TERMINAL_MISSION_STATUSES, BenchmarkRunStatus
 from agentrank_api.benchmark.llm import (
     GEMINI_PROVIDER,
     OPENAI_PROVIDER,
     AgentConfiguration,
     executor_kind,
 )
-from agentrank_api.benchmark.models import BenchmarkEnvironment, BenchmarkRun, BenchmarkSuite
+from agentrank_api.benchmark.models import (
+    BenchmarkEnvironment,
+    BenchmarkMission,
+    BenchmarkMissionRun,
+    BenchmarkRun,
+    BenchmarkSuite,
+)
 from agentrank_api.benchmark.reevaluation import (
     BenchmarkReevaluation,
     BuyerProfile,
@@ -155,6 +162,18 @@ class ReevaluationPlan:
     @property
     def launchable(self) -> bool:
         return not self.blockers
+
+
+@dataclass(frozen=True, slots=True)
+class _Labels:
+    """Everything a page of launches needs, read once rather than once per launch."""
+
+    suite_labels: dict[uuid.UUID, str]
+    mission_counts: dict[uuid.UUID, int]
+    environment_labels: dict[uuid.UUID, str]
+    representation_labels: dict[uuid.UUID, str]
+    run_statuses: dict[uuid.UUID, str]
+    missions_finished: dict[uuid.UUID, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,38 +384,89 @@ class MerchantReevaluationService:
         self, merchant_id: uuid.UUID, reevaluation_id: uuid.UUID
     ) -> ReevaluationDetail:
         """One launch with its frozen identity resolved to labels and its honest progress."""
-        return await self._detail(await self.get(merchant_id, reevaluation_id))
+        launch = await self.get(merchant_id, reevaluation_id)
+        return self._detail(launch, await self._resolve([launch]))
 
     async def details(self, merchant_id: uuid.UUID, *, limit: int = 10) -> list[ReevaluationDetail]:
         launches = await self.recent(merchant_id, limit=limit)
-        return [await self._detail(launch) for launch in launches]
+        resolved = await self._resolve(launches)
+        return [self._detail(launch, resolved) for launch in launches]
 
-    async def _detail(self, launch: BenchmarkReevaluation) -> ReevaluationDetail:
-        suite = await self._suites.get_by_id(launch.suite_id)
-        if suite is None:  # pragma: no cover  a RESTRICT foreign key holds this
-            raise NotFoundError("benchmark_suite", str(launch.suite_id))
-        environment = (
-            await self._session.execute(
-                select(BenchmarkEnvironment).where(
-                    BenchmarkEnvironment.id == launch.environment_id,
-                    BenchmarkEnvironment.merchant_id == launch.merchant_id,
+    async def _resolve(self, launches: Sequence[BenchmarkReevaluation]) -> _Labels:
+        """Everything a page of launches needs to be described, in a fixed number of statements.
+
+        Batched rather than per launch. The launch list is a merchant's history and the launch
+        page re-reads itself while a run is executing, so a read that grew a handful of
+        statements per row would be the console's most wasteful query pattern by a wide margin.
+
+        Mission counts are aggregates rather than loaded rows. Neither the suite's shape nor a
+        run's progress needs the rows themselves, and loading fourteen missions and fourteen
+        results to produce two integers is the same defect one level down.
+        """
+        if not launches:
+            return _Labels({}, {}, {}, {}, {}, {})
+        merchant_ids = {launch.merchant_id for launch in launches}
+        suite_ids = {launch.suite_id for launch in launches}
+        environment_ids = {launch.environment_id for launch in launches}
+        representation_ids = {launch.representation_id for launch in launches}
+        run_ids = {launch.run_id for launch in launches if launch.run_id is not None}
+
+        suites = await self._session.execute(
+            select(BenchmarkSuite.id, BenchmarkSuite.suite_key, BenchmarkSuite.version).where(
+                BenchmarkSuite.id.in_(suite_ids)
+            )
+        )
+        missions = await self._session.execute(
+            select(BenchmarkMission.suite_id, func.count())
+            .where(BenchmarkMission.suite_id.in_(suite_ids))
+            .group_by(BenchmarkMission.suite_id)
+        )
+        environments = await self._session.execute(
+            select(BenchmarkEnvironment).where(
+                BenchmarkEnvironment.id.in_(environment_ids),
+                BenchmarkEnvironment.merchant_id.in_(merchant_ids),
+            )
+        )
+        representations = await self._session.execute(
+            select(CommerceRepresentation).where(
+                CommerceRepresentation.id.in_(representation_ids),
+                CommerceRepresentation.merchant_id.in_(merchant_ids),
+            )
+        )
+        run_statuses: dict[uuid.UUID, str] = {}
+        finished: dict[uuid.UUID, int] = {}
+        if run_ids:
+            runs = await self._session.execute(
+                select(BenchmarkRun.id, BenchmarkRun.status).where(
+                    BenchmarkRun.id.in_(run_ids), BenchmarkRun.merchant_id.in_(merchant_ids)
                 )
             )
-        ).scalar_one_or_none()
-        representation = (
-            await self._session.execute(
-                select(CommerceRepresentation).where(
-                    CommerceRepresentation.id == launch.representation_id,
-                    CommerceRepresentation.merchant_id == launch.merchant_id,
+            run_statuses = {row.id: row.status.value for row in runs.all()}
+            terminal = await self._session.execute(
+                select(BenchmarkMissionRun.run_id, func.count())
+                .where(
+                    BenchmarkMissionRun.run_id.in_(run_ids),
+                    BenchmarkMissionRun.merchant_id.in_(merchant_ids),
+                    BenchmarkMissionRun.status.in_(sorted(TERMINAL_MISSION_STATUSES)),
                 )
+                .group_by(BenchmarkMissionRun.run_id)
             )
-        ).scalar_one_or_none()
+            finished = {row[0]: row[1] for row in terminal.all()}
+        return _Labels(
+            suite_labels={row.id: f"{row.suite_key}@{row.version}" for row in suites.all()},
+            mission_counts={row[0]: row[1] for row in missions.all()},
+            environment_labels={row.id: row.label for row in environments.scalars()},
+            representation_labels={row.id: row.label for row in representations.scalars()},
+            run_statuses=run_statuses,
+            missions_finished=finished,
+        )
+
+    def _detail(self, launch: BenchmarkReevaluation, labels: _Labels) -> ReevaluationDetail:
         configuration = (
             None
             if launch.buyer_configuration is None
             else AgentConfiguration.from_payload(launch.buyer_configuration)
         )
-        run_status, completed = await self._progress(launch)
         return ReevaluationDetail(
             reevaluation_id=launch.id,
             status=launch.status,
@@ -405,36 +475,26 @@ class MerchantReevaluationService:
             started_at=launch.started_at,
             settled_at=launch.settled_at,
             representation_id=launch.representation_id,
-            representation_label="" if representation is None else representation.label,
+            representation_label=labels.representation_labels.get(launch.representation_id, ""),
             compiler_run_id=launch.compiler_run_id,
             suite_id=launch.suite_id,
-            suite_label=suite.label,
-            mission_count=len(suite.missions),
-            environment_label="" if environment is None else environment.label,
+            suite_label=labels.suite_labels.get(launch.suite_id, ""),
+            mission_count=labels.mission_counts.get(launch.suite_id, 0),
+            environment_label=labels.environment_labels.get(launch.environment_id, ""),
             buyer_profile=launch.buyer_profile,
             executor_kind=launch.executor_kind,
             provider=None if configuration is None else configuration.provider,
             requested_model=None if configuration is None else configuration.requested_model,
             buyer_configuration_digest=launch.buyer_configuration_digest,
             run_id=launch.run_id,
-            run_status=run_status,
-            missions_completed=completed,
+            run_status=(None if launch.run_id is None else labels.run_statuses.get(launch.run_id)),
+            # Zero rather than None once a run exists: a run always has as many mission runs as
+            # its suite has missions, so none of them being terminal yet is a real count.
+            missions_completed=(
+                None if launch.run_id is None else labels.missions_finished.get(launch.run_id, 0)
+            ),
             baseline_run_id=launch.baseline_run_id,
         )
-
-    async def _progress(self, launch: BenchmarkReevaluation) -> tuple[str | None, int | None]:
-        """The bound run's status and how many of its missions have finished.
-
-        Counted from the mission rows rather than stored, because a stored count is a count that
-        can disagree with the rows it summarises. A launch with no run yet has neither, which is
-        the honest answer while nothing has executed.
-        """
-        if launch.run_id is None:
-            return None, None
-        run = await self._runs.get(launch.run_id, merchant_id=launch.merchant_id)
-        if run is None:  # pragma: no cover  a RESTRICT foreign key holds this
-            return None, None
-        return run.status.value, sum(1 for result in run.mission_runs if result.is_terminal)
 
     async def get(
         self, merchant_id: uuid.UUID, reevaluation_id: uuid.UUID
