@@ -97,6 +97,36 @@ class MerchantCompilerReviewService:
             readiness=self._readiness(run, candidates, reviews),
         )
 
+    async def command(
+        self,
+        merchant_id: uuid.UUID,
+        candidate_id: uuid.UUID,
+        decision: ReviewDecision,
+        *,
+        value: str | int | bool | None = None,
+        provenance_field: str | None = None,
+        provenance_excerpt: str | None = None,
+    ) -> CompilerRunReviewView:
+        """Record one review decision and answer with the authoritative run state.
+
+        The run identity comes from the review the domain just wrote rather than from a second
+        candidate read, so the answer names the run that decision actually landed on.
+        """
+        review = await self.review(
+            merchant_id,
+            candidate_id,
+            decision,
+            value=value,
+            provenance_field=provenance_field,
+            provenance_excerpt=provenance_excerpt,
+        )
+        return await self.run_view(merchant_id, review.run_id)
+
+    async def publish(self, merchant_id: uuid.UUID, run_id: uuid.UUID) -> CompilerRunReviewView:
+        """Publish the reviewed run and answer with the authoritative run state."""
+        await self._compiler.publish(merchant_id, run_id)
+        return await self.run_view(merchant_id, run_id)
+
     async def review(
         self,
         merchant_id: uuid.UUID,

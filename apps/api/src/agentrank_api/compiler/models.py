@@ -140,7 +140,12 @@ class CompilerReview(Base):
     run_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
     candidate_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
     decision: Mapped[ReviewDecision] = mapped_column(REVIEW_DECISION, nullable=False)
-    correction: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # `none_as_null` because an accept or a reject carries no correction, and the check
+    # constraint below reads SQL NULL. Without it SQLAlchemy writes a JSONB `null`, which is a
+    # value rather than the absence of one, and every non-correcting review is refused.
+    correction: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
     reviewer: Mapped[str] = mapped_column(String(128), nullable=False, default="SYSTEM")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

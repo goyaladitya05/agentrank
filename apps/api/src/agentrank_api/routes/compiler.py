@@ -1,7 +1,18 @@
-"""Authenticated merchant commands for reviewing deterministic compiler facts."""
+"""Authenticated merchant commands for reviewing deterministic compiler facts.
+
+Explicit commands rather than CRUD. A browser may say accept, correct, reject or publish about
+a candidate it owns, and nothing else: ownership, candidate state, attribute type, unit,
+provenance validity, review admission, publish readiness and representation lineage are all
+decided by the compiler domain from persisted evidence.
+
+Only one translation happens here. The domain raises `ValueError` for a correction that is not
+a valid correction, and that is a 422 because the request itself is wrong. Everything else the
+domain raises already has a response: `NotFoundError` is a 404, including for another merchant's
+identifier, and `ConflictError` is a 409 for state that refuses a well formed request.
+"""
 
 import uuid
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, status
 
@@ -37,10 +48,11 @@ async def compiler_run(
 async def accept_candidate(
     candidate_id: uuid.UUID, session: SessionDep, merchant: MerchantDep
 ) -> CompilerRunReviewView:
-    service = MerchantCompilerReviewService(session)
-    await _review(service, merchant.merchant_id, candidate_id, ReviewDecision.ACCEPT)
-    return await service.run_view(
-        merchant.merchant_id, (await service._candidate(merchant.merchant_id, candidate_id)).run_id
+    return await _command(
+        MerchantCompilerReviewService(session),
+        merchant.merchant_id,
+        candidate_id,
+        ReviewDecision.ACCEPT,
     )
 
 
@@ -48,10 +60,11 @@ async def accept_candidate(
 async def reject_candidate(
     candidate_id: uuid.UUID, session: SessionDep, merchant: MerchantDep
 ) -> CompilerRunReviewView:
-    service = MerchantCompilerReviewService(session)
-    await _review(service, merchant.merchant_id, candidate_id, ReviewDecision.REJECT)
-    return await service.run_view(
-        merchant.merchant_id, (await service._candidate(merchant.merchant_id, candidate_id)).run_id
+    return await _command(
+        MerchantCompilerReviewService(session),
+        merchant.merchant_id,
+        candidate_id,
+        ReviewDecision.REJECT,
     )
 
 
@@ -62,9 +75,8 @@ async def correct_candidate(
     session: SessionDep,
     merchant: MerchantDep,
 ) -> CompilerRunReviewView:
-    service = MerchantCompilerReviewService(session)
-    await _review(
-        service,
+    return await _command(
+        MerchantCompilerReviewService(session),
         merchant.merchant_id,
         candidate_id,
         ReviewDecision.CORRECT,
@@ -72,28 +84,34 @@ async def correct_candidate(
         provenance_field=request.provenance_field,
         provenance_excerpt=request.provenance_excerpt,
     )
-    return await service.run_view(
-        merchant.merchant_id, (await service._candidate(merchant.merchant_id, candidate_id)).run_id
-    )
 
 
 @router.post("/runs/{run_id}/publish")
 async def publish_compiler_run(
     run_id: uuid.UUID, session: SessionDep, merchant: MerchantDep
 ) -> CompilerRunReviewView:
-    await MerchantCompilerReviewService(session)._compiler.publish(merchant.merchant_id, run_id)
-    return await MerchantCompilerReviewService(session).run_view(merchant.merchant_id, run_id)
+    return await MerchantCompilerReviewService(session).publish(merchant.merchant_id, run_id)
 
 
-async def _review(
+async def _command(
     service: MerchantCompilerReviewService,
     merchant_id: uuid.UUID,
     candidate_id: uuid.UUID,
     decision: ReviewDecision,
-    **kwargs: Any,
-) -> None:
+    *,
+    value: str | int | bool | None = None,
+    provenance_field: str | None = None,
+    provenance_excerpt: str | None = None,
+) -> CompilerRunReviewView:
     try:
-        await service.review(merchant_id, candidate_id, decision, **kwargs)
+        return await service.command(
+            merchant_id,
+            candidate_id,
+            decision,
+            value=value,
+            provenance_field=provenance_field,
+            provenance_excerpt=provenance_excerpt,
+        )
     except ValueError as error:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)

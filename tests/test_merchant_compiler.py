@@ -109,10 +109,42 @@ async def test_conflicting_wattage_requires_review_and_correction_preserves_prop
         await service.review(
             merchant.id, conflicted.id, ReviewDecision.CORRECT, correction=unsupported
         )
+    with pytest.raises(ValueError, match="preserve the candidate type and unit"):
+        await service.review(
+            merchant.id,
+            conflicted.id,
+            ReviewDecision.CORRECT,
+            correction=replace(correction, unit="mW"),
+        )
+    with pytest.raises(ValueError, match="preserve the candidate type and unit"):
+        await service.review(
+            merchant.id,
+            conflicted.id,
+            ReviewDecision.CORRECT,
+            correction=replace(correction, attribute_kind=AttributeKind.INTEGER, unit=None),
+        )
+    with pytest.raises(ValueError, match="same candidate target"):
+        await service.review(
+            merchant.id,
+            conflicted.id,
+            ReviewDecision.CORRECT,
+            correction=replace(correction, target="variant.VE-CHG-100-WHT.attribute.wattage"),
+        )
+    proposed = dict(conflicted.proposal)
     reviewed = await service.review(
         merchant.id, conflicted.id, ReviewDecision.CORRECT, correction=correction
     )
     assert reviewed.correction is not None
+    # The correction is separate evidence. The proposal the compiler made is still the proposal
+    # the compiler made, read back from the database rather than from the object in hand.
+    stored = next(
+        candidate
+        for candidate in await service.candidates(merchant_id, run_id)
+        if candidate.id == conflicted.id
+    )
+    assert stored.proposal == proposed
+    assert stored.proposal["fact"]["value"] == 0
+    assert reviewed.correction["fact"]["value"] == 65
     assert (
         await service.review(
             merchant.id, conflicted.id, ReviewDecision.CORRECT, correction=correction
