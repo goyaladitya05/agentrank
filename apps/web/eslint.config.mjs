@@ -1,7 +1,16 @@
 import next from "eslint-config-next/core-web-vitals";
 
 const config = [
-  { ignores: [".next/**", "node_modules/**", "coverage/**", "next-env.d.ts"] },
+  {
+    ignores: [
+      ".next/**",
+      "node_modules/**",
+      "coverage/**",
+      "next-env.d.ts",
+      "test-results/**",
+      "playwright-report/**",
+    ],
+  },
   ...next,
 ];
 

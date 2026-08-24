@@ -25,6 +25,13 @@ class CompilerReviewHistoryView(BaseModel):
 
 
 class CompilerCandidateView(BaseModel):
+    """One proposed fact, already read for a merchant rather than left as compiler internals.
+
+    `proposed_value`, `authority` and `confidence` are lifted out of `proposal` here so that the
+    console never parses a compiler payload to decide what to show. `proposal` stays, whole and
+    unedited, because the merchant is entitled to see the exact document the compiler wrote.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     candidate_id: uuid.UUID
@@ -32,6 +39,9 @@ class CompilerCandidateView(BaseModel):
     product_or_variant: str
     attribute: str
     proposal: dict[str, Any]
+    proposed_value: Any
+    authority: Literal["AUTHORITATIVE", "DERIVED"]
+    confidence: Literal["AUTHORITATIVE", "HIGH", "REVIEW_REQUIRED"]
     attribute_kind: str | None
     unit: str | None
     state: str

@@ -572,3 +572,92 @@
   overflow-x: auto;
   white-space: pre;
 }
+
+/* Review and publication controls. The console only writes through these. */
+
+.button {
+  display: inline-block;
+  padding: 6px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.button:hover:not(:disabled) {
+  background: var(--surface-header);
+}
+
+.button:disabled {
+  color: var(--text-muted);
+  cursor: progress;
+}
+
+.button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.buttonRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.field {
+  display: block;
+  margin-top: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.field input,
+.field select {
+  display: block;
+  width: 100%;
+  min-width: 140px;
+  margin-top: 2px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.field input:focus-visible,
+.field select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.mutationAlert {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--state-fail);
+  background: var(--surface-header);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.mutationPending {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.reviewDecision {
+  font-weight: 600;
+}
+
+.reviewMeta {
+  margin: 2px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}

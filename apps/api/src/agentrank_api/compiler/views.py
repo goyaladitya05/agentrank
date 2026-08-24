@@ -298,6 +298,9 @@ class MerchantCompilerReviewService:
             product_or_variant=product_or_variant,
             attribute=attribute,
             proposal=candidate.proposal,
+            proposed_value=fact.value,
+            authority=fact.authority.value,
+            confidence=fact.confidence.value,
             attribute_kind=None
             if proposal.attribute_kind is None
             else proposal.attribute_kind.value,

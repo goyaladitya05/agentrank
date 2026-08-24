@@ -13,12 +13,18 @@ export interface CompilerReview {
   readonly created_at: string;
 }
 
+export type FactAuthority = "AUTHORITATIVE" | "DERIVED";
+export type FactConfidence = "AUTHORITATIVE" | "HIGH" | "REVIEW_REQUIRED";
+
 export interface CompilerCandidate {
   readonly candidate_id: string;
   readonly target: string;
   readonly product_or_variant: string;
   readonly attribute: string;
   readonly proposal: Record<string, unknown>;
+  readonly proposed_value: unknown;
+  readonly authority: FactAuthority;
+  readonly confidence: FactConfidence;
   readonly attribute_kind: string | null;
   readonly unit: string | null;
   readonly state: string;
@@ -98,6 +104,9 @@ function candidate(value: unknown): CompilerCandidate {
     product_or_variant: string(source.product_or_variant, "product_or_variant"),
     attribute: string(source.attribute, "attribute"),
     proposal: object(source.proposal, "proposal"),
+    proposed_value: source.proposed_value,
+    authority: authority(source.authority),
+    confidence: confidence(source.confidence),
     attribute_kind: nullableString(source.attribute_kind, "attribute_kind"),
     unit: nullableString(source.unit, "unit"),
     state: string(source.state, "state"),
@@ -111,6 +120,22 @@ function candidate(value: unknown): CompilerCandidate {
     }),
     review,
   };
+}
+
+function authority(value: unknown): FactAuthority {
+  const decoded = string(value, "authority");
+  if (decoded !== "AUTHORITATIVE" && decoded !== "DERIVED") {
+    throw new DecodeError("authority: unexpected value");
+  }
+  return decoded;
+}
+
+function confidence(value: unknown): FactConfidence {
+  const decoded = string(value, "confidence");
+  if (decoded !== "AUTHORITATIVE" && decoded !== "HIGH" && decoded !== "REVIEW_REQUIRED") {
+    throw new DecodeError("confidence: unexpected value");
+  }
+  return decoded;
 }
 
 function decodeReview(value: unknown): CompilerReview {

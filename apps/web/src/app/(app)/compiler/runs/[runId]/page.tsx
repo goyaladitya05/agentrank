@@ -1,15 +1,24 @@
 import { notFound } from "next/navigation";
 
+import { CandidateReview, renderValue } from "@/components/CandidateReview";
 import { InsightFailure } from "@/components/InsightFailure";
-import { EmptyState, Panel, Section } from "@/components/Primitives";
+import { EmptyState, KeyValueList, Panel, Section } from "@/components/Primitives";
 import { PublishRepresentation } from "@/components/PublishRepresentation";
+import { TechnicalDetails } from "@/components/TechnicalDetails";
 import styles from "@/components/console.module.css";
-import { publishRun, reviewCandidateForm } from "@/lib/compiler-actions";
-import { decodeCompilerRun } from "@/lib/compiler";
+import { publishRun, reviewCandidate } from "@/lib/compiler-actions";
+import { decodeCompilerRun, type CompilerCandidate, type CompilerRun } from "@/lib/compiler";
 import { formatTimestamp } from "@/lib/format";
 import { loadInsight } from "@/lib/insights/load";
 
 export const dynamic = "force-dynamic";
+export const metadata = { title: "Compiler run review | AgentRank" };
+
+const CONFIDENCE: Record<string, string> = {
+  AUTHORITATIVE: "Copied from your source",
+  HIGH: "Read from your source text",
+  REVIEW_REQUIRED: "Needs your decision",
+};
 
 export default async function CompilerRunPage({ params }: { params: Promise<{ runId: string }> }) {
   const { runId } = await params;
@@ -24,6 +33,9 @@ export default async function CompilerRunPage({ params }: { params: Promise<{ ru
       <InsightFailure failure={outcome.failure} />
     );
   const run = outcome.data;
+  const waiting = run.candidates.filter(
+    (candidate) => candidate.state === "REVIEW_REQUIRED" && candidate.review === null,
+  ).length;
   return (
     <>
       <div className={styles.pageHeader}>
@@ -31,39 +43,30 @@ export default async function CompilerRunPage({ params }: { params: Promise<{ ru
       </div>
       <Section title="Run">
         <Panel>
-          <dl className={styles.keyValueList}>
-            <dt>Source snapshot</dt>
-            <dd>{run.source_label}</dd>
-            <dt>Compiler configuration</dt>
-            <dd className={styles.mono}>{run.configuration_digest}</dd>
-            <dt>Completed</dt>
-            <dd>{formatTimestamp(run.completed_at)}</dd>
-          </dl>
+          <KeyValueList
+            entries={[
+              { term: "Source snapshot", value: run.source_label },
+              { term: "Run status", value: run.status },
+              {
+                term: "Facts awaiting you",
+                value:
+                  waiting === 0 ? "None" : `${String(waiting)} of ${String(run.candidates.length)}`,
+              },
+              { term: "Completed", value: formatTimestamp(run.completed_at) },
+            ]}
+          />
+          <TechnicalDetails summary="Compiler identity">
+            <p className={styles.mono}>{run.configuration_digest}</p>
+            <p className={styles.reviewMeta}>
+              Run <span className={styles.mono}>{run.run_id}</span> over source snapshot{" "}
+              <span className={styles.mono}>{run.source_snapshot_id}</span>.
+            </p>
+          </TechnicalDetails>
         </Panel>
       </Section>
-      <Section title="Publication">
+      <Section title="Publication" hint="Publishing does not run a benchmark.">
         <Panel>
-          {run.readiness.published_representation_id !== null ? (
-            <p>
-              Agent-ready representation published:{" "}
-              <span className={styles.mono}>{run.readiness.published_representation_id}</span>
-            </p>
-          ) : run.readiness.publishable ? (
-            <PublishRepresentation
-              runId={run.run_id}
-              sourceLabel={run.source_label}
-              action={publishRun.bind(null, run.run_id)}
-            />
-          ) : (
-            <>
-              <p>This run cannot be published yet.</p>
-              <ul>
-                {run.readiness.blockers.map((blocker) => (
-                  <li key={blocker}>{blocker}</li>
-                ))}
-              </ul>
-            </>
-          )}
+          <Publication run={run} />
         </Panel>
       </Section>
       <Section title="Semantic facts">
@@ -73,7 +76,43 @@ export default async function CompilerRunPage({ params }: { params: Promise<{ ru
   );
 }
 
-function CandidateTable({ run }: { run: Awaited<ReturnType<typeof decodeCompilerRun>> }) {
+function Publication({ run }: { run: CompilerRun }) {
+  if (run.readiness.published_representation_id !== null) {
+    return (
+      <>
+        <p>
+          Agent-ready representation published:{" "}
+          <span className={styles.mono}>{run.readiness.published_representation_id}</span>
+        </p>
+        <p className={styles.reviewMeta}>
+          This representation and the reviews behind it can no longer change. Compile a newer source
+          snapshot to publish again.
+        </p>
+      </>
+    );
+  }
+  if (run.readiness.publishable) {
+    return (
+      <PublishRepresentation
+        runId={run.run_id}
+        sourceLabel={run.source_label}
+        action={publishRun.bind(null, run.run_id)}
+      />
+    );
+  }
+  return (
+    <>
+      <p>This run cannot be published yet.</p>
+      <ul>
+        {run.readiness.blockers.map((blocker) => (
+          <li key={blocker}>{blocker}</li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
+function CandidateTable({ run }: { run: CompilerRun }) {
   if (run.candidates.length === 0)
     return (
       <Panel>
@@ -88,10 +127,10 @@ function CandidateTable({ run }: { run: Awaited<ReturnType<typeof decodeCompiler
       <table className={styles.table}>
         <thead>
           <tr>
-            <th scope="col">Target</th>
-            <th scope="col">Proposal</th>
+            <th scope="col">Fact</th>
+            <th scope="col">What the compiler proposes</th>
             <th scope="col">Evidence and history</th>
-            <th scope="col">Review</th>
+            <th scope="col">Your decision</th>
           </tr>
         </thead>
         <tbody>
@@ -104,42 +143,25 @@ function CandidateTable({ run }: { run: Awaited<ReturnType<typeof decodeCompiler
                 <br />
                 <span className={styles.cellMuted}>
                   {candidate.attribute_kind ?? "fact"}
-                  {candidate.unit === null ? "" : ` (${candidate.unit})`}
+                  {candidate.unit === null ? "" : ` in ${candidate.unit}`}
                 </span>
               </td>
               <td>
-                <pre className={styles.tracePayload}>
-                  {JSON.stringify(candidate.proposal, null, 2)}
-                </pre>
+                <strong>{renderValue(candidate.proposed_value)}</strong>
+                {candidate.unit === null ? "" : ` ${candidate.unit}`}
+                <br />
+                <span className={styles.cellMuted}>
+                  {CONFIDENCE[candidate.confidence] ?? candidate.confidence}
+                </span>
               </td>
               <td>
-                <details>
-                  <summary className={styles.techSummary}>Inspect source evidence</summary>
-                  {candidate.evidence.map((evidence) => (
-                    <p key={evidence.field}>
-                      <span className={styles.mono}>{evidence.field}</span>
-                      <br />
-                      {evidence.excerpt ?? "Source field recorded without an excerpt."}
-                    </p>
-                  ))}
-                  {candidate.review !== null ? (
-                    <p>
-                      <strong>{candidate.review.decision}</strong> by {candidate.review.reviewer} at{" "}
-                      {formatTimestamp(candidate.review.created_at)}
-                      <br />
-                      {candidate.review.correction === null ? (
-                        "Original compiler proposal retained."
-                      ) : (
-                        <pre className={styles.tracePayload}>
-                          {JSON.stringify(candidate.review.correction, null, 2)}
-                        </pre>
-                      )}
-                    </p>
-                  ) : null}
-                </details>
+                <Evidence candidate={candidate} />
               </td>
               <td>
-                <ReviewForm runId={run.run_id} candidate={candidate} />
+                <CandidateReview
+                  candidate={candidate}
+                  action={reviewCandidate.bind(null, run.run_id, candidate.candidate_id)}
+                />
               </td>
             </tr>
           ))}
@@ -149,94 +171,34 @@ function CandidateTable({ run }: { run: Awaited<ReturnType<typeof decodeCompiler
   );
 }
 
-function ReviewForm({
-  runId,
-  candidate,
-}: {
-  runId: string;
-  candidate: Awaited<ReturnType<typeof decodeCompilerRun>>["candidates"][number];
-}) {
-  if (candidate.review !== null || candidate.state === "ACCEPTED")
-    return <span>{candidate.state}</span>;
-  const action = reviewCandidateForm.bind(null, runId, candidate.candidate_id);
-  const evidence = candidate.evidence[0];
+function Evidence({ candidate }: { candidate: CompilerCandidate }) {
   return (
-    <form action={action}>
-      <input type="hidden" name="kind" value={candidate.attribute_kind ?? ""} />
-      {candidate.requires_correction ? (
-        <>
-          <CorrectionFields candidate={candidate} evidence={evidence} />
-          <button className={styles.button} type="submit" name="decision" value="correct">
-            Confirm correction
-          </button>
-        </>
-      ) : (
-        <>
-          <button className={styles.button} type="submit" name="decision" value="accept">
-            Accept fact
-          </button>
-          <button className={styles.textLink} type="submit" name="decision" value="reject">
-            Reject fact
-          </button>
-          <details>
-            <summary className={styles.techSummary}>Correct this fact</summary>
-            <CorrectionFields candidate={candidate} evidence={evidence} />
-            <button className={styles.button} type="submit" name="decision" value="correct">
-              Confirm correction
-            </button>
-          </details>
-        </>
-      )}
-    </form>
-  );
-}
-
-function CorrectionFields({
-  candidate,
-  evidence,
-}: {
-  candidate: Awaited<ReturnType<typeof decodeCompilerRun>>["candidates"][number];
-  evidence:
-    | Awaited<ReturnType<typeof decodeCompilerRun>>["candidates"][number]["evidence"][number]
-    | undefined;
-}) {
-  const compatibility = candidate.target.includes(".compatibility.");
-  return (
-    <>
-      <label>
-        Corrected value
-        {compatibility ? (
-          <select name="value" defaultValue="TRUE">
-            <option value="TRUE">True</option>
-            <option value="FALSE">False</option>
-            <option value="UNKNOWN">Unknown</option>
-            <option value="NOT_APPLICABLE">Not applicable</option>
-          </select>
-        ) : candidate.attribute_kind === "BOOLEAN" ? (
-          <select name="value" defaultValue="true">
-            <option value="true">True</option>
-            <option value="false">False</option>
-          </select>
-        ) : (
-          <input
-            name="value"
-            required
-            type={
-              candidate.attribute_kind === "INTEGER" || candidate.attribute_kind === "MEASUREMENT"
-                ? "number"
-                : "text"
-            }
-          />
-        )}
-      </label>
-      <label>
-        Source field
-        <input name="provenance_field" required defaultValue={evidence?.field ?? ""} />
-      </label>
-      <label>
-        Source excerpt
-        <input name="provenance_excerpt" maxLength={500} defaultValue={evidence?.excerpt ?? ""} />
-      </label>
-    </>
+    <details>
+      <summary className={styles.techSummary}>Inspect source evidence</summary>
+      {candidate.evidence.map((evidence) => (
+        <p key={evidence.field}>
+          <span className={styles.mono}>{evidence.field}</span>
+          <br />
+          {evidence.excerpt === null
+            ? "Source field recorded without an excerpt."
+            : evidence.excerpt}
+        </p>
+      ))}
+      {candidate.review !== null ? (
+        <p className={styles.reviewMeta}>
+          {candidate.review.decision} recorded by {candidate.review.reviewer} at{" "}
+          {formatTimestamp(candidate.review.created_at)}. This review is permanent evidence beside
+          the compiler proposal, which is unchanged.
+        </p>
+      ) : null}
+      <TechnicalDetails summary="Compiler proposal document">
+        <pre className={styles.tracePayload}>{JSON.stringify(candidate.proposal, null, 2)}</pre>
+        {candidate.review?.correction != null ? (
+          <pre className={styles.tracePayload}>
+            {JSON.stringify(candidate.review.correction, null, 2)}
+          </pre>
+        ) : null}
+      </TechnicalDetails>
+    </details>
   );
 }
