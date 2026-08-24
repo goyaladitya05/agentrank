@@ -392,6 +392,7 @@ export function decodeRunSummary(value: unknown): RunSummary {
     status: string(source, "status"),
     suite_label: string(source, "suite_label"),
     executor_label: optionalString(source, "executor_label"),
+    benchmark_designation: optionalString(source, "benchmark_designation"),
     started_at: optionalString(source, "started_at"),
     completed_at: optionalString(source, "completed_at"),
     missions_total: integer(source, "missions_total"),

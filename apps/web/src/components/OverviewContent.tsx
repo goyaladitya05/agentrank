@@ -125,6 +125,7 @@ function LatestRunHealth({
   findingsRunId: string | null;
 }) {
   const status = statusLabel(run.status);
+  const designation = designationLabel(run.benchmark_designation);
   const unfinished =
     run.missions_total -
     (run.missions_succeeded + run.missions_failed + run.missions_abstained + run.missions_errored);
@@ -227,6 +228,7 @@ function RecentRuns({ runs }: { runs: readonly RunSummary[] }) {
             <th scope="col">Started</th>
             <th scope="col">Suite</th>
             <th scope="col">Status</th>
+            <th scope="col">Designation</th>
             <th scope="col" className={styles.num}>
               Missions
             </th>
@@ -244,6 +246,7 @@ function RecentRuns({ runs }: { runs: readonly RunSummary[] }) {
         <tbody>
           {runs.map((run) => {
             const status = statusLabel(run.status);
+            const designation = designationLabel(run.benchmark_designation);
             return (
               <tr key={run.run_id}>
                 <td>{formatTimestamp(run.started_at)}</td>
@@ -257,6 +260,13 @@ function RecentRuns({ runs }: { runs: readonly RunSummary[] }) {
                 </td>
                 <td>
                   <StatusMark tone={status.tone} label={status.label} />
+                </td>
+                <td>
+                  <StatusMark
+                    tone={designation.tone}
+                    label={designation.label}
+                    description={designation.note}
+                  />
                 </td>
                 <td className={styles.num}>{String(run.missions_total)}</td>
                 <td className={styles.num}>{formatRate(run.task_completion_rate)}</td>

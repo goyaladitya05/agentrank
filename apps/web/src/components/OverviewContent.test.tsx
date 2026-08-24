@@ -24,6 +24,12 @@ describe("<OverviewContent> product behavior", () => {
     expect(html).toContain("voltedge-core@2");
   });
 
+  it("marks a development benchmark run wherever its numbers appear", () => {
+    const html = render(overviewWith(() => undefined));
+    expect(html).toContain("Development benchmark");
+    expect(html).toContain("Not independent evaluation evidence.");
+  });
+
   it("answers whether anything needs attention before every metric", () => {
     const html = render(overviewWith(() => undefined));
     const attention = html.indexOf("Do I need to do something?");

@@ -165,6 +165,7 @@ export interface RunSummary {
   readonly status: string;
   readonly suite_label: string;
   readonly executor_label: string | null;
+  readonly benchmark_designation: string | null;
   readonly started_at: string | null;
   readonly completed_at: string | null;
   readonly missions_total: number;
