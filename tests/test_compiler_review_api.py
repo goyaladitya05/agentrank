@@ -219,3 +219,39 @@ async def test_competing_corrections_are_serialized_by_postgresql(
             merchant.id, [candidate.run_id]
         )
     assert candidate.id in reviews
+
+
+async def test_competing_publications_are_idempotent_in_postgresql(
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    merchant, run, candidates = await reviewable_run(session)
+    compiler = MerchantCompilerService(session)
+    for candidate in candidates:
+        if candidate.state.value != "REVIEW_REQUIRED":
+            continue
+        correction = CandidateProposal(
+            target=candidate.target,
+            fact=SemanticFact(
+                value=65,
+                authority=FactAuthority.DERIVED,
+                confidence=FactConfidence.HIGH,
+                review_state=ReviewState.CONFIRMED,
+                provenance=(SourceReference("products[VE-CHG-100].description", "65W"),),
+            ),
+            attribute_kind=AttributeKind.MEASUREMENT,
+            unit="W",
+        )
+        await compiler.review(
+            merchant.id, candidate.id, ReviewDecision.CORRECT, correction=correction
+        )
+
+    async def publish() -> str:
+        async with factory() as competing_session:
+            representation = await MerchantCompilerService(competing_session).publish(
+                merchant.id, run.id
+            )
+            return str(representation.id)
+
+    first, second = await asyncio.gather(publish(), publish())
+    assert first == second
