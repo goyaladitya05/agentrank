@@ -58,7 +58,11 @@ export function CandidateReviewForm({
     return <SettledReview candidate={candidate} review={candidate.review} />;
   }
   if (candidate.state !== "REVIEW_REQUIRED") {
-    return <p className={styles.reviewDecision}>Accepted by the compiler</p>;
+    return (
+      <p className={styles.reviewDecision}>
+        {candidate.state === "ACCEPTED" ? "Accepted by the compiler" : "Not published"}
+      </p>
+    );
   }
   return (
     <form action={action} aria-label={`Review ${candidate.target}`}>
