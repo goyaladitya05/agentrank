@@ -316,6 +316,14 @@ function RepresentationPanel({ state }: { state: RepresentationState }) {
           },
         ]}
       />
+      {state.review_required_facts > 0 ? (
+        <p className={styles.finePrintTight}>
+          <Link className={styles.textLink} href="/compiler">
+            Review {String(state.review_required_facts)} semantic fact(s)
+          </Link>
+          .
+        </p>
+      ) : null}
       <TechnicalDetails summary="Artifact identifiers">
         <IdRow label="Source snapshot id" value={state.source_snapshot_id} />
         <IdRow label="Compiled representation id" value={state.compiled_representation_id} />

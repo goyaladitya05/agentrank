@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 
 import { InsightFailure } from "@/components/InsightFailure";
 import { EmptyState, Panel, Section } from "@/components/Primitives";
+import { PublishRepresentation } from "@/components/PublishRepresentation";
 import styles from "@/components/console.module.css";
 import { publishRun, reviewCandidate } from "@/lib/compiler-actions";
 import { decodeCompilerRun } from "@/lib/compiler";
@@ -48,15 +49,11 @@ export default async function CompilerRunPage({ params }: { params: Promise<{ ru
               <span className={styles.mono}>{run.readiness.published_representation_id}</span>
             </p>
           ) : run.readiness.publishable ? (
-            <form action={publishRun.bind(null, run.run_id)}>
-              <p>
-                This creates a new immutable agent-ready representation from this exact source and
-                review state. It does not rerun benchmarks.
-              </p>
-              <button className={styles.button} type="submit">
-                Publish representation
-              </button>
-            </form>
+            <PublishRepresentation
+              runId={run.run_id}
+              sourceLabel={run.source_label}
+              action={publishRun.bind(null, run.run_id)}
+            />
           ) : (
             <>
               <p>This run cannot be published yet.</p>
@@ -168,30 +165,7 @@ function ReviewForm({
       <input type="hidden" name="kind" value={candidate.attribute_kind ?? ""} />
       {candidate.requires_correction ? (
         <>
-          <label>
-            Corrected value
-            <input
-              name="value"
-              required
-              type={
-                candidate.attribute_kind === "INTEGER" || candidate.attribute_kind === "MEASUREMENT"
-                  ? "number"
-                  : "text"
-              }
-            />
-          </label>
-          <label>
-            Source field
-            <input name="provenance_field" required defaultValue={evidence?.field ?? ""} />
-          </label>
-          <label>
-            Source excerpt
-            <input
-              name="provenance_excerpt"
-              maxLength={500}
-              defaultValue={evidence?.excerpt ?? ""}
-            />
-          </label>
+          <CorrectionFields candidate={candidate} evidence={evidence} />
           <button className={styles.button} type="submit" name="decision" value="correct">
             Confirm correction
           </button>
@@ -204,8 +178,65 @@ function ReviewForm({
           <button className={styles.textLink} type="submit" name="decision" value="reject">
             Reject fact
           </button>
+          <details>
+            <summary className={styles.techSummary}>Correct this fact</summary>
+            <CorrectionFields candidate={candidate} evidence={evidence} />
+            <button className={styles.button} type="submit" name="decision" value="correct">
+              Confirm correction
+            </button>
+          </details>
         </>
       )}
     </form>
+  );
+}
+
+function CorrectionFields({
+  candidate,
+  evidence,
+}: {
+  candidate: Awaited<ReturnType<typeof decodeCompilerRun>>["candidates"][number];
+  evidence:
+    | Awaited<ReturnType<typeof decodeCompilerRun>>["candidates"][number]["evidence"][number]
+    | undefined;
+}) {
+  const compatibility = candidate.target.includes(".compatibility.");
+  return (
+    <>
+      <label>
+        Corrected value
+        {compatibility ? (
+          <select name="value" defaultValue="TRUE">
+            <option value="TRUE">True</option>
+            <option value="FALSE">False</option>
+            <option value="UNKNOWN">Unknown</option>
+            <option value="NOT_APPLICABLE">Not applicable</option>
+          </select>
+        ) : candidate.attribute_kind === "BOOLEAN" ? (
+          <select name="value" defaultValue="true">
+            <option value="true">True</option>
+            <option value="false">False</option>
+          </select>
+        ) : (
+          <input
+            name="value"
+            required
+            type={
+              candidate.attribute_kind === "INTEGER" || candidate.attribute_kind === "MEASUREMENT"
+                ? "number"
+                : "text"
+            }
+          />
+        )}
+      </label>
+      <label>
+        Source field
+        <input name="provenance_field" required defaultValue={evidence?.field ?? ""} />
+      </label>
+      <label>
+        Source excerpt
+        <input name="provenance_excerpt" maxLength={500} defaultValue={evidence?.excerpt ?? ""} />
+      </label>
+    </>
   );
 }

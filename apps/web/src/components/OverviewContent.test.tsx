@@ -158,6 +158,8 @@ describe("<OverviewContent> product behavior", () => {
     const html = render(overviewWith(() => undefined));
     expect(html).toContain("3 fact(s) awaiting merchant review");
     expect(html).toContain("VoltEdge agent-ready IR");
+    expect(html).toContain('href="/compiler"');
+    expect(html).toContain("Review 3 semantic fact(s)");
     expect(html).not.toContain("provenance");
     expect(html).not.toContain("confidence");
   });

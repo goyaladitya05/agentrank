@@ -63,8 +63,8 @@ export default async function LoginPage({
       </form>
       {environmentConfigured ? (
         <p className={styles.note}>
-          This console also has a server configured merchant credential. Signing in overrides it for
-          your browser until you sign out.
+          A server merchant credential is configured for backend operations. Console access still
+          requires an explicit merchant sign-in.
         </p>
       ) : null}
     </main>

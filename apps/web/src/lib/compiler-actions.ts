@@ -38,6 +38,12 @@ export async function reviewCandidate(
         : kind === "BOOLEAN"
           ? raw === "true"
           : raw;
+    if (
+      (kind === "BOOLEAN" && raw !== "true" && raw !== "false") ||
+      (!Number.isFinite(value as number) && (kind === "INTEGER" || kind === "MEASUREMENT"))
+    ) {
+      throw new Error("Enter a valid correction value.");
+    }
     await command(`/api/v1/compiler/candidates/${encodeURIComponent(candidateId)}/correct`, {
       value,
       provenance_field: String(formData.get("provenance_field") ?? ""),
