@@ -42,6 +42,7 @@ from agentrank_api.representation.definitions import (
     SourceReference,
     ValueState,
 )
+from agentrank_api.representation.fields import MAX_EXCERPT_LENGTH, source_fields
 from agentrank_api.representation.fixtures import RepresentationFixtureError, parse_source
 from agentrank_api.representation.models import CommerceRepresentation, MerchantSourceSnapshot
 from agentrank_api.representation.repository import CommerceRepresentationRepository
@@ -336,7 +337,7 @@ class MerchantCompilerService:
         candidates: Iterable[tuple[CandidateProposal, CandidateState]],
         source: Any,
     ) -> None:
-        fields = _source_fields(source)
+        fields = source_fields(source)
         for proposal, state in candidates:
             if (
                 state is CandidateState.REVIEW_REQUIRED
@@ -353,7 +354,7 @@ class MerchantCompilerService:
                 if text is None:
                     raise ValueError("candidate provenance does not name a source field")
                 if reference.excerpt is not None and (
-                    len(reference.excerpt) > 500 or reference.excerpt not in text
+                    len(reference.excerpt) > MAX_EXCERPT_LENGTH or reference.excerpt not in text
                 ):
                     raise ValueError("candidate provenance excerpt is not present in the source")
 
@@ -451,29 +452,6 @@ class MerchantCompilerService:
         )
 
 
-def _source_fields(source: Any) -> dict[str, str]:
-    fields: dict[str, str] = {}
-    for product in source.products:
-        prefix = f"products[{product.external_id}]"
-        fields[f"{prefix}.title"] = product.title
-        if product.description is not None:
-            fields[f"{prefix}.description"] = product.description
-        if product.category is not None:
-            fields[f"{prefix}.category"] = product.category
-        for variant in product.variants:
-            variant_prefix = f"{prefix}.variants[{variant.sku}]"
-            fields[f"{variant_prefix}.price_amount_minor"] = str(variant.price_amount_minor)
-            fields[f"{variant_prefix}.inventory_quantity"] = str(variant.inventory_quantity)
-            for key, value in variant.merchant_metadata.items():
-                if isinstance(value, str):
-                    fields[f"{variant_prefix}.merchant_metadata.{key}"] = value
-            if variant.label is not None:
-                fields[f"{variant_prefix}.label"] = variant.label
-    for key, value in source.policy_text.items():
-        fields[f"policy_text.{key}"] = value
-    return fields
-
-
 def _proposal(payload: dict[str, Any]) -> CandidateProposal:
     fact = payload.get("fact")
     if not isinstance(fact, dict):
@@ -520,7 +498,7 @@ def _validate_target_value(proposal: CandidateProposal) -> None:
 def _validate_correction_evidence(proposal: CandidateProposal, source: Any) -> None:
     if proposal.attribute_kind is not AttributeKind.MEASUREMENT:
         return
-    fields = _source_fields(source)
+    fields = source_fields(source)
     expected = f"{proposal.fact.value}{proposal.unit}"
     if not any(
         expected.lower() in fields[reference.field].replace(" ", "").lower()
