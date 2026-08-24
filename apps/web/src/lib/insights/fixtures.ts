@@ -487,3 +487,14 @@ export const EXPERIMENT_DIFFERENCES_FIXTURE = {
       "The arms disagreed on 1 measured mission, so the representations did not perform identically at this sample size.",
   },
 };
+
+/** A mutable view of a fixture for tests that need to vary one field. */
+export type Mutable<T> = {
+  -readonly [K in keyof T]: T[K] extends readonly (infer Item)[]
+    ? Mutable<Item>[]
+    : T[K] extends object | null
+      ? T[K] extends null
+        ? T[K]
+        : Mutable<NonNullable<T[K]>> | null
+      : T[K];
+};

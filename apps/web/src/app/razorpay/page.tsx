@@ -1,7 +1,7 @@
 import { RazorpayTestCheckout } from "@/components/RazorpayTestCheckout";
 import { merchantCredential } from "@/lib/agentrank";
 
-import styles from "../page.module.css";
+import styles from "./page.module.css";
 
 // Whether the console has a credential is read on every request. A cached answer would keep
 // telling somebody to set a variable they have already set.

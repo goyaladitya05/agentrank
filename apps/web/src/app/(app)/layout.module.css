@@ -1,0 +1,60 @@
+.header {
+  border-bottom: 1px solid var(--border-strong);
+  background: var(--surface-header);
+}
+
+.brandRow {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 10px 24px;
+}
+
+.wordmark {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.sessionForm {
+  margin-left: auto;
+}
+
+.signOut {
+  padding: 5px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: var(--surface-raised);
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.signOut:hover {
+  color: var(--state-fail);
+  border-color: var(--state-fail);
+}
+
+.signOut:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.main {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 20px 24px 48px;
+}
+
+@media (max-width: 720px) {
+  .brandRow {
+    flex-wrap: wrap;
+    gap: 8px 16px;
+  }
+  .sessionForm {
+    margin-left: 0;
+  }
+}
