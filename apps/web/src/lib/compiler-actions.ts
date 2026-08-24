@@ -66,12 +66,16 @@ function refusal(status: number, payload: unknown): Refusal {
 }
 
 async function command(path: string, body?: unknown): Promise<Refusal | null> {
+  // Resolved before the try. `requireConsoleApiKey` redirects to sign in by throwing the
+  // framework's own control-flow error, and catching that here would turn an expired session
+  // into a message about the network instead of a login page.
+  const apiKey = await requireConsoleApiKey();
   let response: Response;
   try {
     response = await fetch(`${apiBaseUrl().replace(/\/+$/, "")}${path}`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${await requireConsoleApiKey()}`,
+        Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),

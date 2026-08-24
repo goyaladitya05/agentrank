@@ -391,3 +391,46 @@ async def test_the_overview_counts_the_facts_a_merchant_still_has_to_answer_for(
         == 200
     )
     assert pending_count(token) == 0
+
+
+async def test_the_compiler_namespace_is_authenticated_and_echoes_no_credential(
+    settings: Settings,
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+    issue_credential: CredentialIssuer,
+) -> None:
+    merchant, run, candidates = await reviewable_run(session, slug="hygiene-shop")
+    token = await issue_credential(merchant.id)
+    candidate = pending(candidates)[0]
+    http = client(settings, factory)
+
+    unauthenticated = [
+        http.get("/api/v1/compiler/overview"),
+        http.get(f"/api/v1/compiler/runs/{run.id}"),
+        http.post(f"/api/v1/compiler/candidates/{candidate.id}/accept"),
+        http.post(f"/api/v1/compiler/candidates/{candidate.id}/reject"),
+        http.post(f"/api/v1/compiler/candidates/{candidate.id}/correct", json=CORRECTION),
+        http.post(f"/api/v1/compiler/runs/{run.id}/publish"),
+    ]
+    assert [response.status_code for response in unauthenticated] == [401] * 6
+
+    answered = [
+        http.get("/api/v1/compiler/overview", headers=bearer(token)),
+        http.get(f"/api/v1/compiler/runs/{run.id}", headers=bearer(token)),
+        http.post(
+            f"/api/v1/compiler/candidates/{candidate.id}/correct",
+            headers=bearer(token),
+            json=CORRECTION,
+        ),
+    ]
+    joined = "\n".join(response.text for response in answered)
+    assert all(response.status_code == 200 for response in answered)
+    assert token not in joined
+    assert token.split("_")[-1] not in joined
+    assert "secret_hash" not in joined
+    assert "authorization" not in joined.lower()
+    assert "postgres" not in joined.lower()
+
+    document = http.get("/openapi.json").json()
+    compiler_paths = [path for path in document["paths"] if path.startswith("/api/v1/compiler")]
+    assert len(compiler_paths) == 6

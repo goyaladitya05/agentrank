@@ -28,11 +28,16 @@ interface CapturedAction {
   body: string;
 }
 
-/** Record the first real server action the console sends, so it can be replayed verbatim. */
+/** Record the first real compiler write the console sends, so it can be replayed verbatim.
+
+ * Scoped to the compiler pages on purpose: sign in is a server action too, and replaying that
+ * one would be replaying a merchant API key rather than a write.
+ */
 function captureAction(page: Page, captured: CapturedAction[]): void {
   page.on("request", (request) => {
     const headers = request.headers();
     if (request.method() !== "POST" || headers["next-action"] === undefined) return;
+    if (!request.url().includes("/compiler/runs/")) return;
     if (captured.length > 0) return;
     const replay: Record<string, string> = {};
     for (const [name, value] of Object.entries(headers)) {
@@ -145,8 +150,8 @@ test("a merchant reviews every kind of fact and publishes one immutable represen
   await expect(page.getByText("All required reviews are resolved.")).toBeVisible();
   await expect(page.getByText(`Published representation: ${String(identity)}`)).toBeVisible();
 
-  // The same signed in browser, the same recorded write, and only the origin changed. One is
-  // executed and answered; the other never reaches the action at all.
+  // The same signed in browser, the same recorded compiler write, and only the origin changed.
+  // One is executed and answered; the other never reaches the action at all.
   const action = captured[0];
   expect(action).toBeDefined();
   if (action === undefined) return;
