@@ -17,20 +17,33 @@ import { IDLE_COMPILE, type CompileState } from "@/lib/source-mutation";
  * The confirmation states what a run does and what it does not do. It reads source evidence and
  * proposes facts; it publishes nothing, changes no price or stock level, and starts no benchmark.
  * It makes no claim that anything will improve, because nothing here knows that.
+ *
+ * Whether this snapshot can still be compiled is a prop rather than a condition the page decides
+ * before rendering this at all, and that is load bearing. Running the compiler revalidates the
+ * page it was run from, so a component the page only renders while the snapshot is uncompiled
+ * would unmount at exactly the moment it had something to say, and the merchant would be left
+ * reading a refreshed page with no acknowledgement that their own click caused it.
  */
 
 export type CompileAction = (state: CompileState) => CompileState | Promise<CompileState>;
 
 export function StartCompilerRun({
   sourceLabel,
+  compilable,
+  existingRunId,
   action,
 }: {
   sourceLabel: string;
+  compilable: boolean;
+  existingRunId: string | null;
   action: CompileAction;
 }) {
   const [state, formAction, pending] = useActionState(action, IDLE_COMPILE);
   if (state.ok) {
     return <CompileAccepted state={state} />;
+  }
+  if (!compilable) {
+    return <AlreadyCompiled existingRunId={existingRunId} />;
   }
   return (
     <CompileConfirmation
@@ -39,6 +52,35 @@ export function StartCompilerRun({
       state={state}
       pending={pending}
     />
+  );
+}
+
+/**
+ * What a snapshot that has already been read says.
+ *
+ * Not a refusal and not an error. Deterministic compilation of one snapshot under one
+ * configuration produces the same facts every time, so a second run would be the same run, and
+ * the useful thing to offer is the one that exists.
+ */
+export function AlreadyCompiled({ existingRunId }: { existingRunId: string | null }) {
+  return (
+    <>
+      <p>This snapshot has already been read by the compiler.</p>
+      <p className={styles.reviewMeta}>
+        The compiler is deterministic, so reading the same snapshot the same way again produces the
+        same facts. To get different proposals, supply newer source evidence.
+      </p>
+      {existingRunId === null ? null : (
+        <p className={styles.reviewMeta}>
+          <Link
+            className={styles.rowLink}
+            href={`/compiler/runs/${encodeURIComponent(existingRunId)}`}
+          >
+            Review the compiler run for this snapshot
+          </Link>
+        </p>
+      )}
+    </>
   );
 }
 

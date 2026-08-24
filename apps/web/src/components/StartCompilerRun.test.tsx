@@ -1,7 +1,12 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { CompileAccepted, CompileConfirmation, StartCompilerRun } from "./StartCompilerRun";
+import {
+  AlreadyCompiled,
+  CompileAccepted,
+  CompileConfirmation,
+  StartCompilerRun,
+} from "./StartCompilerRun";
 import { IDLE_COMPILE, type CompileState } from "@/lib/source-mutation";
 
 function confirmation(state: CompileState = IDLE_COMPILE, pending = false): string {
@@ -18,10 +23,37 @@ function confirmation(state: CompileState = IDLE_COMPILE, pending = false): stri
 describe("<StartCompilerRun>", () => {
   it("names the snapshot it would read before it is run", () => {
     const html = renderToStaticMarkup(
-      <StartCompilerRun sourceLabel="merchant-source@3" action={async () => IDLE_COMPILE} />,
+      <StartCompilerRun
+        sourceLabel="merchant-source@3"
+        compilable
+        existingRunId={null}
+        action={async () => IDLE_COMPILE}
+      />,
     );
     expect(html).toContain("merchant-source@3");
     expect(html).toContain("Run the compiler");
+  });
+
+  it("offers the run that exists rather than a second reading of one snapshot", () => {
+    const html = renderToStaticMarkup(
+      <StartCompilerRun
+        sourceLabel="merchant-source@3"
+        compilable={false}
+        existingRunId="01a03000-0000-7000-8000-00000000000b"
+        action={async () => IDLE_COMPILE}
+      />,
+    );
+    expect(html).toContain("already been read by the compiler");
+    expect(html).toContain("/compiler/runs/01a03000-0000-7000-8000-00000000000b");
+    expect(html).not.toContain("Run the compiler</button>");
+  });
+});
+
+describe("<AlreadyCompiled>", () => {
+  it("says why compiling again would change nothing", () => {
+    const html = renderToStaticMarkup(<AlreadyCompiled existingRunId={null} />);
+    expect(html).toContain("The compiler is deterministic");
+    expect(html).toContain("supply newer source evidence");
   });
 });
 

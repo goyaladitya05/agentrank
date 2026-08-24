@@ -91,36 +91,21 @@ export default async function SourceSnapshotPage({
 }
 
 function Compiler({ snapshot }: { snapshot: SourceSnapshot }) {
-  if (snapshot.compilable) {
-    return (
-      <StartCompilerRun
-        sourceLabel={snapshot.summary.source_label}
-        action={startCompilerRun.bind(null, snapshot.summary.source_snapshot_id)}
-      />
-    );
-  }
   return (
     <>
-      <p>This snapshot has already been read by the compiler.</p>
-      <p className={styles.reviewMeta}>
-        The compiler is deterministic, so reading the same snapshot the same way again produces the
-        same facts. To get different proposals, supply newer source evidence.
-      </p>
-      {snapshot.existing_run_id === null ? null : (
+      <StartCompilerRun
+        sourceLabel={snapshot.summary.source_label}
+        compilable={snapshot.compilable}
+        existingRunId={snapshot.existing_run_id}
+        action={startCompilerRun.bind(null, snapshot.summary.source_snapshot_id)}
+      />
+      {snapshot.compilable ? null : (
         <p className={styles.reviewMeta}>
-          <Link
-            className={styles.rowLink}
-            href={`/compiler/runs/${encodeURIComponent(snapshot.existing_run_id)}`}
-          >
-            Review the compiler run for this snapshot
+          <Link className={styles.rowLink} href="/sources/new">
+            Supply newer source evidence
           </Link>
         </p>
       )}
-      <p className={styles.reviewMeta}>
-        <Link className={styles.rowLink} href="/sources/new">
-          Supply newer source evidence
-        </Link>
-      </p>
     </>
   );
 }
