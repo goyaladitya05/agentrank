@@ -210,6 +210,11 @@ export const RUN_DIAGNOSTICS_FIXTURE = {
               identifier: "01994444-4444-7444-8444-444444444444",
               establishes: "the recorded failure reason and its attributes",
             },
+            {
+              kind: "variant",
+              identifier: "01997777-7777-7777-8777-777777777777",
+              establishes: "the selected variant the diagnosis names",
+            },
           ],
         },
         {

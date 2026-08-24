@@ -528,3 +528,47 @@
   text-transform: uppercase;
   white-space: nowrap;
 }
+
+/* Trace explorer. */
+
+.traceList {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+}
+
+.traceItem {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-raised);
+  padding: 8px 12px;
+  margin-bottom: 6px;
+}
+
+.traceItem[data-tone="fail"] {
+  border-color: var(--state-fail);
+}
+
+.traceItem[data-tone="warn"] {
+  border-color: var(--state-warn);
+}
+
+.traceHead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.tracePayload {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre;
+}
