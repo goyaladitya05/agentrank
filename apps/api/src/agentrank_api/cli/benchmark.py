@@ -1,20 +1,26 @@
-"""The benchmark operator commands: prepare a world, run a suite, read a result, close a run.
+"""The benchmark operator commands: prepare a world, execute work, read a result, close one.
 
-Four commands, and the same three steps in each: parse what the operator typed, call one
-application service, print what came back. There is no SQL here, no lock, no transaction and no
-rule about what a mission means, because every one of those already exists and a second copy
-inside a command would be a second answer to a question that must have exactly one.
+The same three steps in each: parse what the operator typed, call one application service, print
+what came back. There is no SQL here, no lock, no transaction and no rule about what a mission
+means, because every one of those already exists and a second copy inside a command would be a
+second answer to a question that must have exactly one.
 
 The names say what moves:
 
 ```text
-seed     registers the world, puts it back, publishes the suite   catalog is overwritten
-run      executes the suite                                       money moves, stock is consumed
-show     reads one run and counts it                              nothing moves
-abort    closes a run that stopped                                nothing moves
+seed            registers the world, puts it back, publishes the suite  catalog is overwritten
+run             executes the suite                                      money moves, stock goes
+reevaluate      executes one launch a merchant queued from the console  money moves, stock goes
+compare-create  predeclares a controlled paired experiment              nothing moves
+compare-run     executes one predeclared sample                         money moves, stock goes
+compare-show    reads one experiment and every sample in it             nothing moves
+show            reads one run and counts it                             nothing moves
+diagnose        reads one run through the diagnostics engine            nothing moves
+abort           closes a run that stopped                               nothing moves
+settle          closes the launch behind a run that already finished    nothing moves
 ```
 
-`run` is the one that spends. A benchmark mission that completes creates a mandate, quotes a
+The three that execute spend. A benchmark mission that completes creates a mandate, quotes a
 checkout, holds stock and pays through the real payment kernel with the deterministic fake
 provider. No real money is involved and stock genuinely leaves the shelf, which is why the world
 is put back before every mission and why the command refuses any merchant that is not a

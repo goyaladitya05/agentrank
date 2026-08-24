@@ -11,17 +11,20 @@ Two halves live here and they run in different processes.
 
 The merchant half is `MerchantReevaluationService`. It answers what a launch would evaluate,
 and it admits one. Admission resolves every methodology-critical identity server side from the
-merchant its credential authenticated, freezes it on the row, and commits before answering.
-Nothing is executed: the answer is a queued launch, which is exactly what an honest response
-can promise when the work has not started.
+merchant its credential authenticated, checks it against the digest of the plan the merchant was
+actually shown, freezes it on the row, and commits before answering. Nothing is executed: the
+answer is a queued launch, which is exactly what an honest response can promise when the work has
+not started.
 
 The worker half is `ReevaluationWorkerService`. It claims a queued launch, binds the benchmark
 run it produced, and settles the launch when the run finishes. It never reads a browser session
 and never takes a merchant identity from anything but the persisted row, because by the time it
 runs there is no request and no session left to trust.
 
-What the browser may say is a representation identifier and a request key. Everything else,
-including which merchant this is, comes from the credential and from the database.
+What the browser may say is a representation identifier, a request key and the digest of the
+preflight it read. None of the three selects anything; each is checked against what the server
+resolves. Everything else, including which merchant this is, comes from the credential and from
+the database.
 """
 
 import hashlib
