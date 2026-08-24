@@ -70,6 +70,7 @@ from agentrank_api.benchmark.execution import (
     implementation_revision,
 )
 from agentrank_api.benchmark.faults import ExecutionFault, FaultOrigin
+from agentrank_api.benchmark.llm import GEMINI_PROVIDER, OPENAI_PROVIDER
 from agentrank_api.benchmark.report import ExecutorReport
 from agentrank_api.benchmark.wire import (
     REFERENCE_STRATEGY,
@@ -83,6 +84,7 @@ from agentrank_api.benchmark.worker import (
     EXIT_PROTOCOL,
     worker_environment,
 )
+from agentrank_api.config import Settings
 
 WORKER_MODULE = "agentrank_api.benchmark.worker"
 
@@ -103,6 +105,31 @@ def _revision() -> str:
         sys.modules["agentrank_api.benchmark.http_buyer"],
         sys.modules["agentrank_api.benchmark.worker"],
     )
+
+
+def provider_worker_environment(settings: Settings, provider: str) -> dict[str, str]:
+    """The environment one model buyer process is given, with exactly one provider credential.
+
+    Built through the same allowlist the worker refuses to run without, and then narrowed once
+    more: both provider variables are removed before the configured one is put back, so a worker
+    running an OpenAI sample cannot see a Gemini key that happened to be in this process. The
+    value is unwrapped here and nowhere else, and it crosses no argument vector, no standard
+    input and no log line.
+    """
+    environment = worker_environment(os.environ)
+    environment.pop("OPENAI_API_KEY", None)
+    environment.pop("GEMINI_API_KEY", None)
+    if provider == OPENAI_PROVIDER:
+        if settings.openai is None:
+            raise ValueError("an OpenAI buyer needs an OpenAI runtime credential")
+        environment["OPENAI_API_KEY"] = settings.openai.api_key.get_secret_value()
+        return environment
+    if provider == GEMINI_PROVIDER:
+        if settings.gemini is None:
+            raise ValueError("a Gemini buyer needs a Gemini runtime credential")
+        environment["GEMINI_API_KEY"] = settings.gemini.api_key.get_secret_value()
+        return environment
+    raise ValueError("LLM provider is not supported")
 
 
 ISOLATED_REFERENCE = ExecutorIdentity(kind=REFERENCE_ISOLATED_KIND, version=1, revision=_revision())

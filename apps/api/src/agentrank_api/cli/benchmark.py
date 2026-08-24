@@ -43,7 +43,6 @@ change.
 """
 
 import argparse
-import os
 import uuid
 from pathlib import Path
 from typing import Any, TextIO, cast
@@ -57,6 +56,7 @@ from agentrank_api.benchmark.authored import AuthoredWorld, publish_world, read_
 from agentrank_api.benchmark.authorization import provision
 from agentrank_api.benchmark.buyer import MerchantBuyerSurface
 from agentrank_api.benchmark.discovery import buyer_discovery_view, to_payload
+from agentrank_api.benchmark.dispatch import execute_next_reevaluation
 from agentrank_api.benchmark.endpoint import (
     LocalCommerceEndpoint,
     RequestLedger,
@@ -68,7 +68,11 @@ from agentrank_api.benchmark.experiment import (
     CompilerImpactExperimentService,
     ExperimentTreatment,
 )
-from agentrank_api.benchmark.isolation import IsolatedMissionExecutor
+from agentrank_api.benchmark.isolation import (
+    IsolatedMissionExecutor,
+    provider_worker_environment,
+)
+from agentrank_api.benchmark.launch import ReevaluationWorkerService
 from agentrank_api.benchmark.lifecycle import MissionRunStatus
 from agentrank_api.benchmark.llm import (
     GEMINI_PROVIDER,
@@ -241,6 +245,21 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
     _add_world(comparison_show)
     _add_json(comparison_show)
     comparison_show.set_defaults(command=compare_show)
+
+    reevaluating = commands.add_parser(
+        "reevaluate",
+        help="execute the next re-evaluation a merchant queued from the console",
+        description=(
+            "Claim the oldest queued re-evaluation for this world's merchant and carry it out."
+            " Everything it executes was frozen when the merchant asked for it: the"
+            " representation, the suite, the world and the buyer. Nothing here reads a browser"
+            " session, and a launch this process cannot execute exactly is failed by name rather"
+            " than run with something close."
+        ),
+    )
+    _add_world(reevaluating)
+    _add_json(reevaluating)
+    reevaluating.set_defaults(command=reevaluate)
 
     diagnosing = commands.add_parser(
         "diagnose",
@@ -471,7 +490,7 @@ async def _llm_isolated_run(
             capability=capability,
             marker=TokenMarker.of(settings.environment),
         ) as token:
-            worker_environment = _worker_environment(settings, configuration.provider)
+            worker_environment = provider_worker_environment(settings, configuration.provider)
             executor = IsolatedMissionExecutor(
                 base_url=endpoint.base_url,
                 token=token,
@@ -489,6 +508,52 @@ async def _llm_isolated_run(
                 fixture=world.fixture,
                 witness=executor,
             )
+
+
+async def reevaluate(
+    session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
+    provider: PaymentProvider,
+    arguments: argparse.Namespace,
+    out: TextIO,
+    settings: Settings,
+) -> int:
+    """Execute at most one queued merchant re-evaluation, and say what became of it.
+
+    One launch per invocation rather than a loop, because a benchmark run is the largest thing
+    this system does and an operator should decide how many happen. Nothing queued is an
+    ordinary answer and exits OK: there is no work, which is not a failure.
+    """
+    world = read_world(arguments.world)
+    outcome = await execute_next_reevaluation(
+        session, sessions, world=world, provider=provider, settings=settings
+    )
+    if outcome is None:
+        payload: dict[str, Any] = {"reevaluation_id": None, "status": "NONE_QUEUED"}
+        if arguments.as_json:
+            write_json(out, payload)
+        else:
+            print("queued      nothing to execute for this world", file=out)
+        return ExitCode.OK
+
+    payload = {
+        "reevaluation_id": str(outcome.reevaluation_id),
+        "status": outcome.status,
+        "run_id": None if outcome.run_id is None else str(outcome.run_id),
+        "failure_code": outcome.failure_code,
+        "detail": outcome.detail,
+    }
+    if arguments.as_json:
+        write_json(out, payload)
+    else:
+        print(f"launch      {payload['reevaluation_id']}", file=out)
+        print(f"status      {payload['status']}", file=out)
+        print(f"run         {payload['run_id'] or MISSING}", file=out)
+        if outcome.failure_code is not None:
+            print(f"failure     {outcome.failure_code}", file=out)
+        if outcome.detail is not None:
+            print(f"detail      {outcome.detail}", file=out)
+    return ExitCode.OK if outcome.failure_code is None else ExitCode.REFUSED
 
 
 async def compare_create(
@@ -613,7 +678,7 @@ async def compare_run(
             capability=capability,
             marker=TokenMarker.of(settings.environment),
         ) as token:
-            worker_environment = _worker_environment(settings, configuration.provider)
+            worker_environment = provider_worker_environment(settings, configuration.provider)
             executor = IsolatedMissionExecutor(
                 base_url=endpoint.base_url,
                 token=token,
@@ -1064,9 +1129,13 @@ async def abort(
     before = await service.load(arguments.run_id, merchant_id=merchant_id)
     unfinished = [result for result in before.mission_runs if not result.is_terminal]
     closed = await service.abort_run(arguments.run_id, merchant_id=merchant_id)
+    # A run an operator has closed is not coming back, so the merchant launch behind it is over
+    # too. Leaving it executing would hold this merchant's one pending slot against nothing.
+    settled = await ReevaluationWorkerService(session).settle_for_aborted_run(closed.id)
 
     payload = {
         "run_id": str(closed.id),
+        "reevaluation_id": None if settled is None else str(settled.id),
         "status": closed.status.value,
         "missions_unfinished": len(unfinished),
         "missions_started_and_unfinished": sum(
@@ -1079,6 +1148,8 @@ async def abort(
 
     print(f"run         {payload['run_id']}", file=out)
     print(f"status      {payload['status']}", file=out)
+    if payload["reevaluation_id"] is not None:
+        print(f"launch      {payload['reevaluation_id']} settled as failed", file=out)
     print(
         f"unfinished  {payload['missions_unfinished']} missions never reached an outcome", file=out
     )
@@ -1113,21 +1184,6 @@ def _require_provider_key(settings: Settings, provider: str) -> None:
         raise ValueError("OPENAI_API_KEY is required for an OpenAI LLM benchmark sample")
     if provider == GEMINI_PROVIDER and settings.gemini is None:
         raise ValueError("GEMINI_API_KEY is required for a Gemini LLM benchmark sample")
-
-
-def _worker_environment(settings: Settings, provider: str) -> dict[str, str]:
-    environment = dict(os.environ)
-    environment.pop("OPENAI_API_KEY", None)
-    environment.pop("GEMINI_API_KEY", None)
-    if provider == OPENAI_PROVIDER:
-        assert settings.openai is not None
-        environment["OPENAI_API_KEY"] = settings.openai.api_key.get_secret_value()
-        return environment
-    if provider == GEMINI_PROVIDER:
-        assert settings.gemini is not None
-        environment["GEMINI_API_KEY"] = settings.gemini.api_key.get_secret_value()
-        return environment
-    raise ValueError("LLM provider is not supported")
 
 
 async def _report(

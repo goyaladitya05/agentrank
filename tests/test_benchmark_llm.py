@@ -19,6 +19,7 @@ from agentrank_api.benchmark.discovery import (
     storefront_view,
 )
 from agentrank_api.benchmark.http_buyer import HttpBuyerCommerceSurface
+from agentrank_api.benchmark.isolation import provider_worker_environment
 from agentrank_api.benchmark.llm import (
     GEMINI_PROVIDER,
     THROTTLE_RETRY_LIMIT,
@@ -38,7 +39,6 @@ from agentrank_api.benchmark.report import ExecutorReport, ReportedError
 from agentrank_api.benchmark.wire import LLM_STRATEGY, MissionRequest
 from agentrank_api.checkout.models import CheckoutStatus
 from agentrank_api.checkout.schemas import CheckoutLineView, CheckoutView
-from agentrank_api.cli.benchmark import _worker_environment
 from agentrank_api.commerce.schemas import (
     MerchantSummary,
     ProductDetail,
@@ -155,8 +155,8 @@ def test_selected_worker_provider_key_excludes_other_provider(
         gemini_api_key="selected-gemini",
     )  # type: ignore[call-arg]
 
-    gemini = _worker_environment(settings, GEMINI_PROVIDER)
-    openai = _worker_environment(settings, "openai-responses")
+    gemini = provider_worker_environment(settings, GEMINI_PROVIDER)
+    openai = provider_worker_environment(settings, "openai-responses")
 
     assert gemini["GEMINI_API_KEY"] == "selected-gemini"
     assert "OPENAI_API_KEY" not in gemini

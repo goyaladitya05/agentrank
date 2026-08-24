@@ -19,6 +19,7 @@ from benchmark_support import mission, suite
 from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from agentrank_api.benchmark.authored import AuthoredWorld
 from agentrank_api.benchmark.definitions import BenchmarkMissionDefinition
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
 from agentrank_api.benchmark.fixtures import BenchmarkFixture
@@ -124,6 +125,9 @@ class LaunchWorld:
     source_snapshot_id: uuid.UUID
     compiler_run_id: uuid.UUID
     representation: CommerceRepresentation
+    # The operator side documents a dispatcher is given: the catalog a run puts this merchant
+    # back to, beside the workload it was authored against.
+    authored: AuthoredWorld
 
 
 async def build_launch_world(
@@ -138,13 +142,12 @@ async def build_launch_world(
     environments = BenchmarkEnvironmentService(session)
     await environments.register(world)
     await environments.prepare(world)
-    published = await BenchmarkSuiteService(session).publish(
-        suite(
-            *(missions or (mission("buy-a-charger", constraints=(WATTAGE,)),)),
-            key=f"{slug}-suite",
-            merchant_slug=slug,
-        )
+    definition = suite(
+        *(missions or (mission("buy-a-charger", constraints=(WATTAGE,)),)),
+        key=f"{slug}-suite",
+        merchant_slug=slug,
     )
+    published = await BenchmarkSuiteService(session).publish(definition)
     merchant = await MerchantRepository(session).get_by_slug(slug)
     assert merchant is not None
     snapshot = await MerchantRepresentationService(session).publish_source(
@@ -163,6 +166,7 @@ async def build_launch_world(
         source_snapshot_id=snapshot.id,
         compiler_run_id=compiler_run.id,
         representation=representation,
+        authored=AuthoredWorld(fixture=world, suite=definition),
     )
 
 
