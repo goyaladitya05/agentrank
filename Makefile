@@ -11,7 +11,7 @@ API_APP := agentrank_api.main:create_app
 OPERATOR_CLI := agentrank_api.cli
 
 .PHONY: help install format lint format-check typecheck test test-backend test-frontend \
-	build-frontend check-text check-whitespace check \
+	build-frontend test-browser check-text check-whitespace check \
 	db-up db-down db-reset db-verify migrate seed-dev seed-benchmark api web payments credentials \
 	benchmark
 
@@ -46,7 +46,10 @@ test-backend: ## Run backend tests. Requires PostgreSQL to be running
 test-frontend: ## Run frontend tests
 	$(PNPM) $(WEB) test
 
-test: test-backend test-frontend ## Run all tests
+test: test-backend test-frontend test-browser ## Run all tests
+
+test-browser: migrate build-frontend ## Run critical browser workflows against local services
+	@e2e_key="$$($(UV) run python scripts/seed_compiler_e2e.py)"; AGENTRANK_E2E_KEY="$$e2e_key" $(PNPM) $(WEB) test:e2e
 
 build-frontend: ## Build the console the way production would
 	$(PNPM) $(WEB) build
