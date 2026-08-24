@@ -8,6 +8,7 @@ import styles from "./nav.module.css";
 const LINKS = [
   { href: "/overview", label: "Overview" },
   { href: "/runs", label: "Runs" },
+  { href: "/sources", label: "Source" },
   { href: "/compiler", label: "Compiler" },
   { href: "/re-evaluations", label: "Re-evaluation" },
   { href: "/status", label: "System status" },

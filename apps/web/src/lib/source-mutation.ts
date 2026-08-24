@@ -1,0 +1,56 @@
+/**
+ * The shapes the two source workflow commands answer with.
+ *
+ * Separate from the server actions themselves because a `"use server"` module may export only
+ * async functions, and both the actions and the components that render their result need these.
+ */
+
+/** What the merchant typed, echoed back so a refusal never empties the editor. */
+export interface SourceValues {
+  readonly document: string;
+}
+
+export interface SourceSubmissionState {
+  readonly ok: boolean;
+  readonly message: string | null;
+  /** True when the API refused because state moved, so the page beside this message is fresh. */
+  readonly stale: boolean;
+  /**
+   * True when the console could not tell what happened. The submission may or may not have been
+   * accepted, so the merchant is told to reload rather than told it failed, and submitting the
+   * same form again is safe because the request key makes a repeat the same command.
+   */
+  readonly unknown: boolean;
+  /** The snapshot this command resolved to, when the API answered with one. */
+  readonly snapshotId: string | null;
+  /** False when the evidence matched the current snapshot and nothing new was written. */
+  readonly createdSnapshot: boolean;
+  readonly values: SourceValues | null;
+}
+
+export const IDLE_SUBMISSION: SourceSubmissionState = {
+  ok: false,
+  message: null,
+  stale: false,
+  unknown: false,
+  snapshotId: null,
+  createdSnapshot: false,
+  values: null,
+};
+
+export interface CompileState {
+  readonly ok: boolean;
+  readonly message: string | null;
+  readonly stale: boolean;
+  readonly unknown: boolean;
+  /** The run this command created or found, when the API answered with one. */
+  readonly runId: string | null;
+}
+
+export const IDLE_COMPILE: CompileState = {
+  ok: false,
+  message: null,
+  stale: false,
+  unknown: false,
+  runId: null,
+};

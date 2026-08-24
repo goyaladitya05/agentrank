@@ -47,7 +47,17 @@ export default async function CompilerRunPage({ params }: { params: Promise<{ ru
         <Panel>
           <KeyValueList
             entries={[
-              { term: "Source snapshot", value: run.source_label },
+              {
+                term: "Source snapshot",
+                value: (
+                  <Link
+                    className={styles.rowLink}
+                    href={`/sources/${encodeURIComponent(run.source_snapshot_id)}`}
+                  >
+                    {run.source_label}
+                  </Link>
+                ),
+              },
               { term: "Run status", value: run.status },
               {
                 term: "Facts awaiting you",
@@ -90,8 +100,11 @@ function Publication({ run }: { run: CompilerRun }) {
           <span className={styles.mono}>{run.readiness.published_representation_id}</span>
         </p>
         <p className={styles.reviewMeta}>
-          This representation and the reviews behind it can no longer change. Compile a newer source
-          snapshot to publish again.
+          This representation and the reviews behind it can no longer change.{" "}
+          <Link className={styles.rowLink} href="/sources/new">
+            Supply newer source evidence
+          </Link>{" "}
+          to compile and publish again.
         </p>
         <p className={styles.reviewMeta}>
           Publishing did not run a benchmark. Measuring this representation is a separate command:{" "}
@@ -120,6 +133,16 @@ function Publication({ run }: { run: CompilerRun }) {
           <li key={blocker}>{blocker}</li>
         ))}
       </ul>
+      {run.status === "COMPLETED" ? null : (
+        <p className={styles.reviewMeta}>
+          A run that did not complete cannot be retried: the same snapshot read the same way is the
+          same run.{" "}
+          <Link className={styles.rowLink} href="/sources/new">
+            Supply newer source evidence
+          </Link>{" "}
+          to produce a new one.
+        </p>
+      )}
     </>
   );
 }

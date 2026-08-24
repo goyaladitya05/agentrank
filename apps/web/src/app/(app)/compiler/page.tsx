@@ -33,8 +33,29 @@ export default async function CompilerPage() {
             : `${String(data.review_required_count)} semantic fact(s) need review.`}
         </Panel>
       </Section>
-      <Section title="Compiler runs">
+      <Section
+        title="Compiler runs"
+        hint="A settled run never changes. Newer evidence produces a new one."
+      >
         <RunTable runs={data.runs} />
+      </Section>
+      <Section title="Newer source evidence">
+        <Panel>
+          <p>
+            A published representation and the reviews behind it are permanent. To change what
+            AgentRank publishes about your catalog, supply newer source evidence and compile it.
+          </p>
+          <p className={styles.reviewMeta}>
+            <Link className={styles.rowLink} href="/sources">
+              Your source history
+            </Link>
+          </p>
+          <p className={styles.reviewMeta}>
+            <Link className={styles.rowLink} href="/sources/new">
+              Supply newer source evidence
+            </Link>
+          </p>
+        </Panel>
       </Section>
     </>
   );
