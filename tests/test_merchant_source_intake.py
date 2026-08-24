@@ -6,6 +6,8 @@ what two of them arriving at once produce against a real PostgreSQL.
 """
 
 import asyncio
+import uuid
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -21,7 +23,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from agentrank_api.errors import NotFoundError
+from agentrank_api.errors import ConflictError, NotFoundError
 from agentrank_api.representation.intake import (
     DEFAULT_SOURCE_KEY,
     OPERATOR_ORIGIN,
@@ -95,13 +97,14 @@ async def test_the_same_request_key_twice_is_one_submission_and_one_snapshot(
     assert await _snapshot_count(session, merchant.id) == 2
 
 
-async def test_a_retry_after_a_lost_response_answers_with_what_it_already_did(
+async def test_a_repeat_carrying_different_evidence_is_refused_by_name(
     session: AsyncSession,
 ) -> None:
-    """A repeat carrying a different document under the same key still answers the first one.
+    """A key names a command. A different document under it is a different command.
 
-    A key names a command rather than a payload. What a lost response needs is the outcome of the
-    command that key already ran, and re-reading the body would let a stale tab overwrite it.
+    Answering with the first outcome would tell a merchant their edit was stored when it was
+    not, and the compiler would then read the document they replaced. This is the refusal the
+    re-evaluation launch already makes for a reused launch key.
     """
     merchant, _ = await merchant_with_source(session, "lost-response-shop")
     service = MerchantSourceIntakeService(session)
@@ -109,13 +112,21 @@ async def test_a_retry_after_a_lost_response_answers_with_what_it_already_did(
     first = await service.submit(
         merchant.id, request_key=FIRST_KEY, document=request(contradicted_document(), FIRST_KEY)
     )
-    repeat = await service.submit(
-        merchant.id, request_key=FIRST_KEY, document=request(voltedge_document(), FIRST_KEY)
-    )
+    stored = first.snapshot.id
 
-    assert repeat.snapshot.id == first.snapshot.id
-    assert repeat.snapshot.payload == first.snapshot.payload
+    with pytest.raises(ConflictError) as refused:
+        await service.submit(
+            merchant.id, request_key=FIRST_KEY, document=request(voltedge_document(), FIRST_KEY)
+        )
+
+    assert refused.value.reason == "source_request_key_reused"
+    assert refused.value.identifier == FIRST_KEY
     assert await _snapshot_count(session, merchant.id) == 2
+    # And the outcome the key already produced is untouched by the refusal.
+    again = await service.submit(
+        merchant.id, request_key=FIRST_KEY, document=request(contradicted_document(), FIRST_KEY)
+    )
+    assert again.snapshot.id == stored
 
 
 async def test_evidence_identical_to_the_current_snapshot_writes_no_second_copy(
@@ -379,3 +390,104 @@ async def _snapshot_count(session: AsyncSession, merchant_id: Any) -> int:
         )
     ).scalars()
     return len(list(rows))
+
+
+async def test_the_current_snapshot_is_the_one_written_last_not_the_one_started_first(
+    session: AsyncSession,
+) -> None:
+    """`created_at` is the transaction clock, and the transaction clock is not insert order.
+
+    `now()` in PostgreSQL is `transaction_timestamp()`. Two submissions serializing on the
+    advisory lock are exactly the shape that breaks a timestamp ordering: the waiter's
+    transaction begins first and its row is written second. Ordering by identifier reads insert
+    order, because `uuid7` is generated when the row is inserted.
+
+    Written directly rather than raced, so the property is asserted rather than sampled.
+    """
+    merchant, first = await merchant_with_source(session, "clock-shop")
+    service = MerchantSourceIntakeService(session)
+    later = await service.submit(
+        merchant.id, request_key=FIRST_KEY, document=request(contradicted_document(), FIRST_KEY)
+    )
+    newest_id = later.snapshot.id
+
+    # Backdate the newer snapshot's timestamp to before the older one's, which is what a
+    # transaction that began earlier and committed later produces.
+    await session.execute(
+        text("ALTER TABLE merchant_source_snapshot DISABLE TRIGGER merchant_source_snapshot_guard")
+    )
+    await session.execute(
+        text("UPDATE merchant_source_snapshot SET created_at = :moment WHERE id = :id"),
+        {"moment": first.created_at - timedelta(seconds=1), "id": newest_id},
+    )
+    await session.execute(
+        text("ALTER TABLE merchant_source_snapshot ENABLE TRIGGER merchant_source_snapshot_guard")
+    )
+    await session.commit()
+
+    current = await MerchantSourceIntakeService(session).current(merchant.id)
+    assert current is not None
+    assert current.id == newest_id
+    overview = await MerchantSourceIntakeService(session).overview(merchant.id)
+    assert overview.current_source_snapshot_id == newest_id
+    assert next(iter(overview.snapshots)).source_snapshot_id == newest_id
+
+
+async def test_a_version_taken_by_another_writer_is_resolved_again_rather_than_failing(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The operator command line publishes snapshots without taking the advisory lock.
+
+    So a version this command allocated can be gone by the time it inserts. That is a unique
+    constraint violation inside a flush, which would otherwise leave the request as a 503 naming
+    a database outage that did not happen, with the source payload in the log line beside it.
+    """
+    merchant, first = await merchant_with_source(session, "collision-shop")
+    service = MerchantSourceIntakeService(session)
+    taken = first.source_version
+    real = service._next_version
+    calls = {"count": 0}
+
+    async def stale(merchant_id: uuid.UUID, key: str) -> int:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return taken
+        return await real(merchant_id, key)
+
+    monkeypatch.setattr(service, "_next_version", stale)
+
+    outcome = await service.submit(
+        merchant.id, request_key=FIRST_KEY, document=request(contradicted_document(), FIRST_KEY)
+    )
+
+    assert calls["count"] == 2
+    assert outcome.submission.created_snapshot is True
+    assert outcome.snapshot.source_version == taken + 1
+    assert await _snapshot_count(session, merchant.id) == 2
+
+
+async def test_a_writer_that_never_yields_is_refused_by_name(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bounded retry, so a caller that keeps losing is told rather than retried forever."""
+    merchant, first = await merchant_with_source(session, "livelock-shop")
+    service = MerchantSourceIntakeService(session)
+    taken = first.source_version
+
+    async def always_stale(merchant_id: uuid.UUID, key: str) -> int:
+        del merchant_id, key
+        return taken
+
+    monkeypatch.setattr(service, "_next_version", always_stale)
+
+    with pytest.raises(ConflictError) as refused:
+        await service.submit(
+            merchant.id,
+            request_key=FIRST_KEY,
+            document=request(contradicted_document(), FIRST_KEY),
+        )
+
+    assert refused.value.reason == "source_version_conflict"
+    assert await _snapshot_count(session, merchant.id) == 1
