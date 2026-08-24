@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from conftest import CredentialIssuer, bearer
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.commerce.models import Merchant
@@ -255,3 +256,49 @@ async def test_competing_publications_are_idempotent_in_postgresql(
 
     first, second = await asyncio.gather(publish(), publish())
     assert first == second
+
+
+async def test_compiler_review_and_publication_leave_financial_state_unchanged(
+    session: AsyncSession,
+) -> None:
+    merchant, run, candidates = await reviewable_run(session)
+    statements = {
+        "checkout_session": "SELECT count(*) FROM checkout_session",
+        "checkout_line": "SELECT count(*) FROM checkout_line",
+        "payment_attempt": "SELECT count(*) FROM payment_attempt",
+        "inventory_reservation": "SELECT count(*) FROM inventory_reservation",
+        "inventory_reservation_line": "SELECT count(*) FROM inventory_reservation_line",
+        "spending_mandate": "SELECT count(*) FROM spending_mandate",
+        "razorpay_checkout": "SELECT count(*) FROM razorpay_checkout",
+    }
+
+    async def counts() -> dict[str, int]:
+        return {
+            table: int((await session.execute(text(statement))).scalar_one())
+            for table, statement in statements.items()
+        }
+
+    before = await counts()
+    compiler = MerchantCompilerService(session)
+    for candidate in candidates:
+        if candidate.state.value != "REVIEW_REQUIRED":
+            continue
+        await compiler.review(
+            merchant.id,
+            candidate.id,
+            ReviewDecision.CORRECT,
+            correction=CandidateProposal(
+                target=candidate.target,
+                fact=SemanticFact(
+                    value=65,
+                    authority=FactAuthority.DERIVED,
+                    confidence=FactConfidence.HIGH,
+                    review_state=ReviewState.CONFIRMED,
+                    provenance=(SourceReference("products[VE-CHG-100].description", "65W"),),
+                ),
+                attribute_kind=AttributeKind.MEASUREMENT,
+                unit="W",
+            ),
+        )
+    await compiler.publish(merchant.id, run.id)
+    assert await counts() == before
