@@ -7,8 +7,8 @@ the Docker Compose service, and in CI it is a service container.
 import re
 import socket
 import uuid
-from os import getpid
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from os import getpid
 from pathlib import Path
 from typing import Protocol
 
