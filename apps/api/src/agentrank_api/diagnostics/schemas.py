@@ -342,6 +342,7 @@ class RunSummaryView(BaseModel):
     status: str
     suite_label: str
     executor_label: str | None
+    benchmark_designation: str | None
     started_at: datetime | None
     completed_at: datetime | None
     missions_total: int
@@ -485,6 +486,7 @@ def run_summary_view(summary: OverviewRunSummary) -> RunSummaryView:
         status=summary.status,
         suite_label=summary.suite_label,
         executor_label=summary.executor_label,
+        benchmark_designation=summary.benchmark_designation,
         started_at=summary.started_at,
         completed_at=summary.completed_at,
         missions_total=summary.missions_total,

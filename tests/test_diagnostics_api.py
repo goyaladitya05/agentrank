@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 from benchmark_support import VOLTEDGE, fixture, mission, suite
-from commerce_support import build_shop
+from commerce_support import CURRENCY, build_shop
 from conftest import CredentialIssuer
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -129,6 +129,128 @@ class TestAuthenticationAndScoping:
         http = client(settings, factory)
         headers = {"Authorization": f"Bearer {token}"}
         assert http.get(f"/api/v1/insights/runs/{uuid.uuid7()}", headers=headers).status_code == 404
+
+
+class TestRunSummaries:
+    async def test_a_run_outside_any_experiment_has_no_designation(
+        self,
+        settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+        issue_credential: CredentialIssuer,
+    ) -> None:
+        merchant_id, _ = await run_one(session, factory)
+        token = await issue_credential(merchant_id)
+        http = client(settings, factory)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        body = http.get("/api/v1/insights/runs", headers=headers)
+        assert body.status_code == 200
+        assert body.json()[0]["benchmark_designation"] is None
+
+    async def test_a_run_pinned_by_an_experiment_carries_its_designation(
+        self,
+        settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+        issue_credential: CredentialIssuer,
+    ) -> None:
+        from sqlalchemy import select
+
+        from agentrank_api.benchmark.experiment import CompilerImpactSample
+        from agentrank_api.representation.definitions import (
+            MerchantSourceDefinition,
+            SourceProduct,
+            SourceVariant,
+        )
+
+        built = await build_shop(session, SLUG)
+        world = fixture()
+        environment = await BenchmarkEnvironmentService(session).register(world)
+        stored_suite = await BenchmarkSuiteService(session).publish(suite(mission("buy-one")))
+        surface = MerchantBuyerSurface(
+            factory, merchant_id=built.merchant_id, provider=FakePaymentProvider()
+        )
+        finished = await BenchmarkRunService(session).run_suite(
+            ReferenceMissionExecutor(surface),
+            suite_key="test-suite",
+            suite_version=1,
+            fixture=world,
+        )
+
+        # A minimal compiler-produced representation for this merchant's source, so the
+        # experiment can be created without the authored VoltEdge documents.
+        source_definition = MerchantSourceDefinition(
+            key="test-source",
+            version=1,
+            merchant_slug=SLUG,
+            products=(
+                SourceProduct(
+                    external_id="test-merchant-1",
+                    title="Charger",
+                    description=None,
+                    category="chargers",
+                    variants=(
+                        SourceVariant(
+                            sku="CHARGER-BLK",
+                            label="Black",
+                            price_amount_minor=499900,
+                            currency=CURRENCY,
+                            inventory_quantity=1,
+                            merchant_metadata={},
+                        ),
+                    ),
+                    merchant_metadata={},
+                ),
+            ),
+            policy_text={"returns": "Fourteen days."},
+        )
+        representations = MerchantRepresentationService(session)
+        source = await representations.publish_source(source_definition)
+        compiler_run = await MerchantCompilerService(session).run(built.merchant_id, source.id)
+        compiled = await MerchantCompilerService(session).publish(
+            built.merchant_id, compiler_run.id
+        )
+        config = AgentConfiguration(provider=GEMINI_PROVIDER, requested_model="test-model")
+        experiment = await CompilerImpactExperimentService(session).create(
+            merchant_id=built.merchant_id,
+            suite_id=stored_suite.id,
+            environment=environment,
+            source_snapshot_id=source.id,
+            compiled_representation_id=compiled.id,
+            buyer_configuration=config.payload(),
+            buyer_configuration_digest=config.configuration_digest,
+            sample_count=1,
+            development_benchmark=True,
+        )
+        # The read model reads the designation through the sample binding; the binding
+        # itself is manufactured here so the test does not need a live provider sample.
+        sample = (
+            (
+                await session.execute(
+                    select(CompilerImpactSample)
+                    .where(CompilerImpactSample.experiment_id == experiment.id)
+                    .order_by(CompilerImpactSample.execution_ordinal)
+                )
+            )
+            .scalars()
+            .first()
+        )
+        assert sample is not None
+        sample.run_id = finished.id
+        await session.commit()
+
+        token = await issue_credential(built.merchant_id)
+        http = client(settings, factory)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        body = http.get("/api/v1/insights/runs", headers=headers)
+        assert body.status_code == 200
+        assert body.json()[0]["benchmark_designation"] == "DEVELOPMENT"
+
+        detail = http.get(f"/api/v1/insights/runs/{finished.id}", headers=headers)
+        assert detail.status_code == 200
+        assert detail.json()["benchmark_designation"] == "DEVELOPMENT"
 
 
 class TestMissionAndTrace:

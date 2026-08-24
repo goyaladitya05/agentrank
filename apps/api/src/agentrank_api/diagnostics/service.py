@@ -164,6 +164,7 @@ class OverviewRunSummary:
     status: str
     suite_label: str
     executor_label: str | None
+    benchmark_designation: str | None
     started_at: datetime | None
     completed_at: datetime | None
     missions_total: int
@@ -466,6 +467,7 @@ class DiagnosticsService:
             [run.id for run in runs], merchant_id=merchant_id
         )
         labels = await self._suite_labels([run.suite_id for run in runs])
+        designations = await self._designations([run.id for run in runs], merchant_id=merchant_id)
         summaries = []
         for run in runs:
             metrics = compute_metrics(outcomes_of(grouped.get(run.id, [])))
@@ -474,7 +476,9 @@ class DiagnosticsService:
                 # Unreachable through the schema: the suite foreign key is RESTRICT. A run
                 # whose suite vanished would be a hole in the record, not an empty label.
                 raise NotFoundError("benchmark_suite", str(run.suite_id))
-            summaries.append(self._summary(run, metrics, failure_counts, label))
+            summaries.append(
+                self._summary(run, metrics, failure_counts, label, designations.get(run.id))
+            )
         return summaries
 
     async def _suite_labels(self, suite_ids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
@@ -490,6 +494,38 @@ class DiagnosticsService:
             select(BenchmarkSuite).where(BenchmarkSuite.id.in_(unique_ids))
         )
         return {row.id: row.label for row in rows.scalars()}
+
+    async def _designations(
+        self, run_ids: list[uuid.UUID], *, merchant_id: uuid.UUID
+    ) -> dict[uuid.UUID, str]:
+        """Benchmark designations for a window of runs, resolved once rather than per run.
+
+        A run's designation is the experiment methodology fact of the sample that pinned it,
+        the same value `run_diagnostics` reports. A run outside any controlled experiment has
+        none, which is honest: un-designated means not part of an evaluation claim.
+        """
+        if not run_ids:
+            return {}
+        rows = await self._session.execute(
+            select(CompilerImpactSample.run_id, CompilerImpactExperiment.methodology)
+            .join(
+                CompilerImpactExperiment,
+                CompilerImpactSample.experiment_id == CompilerImpactExperiment.id,
+            )
+            .where(
+                CompilerImpactSample.run_id.in_(run_ids),
+                CompilerImpactSample.merchant_id == merchant_id,
+            )
+            .order_by(CompilerImpactSample.run_id, CompilerImpactExperiment.id)
+        )
+        designations: dict[uuid.UUID, str] = {}
+        for bound_run_id, methodology in rows.all():
+            value = (
+                methodology.get("benchmark_designation") if isinstance(methodology, dict) else None
+            )
+            if isinstance(value, str) and value:
+                designations.setdefault(bound_run_id, value)
+        return designations
 
     async def _recent_runs(self, merchant_id: uuid.UUID, limit: int) -> list[BenchmarkRun]:
         rows = await self._session.execute(
@@ -522,12 +558,14 @@ class DiagnosticsService:
         metrics: BenchmarkMetrics,
         failure_counts: dict[uuid.UUID, int],
         suite_label: str,
+        designation: str | None,
     ) -> OverviewRunSummary:
         return OverviewRunSummary(
             run_id=run.id,
             status=run.status.value,
             suite_label=suite_label,
             executor_label=run.executor_label,
+            benchmark_designation=designation,
             started_at=run.started_at,
             completed_at=run.completed_at,
             missions_total=metrics.missions_total,
