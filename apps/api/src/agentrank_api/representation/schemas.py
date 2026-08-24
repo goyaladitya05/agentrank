@@ -46,6 +46,13 @@ from agentrank_api.representation.models import SUBMISSION_KEY_PATTERN
 # oversized document is refused rather than buffered, parsed and then found to be too large.
 MAX_SOURCE_REQUEST_BYTES = 128 * 1024
 
+# How deeply a source document may nest. Seven is what the shape below actually needs: the
+# document, its product array, one product, its variant array, one variant, that variant's
+# metadata, and a value inside it. Twelve leaves room and is still far below the depth at which
+# the JSON parser recurses into the interpreter's stack limit, which is a `RecursionError` rather
+# than a parse error and would otherwise reach a caller as a 500.
+MAX_SOURCE_REQUEST_DEPTH = 12
+
 MAX_PRODUCTS = 50
 MAX_VARIANTS_PER_PRODUCT = 25
 MAX_TOTAL_VARIANTS = 250
@@ -65,6 +72,11 @@ MAX_POLICY_BODY_LENGTH = 4000
 # level means anything.
 MAX_PRICE_AMOUNT_MINOR = 10**12
 MAX_INVENTORY_QUANTITY = 10**7
+
+# A metadata integer is bounded for the same reason a price is. It is transitively bounded by the
+# request size cap already, and "every field is bounded" should be true of every field rather than
+# true of most of them and left to a cap somewhere else for the rest.
+MAX_METADATA_INTEGER = 10**12
 
 # A product external identifier and a variant SKU. No dot and no bracket, because both appear
 # inside a source field address and a compiler target and both grammars use those characters.
@@ -166,6 +178,17 @@ class SourceDocumentInput(BaseModel):
                 f"a source document may describe at most {MAX_TOTAL_VARIANTS} variants"
             )
         return value
+
+    def evidence(self) -> dict[str, Any]:
+        """What this document says, without the identity the server has not supplied yet.
+
+        The same shape a stored payload carries under `products` and `policy_text`, so a
+        submitted document and a persisted snapshot can be compared before either has a version.
+        """
+        return {
+            "products": [product.domain().payload() for product in self.products],
+            "policy_text": dict(self.policy_text),
+        }
 
     def definition(self, *, key: str, version: int, merchant_slug: str) -> MerchantSourceDefinition:
         """The canonical source document, with its identity supplied by the server."""
@@ -291,4 +314,10 @@ def _bounded_map(value: dict[str, Any], entries: int, body: int, name: str) -> d
             raise ValueError(f"{name} name {key!r} is not a valid identifier")
         if isinstance(item, str) and len(item) > body:
             raise ValueError(f"{name} {key} is longer than {body} characters")
+        if (
+            isinstance(item, int)
+            and not isinstance(item, bool)
+            and abs(item) > MAX_METADATA_INTEGER
+        ):
+            raise ValueError(f"{name} {key} is outside the supported range")
     return value

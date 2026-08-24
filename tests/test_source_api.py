@@ -26,7 +26,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from agentrank_api.config import Settings
 from agentrank_api.main import create_app
 from agentrank_api.payments.fake import FakePaymentProvider
-from agentrank_api.representation.schemas import MAX_SOURCE_REQUEST_BYTES
+from agentrank_api.representation.schemas import (
+    MAX_SOURCE_REQUEST_BYTES,
+    MAX_SOURCE_REQUEST_DEPTH,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -192,6 +195,15 @@ async def test_a_malformed_document_is_refused_field_by_field(
         "nested metadata": refuse(
             lambda body: set_variant(body, "merchant_metadata", {"finish": {"deep": 1}})
         ),
+        "float metadata": refuse(
+            lambda body: set_variant(body, "merchant_metadata", {"finish": 1.5})
+        ),
+        "huge metadata integer": refuse(
+            lambda body: set_variant(body, "merchant_metadata", {"weight": 10**40})
+        ),
+        "bad metadata name": refuse(
+            lambda body: set_variant(body, "merchant_metadata", {"listed.length": "1 m"})
+        ),
         "blank policy": refuse(lambda body: body["policy_text"].update(warranty="   ")),
         "bad policy name": refuse(lambda body: body["policy_text"].update(**{"a b": "text"})),
         "short request key": refuse(lambda body: body.update(request_key="short")),
@@ -240,6 +252,103 @@ async def test_an_oversized_document_is_refused_before_it_is_read(
     assert answer.status_code == 413
     assert answer.json()["error"] == "request_too_large"
     assert len(http.get(SOURCES, headers=bearer(token)).json()["snapshots"]) == 1
+
+
+async def test_a_deeply_nested_body_is_refused_before_it_is_parsed(
+    settings: Settings,
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+    issue_credential: CredentialIssuer,
+) -> None:
+    """A well formed body the JSON parser cannot survive is a refusal, never a 500.
+
+    `json.loads` recurses per nesting level and raises `RecursionError`, which is not a
+    `JSONDecodeError`, so nothing in the framework's body handling catches it. Before the depth
+    bound this exact request answered 500.
+    """
+    merchant, _ = await merchant_with_source(session, "api-nested-shop")
+    token = await issue_credential(merchant.id)
+    http = client(settings, factory)
+    depth = 40_000
+    raw = json.dumps(submission(contradicted_document(), FIRST_KEY)).replace(
+        '"policy_text":', '"policy_text": ' + "[" * depth + "]" * depth + ', "unused":', 1
+    )
+
+    answer = http.post(
+        SOURCES, headers={**bearer(token), "Content-Type": "application/json"}, content=raw
+    )
+
+    assert answer.status_code == 422
+    assert answer.json()["error"] == "request_too_deeply_nested"
+    assert len(http.get(SOURCES, headers=bearer(token)).json()["snapshots"]) == 1
+
+
+async def test_a_document_within_the_depth_bound_is_accepted(
+    settings: Settings,
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+    issue_credential: CredentialIssuer,
+) -> None:
+    """The bound is generous, not merely present: a real document is nowhere near it."""
+    merchant, _ = await merchant_with_source(session, "api-shallow-shop")
+    token = await issue_credential(merchant.id)
+    http = client(settings, factory)
+    raw = json.dumps(submission(contradicted_document(), FIRST_KEY))
+
+    assert _depth(raw) < MAX_SOURCE_REQUEST_DEPTH
+    answer = http.post(
+        SOURCES, headers={**bearer(token), "Content-Type": "application/json"}, content=raw
+    )
+    assert answer.status_code == 201
+
+
+async def test_a_body_larger_than_it_declared_is_refused(
+    settings: Settings,
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+    issue_credential: CredentialIssuer,
+) -> None:
+    """A declared length is a claim. The bytes are the fact, and both are checked."""
+    merchant, _ = await merchant_with_source(session, "api-lying-shop")
+    token = await issue_credential(merchant.id)
+    app = create_app(settings, payment_provider=FakePaymentProvider())
+    app.state.session_factory = factory
+    oversized = b'{"products": [' + b" " * (MAX_SOURCE_REQUEST_BYTES + 10) + b"]}"
+
+    with TestClient(app) as http:
+        answer = http.post(
+            SOURCES,
+            headers={
+                **bearer(token),
+                "Content-Type": "application/json",
+                # Understated on purpose, so the header check passes and the drain has to catch
+                # it. httpx would otherwise compute the true length and the claim would be true.
+                "Content-Length": "20",
+            },
+            content=oversized,
+        )
+
+    assert answer.status_code == 413
+    assert answer.json()["error"] == "request_too_large"
+
+
+def _depth(raw: str) -> int:
+    """The deepest bracket nesting in one JSON document, ignoring brackets inside strings."""
+    depth = highest = 0
+    in_string = escaped = False
+    for character in raw:
+        if in_string:
+            escaped = character == "\\" and not escaped
+            in_string = not (character == '"' and not escaped)
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "[{":
+            depth += 1
+            highest = max(highest, depth)
+        elif character in "]}":
+            depth -= 1
+    return highest
 
 
 async def test_a_document_that_declares_no_length_is_refused(
