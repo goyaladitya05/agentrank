@@ -112,7 +112,12 @@ def extract(source: MerchantSourceDefinition) -> list[tuple[CandidateProposal, C
                 ]
             )
             finish = variant.merchant_metadata.get("finish")
-            if isinstance(finish, str) and finish.strip():
+            # Guarded like every other merchant string the extractor reads. A metadata field is
+            # a shorter place to write prose than a description, not a more trustworthy one, and
+            # this candidate is accepted without review and reaches a buyer agent's discovery
+            # surface unaltered. `_instruction_like` is the same refusal the title, the
+            # description and the warranty text already get.
+            if isinstance(finish, str) and finish.strip() and not _instruction_like(finish):
                 output.append(
                     (
                         CandidateProposal(
