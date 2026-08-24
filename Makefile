@@ -48,13 +48,22 @@ test-frontend: ## Run frontend tests
 
 test: test-backend test-frontend test-browser ## Run all tests
 
+# The seeded keys reach the tests through the environment and never through an argument vector,
+# and the artifact scan runs whether the workflows passed or failed: a failing run is exactly when
+# a trace is retained, so it is exactly when a credential left in one would matter.
 test-browser: migrate build-frontend ## Run critical browser workflows against local services
 	@compiler_key="$$($(UV) run python scripts/seed_compiler_e2e.py)"; \
 		reevaluation="$$($(UV) run python scripts/seed_reevaluation_e2e.py)"; \
+		reevaluation_key="$$(printf '%s\n' "$$reevaluation" | sed -n 1p)"; \
+		status=0; \
 		AGENTRANK_E2E_KEY="$$compiler_key" \
-		AGENTRANK_E2E_REEVALUATION_KEY="$$(printf '%s\n' "$$reevaluation" | sed -n 1p)" \
+		AGENTRANK_E2E_REEVALUATION_KEY="$$reevaluation_key" \
 		AGENTRANK_E2E_REEVALUATION_WORLD="$$(printf '%s\n' "$$reevaluation" | sed -n 2p)" \
-		$(PNPM) $(WEB) test:e2e
+		$(PNPM) $(WEB) test:e2e || status=$$?; \
+		AGENTRANK_E2E_SECRETS="$$compiler_key $$reevaluation_key" \
+		$(UV) run python scripts/check-e2e-artifacts.py \
+			apps/web/test-results apps/web/playwright-report; \
+		exit $$status
 
 build-frontend: ## Build the console the way production would
 	$(PNPM) $(WEB) build

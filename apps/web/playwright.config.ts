@@ -7,6 +7,13 @@ import { defineConfig } from "@playwright/test";
  * a stale process holding 3001 would silently test yesterday's build. One worker and no retries,
  * because the run is seeded with one merchant whose workflow ends in an immutable publication,
  * and a retry of a publication that already happened is not the same test.
+ *
+ * `trace` is off here and is not off in practice. A trace records the arguments of every action,
+ * the DOM around it and the network it caused, so a configured trace starts before the merchant
+ * API key is typed into the sign in form and retains it on any later failure. Every test starts
+ * its own trace instead, after sign in, through `e2e/session.ts`, and writes it out under exactly
+ * the retain-on-failure rule this option would have applied. Diagnostics are unchanged for
+ * everything except the two steps that carry a credential.
  */
 export default defineConfig({
   testDir: "./e2e",
@@ -16,7 +23,7 @@ export default defineConfig({
   retries: 0,
   forbidOnly: process.env.CI !== undefined,
   reporter: [["list"]],
-  use: { baseURL: "http://127.0.0.1:3001", browserName: "chromium", trace: "retain-on-failure" },
+  use: { baseURL: "http://127.0.0.1:3001", browserName: "chromium", trace: "off" },
   webServer: [
     {
       command: "uv run uvicorn agentrank_api.main:create_app --factory --port 8001",

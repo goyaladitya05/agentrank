@@ -1,4 +1,6 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type BrowserContext, type Page } from "@playwright/test";
+
+import { record, retainOnFailure, signIn as establishSession } from "./session";
 
 /**
  * The one browser workflow Phase 4C exists for, end to end against real servers.
@@ -14,6 +16,12 @@ import { expect, test, type Page } from "@playwright/test";
  */
 
 const key = process.env.AGENTRANK_E2E_KEY;
+
+// Recording is per test and starts once the credential is in, so a failure still leaves the
+// trace it always did. See e2e/session.ts.
+test.afterEach(async ({ context }, testInfo) => {
+  await retainOnFailure(context, testInfo);
+});
 
 const WATTAGE_BLACK = "variant.VE-CHG-100-BLK.attribute.wattage";
 const WATTAGE_WHITE = "variant.VE-CHG-100-WHT.attribute.wattage";
@@ -63,11 +71,9 @@ function rowOf(page: Page, target: string) {
     .filter({ hasText: parts[parts.length - 1] ?? target });
 }
 
-async function signIn(page: Page): Promise<void> {
+async function signIn(page: Page, context: BrowserContext): Promise<void> {
   if (key === undefined) throw new Error("AGENTRANK_E2E_KEY is required");
-  await page.goto("/login");
-  await page.getByLabel("Merchant API key").fill(key);
-  await page.getByRole("button", { name: "Sign in" }).click();
+  await establishSession(page, context, key);
   await page.getByRole("link", { name: "Compiler" }).click();
   await expect(page.getByText("4 semantic fact(s) need review.")).toBeVisible();
   await page.getByRole("link", { name: /voltedge-merchant-source@1/ }).click();
@@ -84,10 +90,11 @@ async function correct(page: Page, target: string, value: string, excerpt: strin
 
 test("a merchant reviews every kind of fact and publishes one immutable representation", async ({
   page,
+  context,
 }) => {
   const captured: CapturedAction[] = [];
   captureAction(page, captured);
-  await signIn(page);
+  await signIn(page, context);
 
   // The proposal a merchant sees is the compiler's reading, not a compiler document.
   await expect(page.getByText("Needs your decision").first()).toBeVisible();
@@ -169,8 +176,11 @@ test("a merchant reviews every kind of fact and publishes one immutable represen
 
 test("the console shows nothing about a compiler run without a signed in session", async ({
   page,
+  context,
 }) => {
-  await page.context().clearCookies();
+  // Nothing here holds a credential, so this one records from the top.
+  await record(context);
+  await context.clearCookies();
   await page.goto("/compiler");
   await expect(page).toHaveURL(/\/login/);
   await expect(page.getByLabel("Merchant API key")).toBeVisible();

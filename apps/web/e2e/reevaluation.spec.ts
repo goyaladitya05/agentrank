@@ -1,6 +1,8 @@
 import { execFileSync } from "node:child_process";
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type BrowserContext, type Page } from "@playwright/test";
+
+import { record, retainOnFailure, signIn as establishSession } from "./session";
 
 /**
  * The Phase 4D product loop, end to end against real servers, a real database and real runs.
@@ -27,6 +29,12 @@ const world = process.env.AGENTRANK_E2E_REEVALUATION_WORLD;
 // Two real benchmark runs, each spawning a worker process per mission and paying through the
 // real payment kernel, plus two page loads around each. Generous, and still bounded.
 test.setTimeout(240_000);
+
+// Recording is per test and starts once the credential is in, so a failure still leaves the
+// trace it always did. See e2e/session.ts.
+test.afterEach(async ({ context }, testInfo) => {
+  await retainOnFailure(context, testInfo);
+});
 
 /**
  * Run the operator dispatcher once, exactly as an operator would.
@@ -86,11 +94,9 @@ function newestLaunch(page: Page) {
   return page.locator('[aria-label="Re-evaluations"] a').first();
 }
 
-async function signIn(page: Page): Promise<void> {
+async function signIn(page: Page, context: BrowserContext): Promise<void> {
   if (key === undefined) throw new Error("AGENTRANK_E2E_REEVALUATION_KEY is required");
-  await page.goto("/login");
-  await page.getByLabel("Merchant API key").fill(key);
-  await page.getByRole("button", { name: "Sign in" }).click();
+  await establishSession(page, context, key);
   await expect(nav(page, "Re-evaluation")).toBeVisible();
 }
 
@@ -115,10 +121,11 @@ async function requestReevaluation(page: Page): Promise<void> {
 
 test("a merchant publishes, launches a re-evaluation and reads the result against the run before it", async ({
   page,
+  context,
 }) => {
   const captured: CapturedAction[] = [];
   captureLaunch(page, captured);
-  await signIn(page);
+  await signIn(page, context);
   await publishRepresentation(page);
 
   // Publishing said so itself, and the launch history proves it: nothing was started.
@@ -183,8 +190,11 @@ test("a merchant publishes, launches a re-evaluation and reads the result agains
 
 test("the console shows nothing about a re-evaluation without a signed in session", async ({
   page,
+  context,
 }) => {
-  await page.context().clearCookies();
+  // Nothing here holds a credential, so this one records from the top.
+  await record(context);
+  await context.clearCookies();
   await page.goto("/re-evaluations");
   await expect(page).toHaveURL(/\/login/);
   await expect(page.getByLabel("Merchant API key")).toBeVisible();
