@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { retainOnFailure, signIn as establishSession } from "./session";
+import { record, retainOnFailure, signIn as establishSession } from "./session";
 
 /**
  * The one browser workflow Phase 4E exists for, end to end against real servers.
@@ -186,7 +186,7 @@ test("the console shows nothing about a source snapshot without a signed in sess
   context,
 }) => {
   // Nothing here holds a credential, so this one records from the top.
-  await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
+  await record(context);
   await context.clearCookies();
   await page.goto("/sources");
   await expect(page).toHaveURL(/\/login/);
