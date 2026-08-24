@@ -45,6 +45,18 @@ export interface CompileState {
   readonly unknown: boolean;
   /** The run this command created or found, when the API answered with one. */
   readonly runId: string | null;
+  /**
+   * What the run is, so the acknowledgement can say something true.
+   *
+   * A compiler run that could not read its snapshot completes FAILED and is still answered 201,
+   * a well formed document often produces nothing to review at all, and asking again for a
+   * snapshot already compiled and published answers with that run. "The facts it proposed are
+   * waiting for your review" is false in all three, and the API already told the console which
+   * one this is.
+   */
+  readonly runStatus: string | null;
+  readonly pendingReviews: number | null;
+  readonly published: boolean;
 }
 
 export const IDLE_COMPILE: CompileState = {
@@ -53,4 +65,7 @@ export const IDLE_COMPILE: CompileState = {
   stale: false,
   unknown: false,
   runId: null,
+  runStatus: null,
+  pendingReviews: null,
+  published: false,
 };

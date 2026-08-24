@@ -33,17 +33,28 @@ import { decodeCompilerRun } from "@/lib/compiler";
 import { decodeSourceSubmission } from "@/lib/source";
 import type { CompileState, SourceSubmissionState, SourceValues } from "@/lib/source-mutation";
 
-/** The console refuses a document larger than this before sending it, so 413 is not the first
- * thing a merchant sees. The API enforces the same bound and is the one that decides. */
-const MAX_DOCUMENT_CHARACTERS = 100_000;
+/**
+ * The console refuses a document larger than this before sending it, so a size refusal names a
+ * number the merchant can act on rather than arriving as a bare 413.
+ *
+ * Bytes of the encoded request body, which is what the API bounds. Measuring characters of the
+ * editor's pretty printed text would be measuring a different thing twice over: indentation the
+ * request does not carry, and multibyte characters as one each. The API enforces the same bound
+ * and is the one that decides; this only gets there first.
+ */
+const MAX_DOCUMENT_BYTES = 128 * 1024;
 
 const REFUSALS: Record<string, string> = {
   request_too_large: "This source document is too large to submit. Shorten it and try again.",
+  request_too_deeply_nested:
+    "This document nests further than a source document ever needs to. Check its structure.",
   length_required: "The console could not send this document. Reload the page and try again.",
-  not_found: "This source snapshot is no longer available. Reload to see your current source.",
+  source_request_key_reused:
+    "This form has already stored a different source document. Reload to start a new submission, then submit your changes.",
+  source_version_conflict:
+    "Another process is publishing source snapshots for your merchant. Reload and try again.",
+  not_found: "Reload this page and try again.",
   unauthenticated: "Your session has expired. Sign in again to continue.",
-  merchant_source_snapshot_not_found:
-    "This source snapshot is no longer available. Reload to see your current source.",
 };
 
 interface Refusal {
@@ -67,30 +78,36 @@ function refusal(status: number, payload: unknown): Refusal {
   const code = typeof body.error === "string" ? body.error : null;
   const known = code === null ? undefined : REFUSALS[code];
   if (known !== undefined) return { message: known, stale };
-  if (typeof body.detail === "string") return { message: body.detail, stale };
-  if (Array.isArray(body.detail)) {
-    const named = fieldMessages(body.detail);
-    if (named.length > 0) {
-      return { message: `AgentRank refused this document. ${named.join(" ")}`, stale };
-    }
+  const named = fieldMessages((payload as { fields?: unknown }).fields);
+  if (named.length > 0) {
+    return { message: `AgentRank refused this document. ${named.join(" ")}`, stale };
   }
+  if (typeof body.detail === "string") return { message: body.detail, stale };
   return { message: `AgentRank refused this request (HTTP ${String(status)}).`, stale };
 }
 
-/** Up to three "where: what" sentences out of a schema refusal, and nothing invented. */
-function fieldMessages(detail: readonly unknown[]): string[] {
+/**
+ * Up to three "where: what" sentences out of a schema refusal, and nothing invented.
+ *
+ * The API answers an unreadable body with a `fields` list of locations and validator sentences,
+ * deliberately without the value that failed. Naming the field is the most useful thing a
+ * merchant editing a document can be told, and it is the reason this is not flattened into
+ * "invalid document".
+ */
+function fieldMessages(fields: unknown): string[] {
+  if (!Array.isArray(fields)) return [];
   const messages: string[] = [];
-  for (const item of detail.slice(0, 3)) {
+  for (const item of fields.slice(0, 3)) {
     if (typeof item !== "object" || item === null) continue;
-    const entry = item as { loc?: unknown; msg?: unknown };
-    if (typeof entry.msg !== "string") continue;
-    const where = Array.isArray(entry.loc)
-      ? entry.loc
+    const entry = item as { location?: unknown; message?: unknown };
+    if (typeof entry.message !== "string") continue;
+    const where = Array.isArray(entry.location)
+      ? entry.location
           .filter((part) => part !== "body")
           .map((part) => String(part))
           .join(".")
       : "";
-    messages.push(where === "" ? `${entry.msg}.` : `${where}: ${entry.msg}.`);
+    messages.push(where === "" ? `${entry.message}.` : `${where}: ${entry.message}.`);
   }
   return messages;
 }
@@ -128,13 +145,6 @@ export async function submitSource(
   if (text.trim() === "") {
     return failed("Enter your source document before submitting it.", values);
   }
-  if (text.length > MAX_DOCUMENT_CHARACTERS) {
-    return failed(
-      `This document is ${String(text.length)} characters. The limit is ${String(MAX_DOCUMENT_CHARACTERS)}.`,
-      values,
-    );
-  }
-
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -152,6 +162,16 @@ export async function submitSource(
     );
   }
 
+  // Measured on the body that is actually sent, which is what the API bounds.
+  const encoded = JSON.stringify({ ...parsed, request_key: requestKey });
+  const size = new TextEncoder().encode(encoded).length;
+  if (size > MAX_DOCUMENT_BYTES) {
+    return failed(
+      `This document is ${String(size)} bytes. The limit is ${String(MAX_DOCUMENT_BYTES)}.`,
+      values,
+    );
+  }
+
   // Resolved before the try. `requireConsoleApiKey` redirects to sign in by throwing the
   // framework's own control-flow error, and catching that here would turn an expired session
   // into a message about the network instead of a login page.
@@ -161,7 +181,7 @@ export async function submitSource(
     response = await fetch(`${apiBaseUrl().replace(/\/+$/, "")}/api/v1/sources`, {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ ...parsed, request_key: requestKey }),
+      body: encoded,
       cache: "no-store",
     });
   } catch {
@@ -207,6 +227,14 @@ const COMPILE_REFUSALS: Record<string, string> = {
   unauthenticated: "Your session has expired. Sign in again to run the compiler.",
 };
 
+const IDLE_FAILURE = {
+  ok: false as const,
+  runId: null,
+  runStatus: null,
+  pendingReviews: null,
+  published: false,
+};
+
 export async function startCompilerRun(
   sourceSnapshotId: string,
   _: CompileState,
@@ -222,12 +250,11 @@ export async function startCompilerRun(
     });
   } catch {
     return {
-      ok: false,
+      ...IDLE_FAILURE,
       message:
         "The console could not reach AgentRank, so whether the compiler ran is unknown. Reload this page; asking again cannot produce a second run of this snapshot.",
       stale: false,
       unknown: true,
-      runId: null,
     };
   }
 
@@ -246,7 +273,7 @@ export async function startCompilerRun(
         ? body.detail
         : `AgentRank refused this request (HTTP ${String(response.status)}).`);
     if (stale) revalidatePath(`/sources/${sourceSnapshotId}`);
-    return { ok: false, message, stale, unknown: false, runId: null };
+    return { ...IDLE_FAILURE, message, stale, unknown: false };
   }
 
   let run;
@@ -254,15 +281,27 @@ export async function startCompilerRun(
     run = decodeCompilerRun(payload);
   } catch {
     return {
-      ok: false,
+      ...IDLE_FAILURE,
       message:
         "AgentRank answered with something this console cannot read. Reload to see this snapshot.",
       stale: true,
       unknown: true,
-      runId: null,
     };
   }
   refreshed();
   revalidatePath(`/sources/${sourceSnapshotId}`);
-  return { ok: true, message: null, stale: false, unknown: false, runId: run.run_id };
+  return {
+    ok: true,
+    message: null,
+    stale: false,
+    unknown: false,
+    runId: run.run_id,
+    runStatus: run.status,
+    // What is still unanswered, counted the same way the run page counts it. A candidate the
+    // compiler accepted needs nothing, and one already reviewed is settled.
+    pendingReviews: run.candidates.filter(
+      (candidate) => candidate.state === "REVIEW_REQUIRED" && candidate.review === null,
+    ).length,
+    published: run.readiness.published_representation_id !== null,
+  };
 }

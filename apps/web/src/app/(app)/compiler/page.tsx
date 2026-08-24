@@ -42,8 +42,9 @@ export default async function CompilerPage() {
       <Section title="Newer source evidence">
         <Panel>
           <p>
-            A published representation and the reviews behind it are permanent. To change what
-            AgentRank publishes about your catalog, supply newer source evidence and compile it.
+            {data.current_representation_id === null
+              ? "A compiler run and the reviews behind it are permanent once settled. To produce new facts, supply newer source evidence and compile it."
+              : "A published representation and the reviews behind it are permanent. To change what AgentRank publishes about your catalog, supply newer source evidence and compile it."}
           </p>
           <p className={styles.reviewMeta}>
             <Link className={styles.rowLink} href="/sources">

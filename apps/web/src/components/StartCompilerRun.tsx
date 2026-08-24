@@ -43,7 +43,20 @@ export function StartCompilerRun({
     return <CompileAccepted state={state} />;
   }
   if (!compilable) {
-    return <AlreadyCompiled existingRunId={existingRunId} />;
+    // The refusal comes first. A command that failed while the snapshot was compiled elsewhere
+    // would otherwise have its message dropped by this branch, leaving a merchant who pressed a
+    // button with a page that simply says something else.
+    return (
+      <>
+        {state.message === null ? null : (
+          <p className={styles.mutationAlert} role="alert">
+            {state.message}
+            {state.stale && !state.unknown ? " The state shown here is current." : ""}
+          </p>
+        )}
+        <AlreadyCompiled existingRunId={existingRunId} />
+      </>
+    );
   }
   return (
     <CompileConfirmation
@@ -84,22 +97,51 @@ export function AlreadyCompiled({ existingRunId }: { existingRunId: string | nul
   );
 }
 
+/**
+ * What a merchant is told when the command was accepted.
+ *
+ * Four different things happened and they read as four different sentences. A run that could not
+ * read its snapshot is answered exactly like one that could, so "the facts it proposed are
+ * waiting for your review" would be false for it; so would it be for a document clean enough to
+ * need no decisions, and for a snapshot already compiled and published. The API said which one
+ * this is and this says it back.
+ */
 export function CompileAccepted({ state }: { state: CompileState }) {
   return (
     <div role="status">
-      <p>Compiler run finished. The facts it proposed are waiting for your review.</p>
+      <p>{outcome(state)}</p>
       {state.runId === null ? null : (
         <p className={styles.reviewMeta}>
           <Link
             className={styles.rowLink}
             href={`/compiler/runs/${encodeURIComponent(state.runId)}`}
           >
-            Review this compiler run
+            {state.pendingReviews === null || state.pendingReviews === 0
+              ? "Open this compiler run"
+              : "Review this compiler run"}
           </Link>
         </p>
       )}
     </div>
   );
+}
+
+function outcome(state: CompileState): string {
+  if (state.runStatus !== null && state.runStatus !== "COMPLETED") {
+    return "The compiler could not read this snapshot. The run says what stopped it.";
+  }
+  if (state.published) {
+    return "This snapshot was already compiled and published. Its reviewed facts cannot change.";
+  }
+  const pending = state.pendingReviews;
+  if (pending === null) {
+    return "Compiler run finished.";
+  }
+  if (pending === 0) {
+    return "Compiler run finished. Nothing it proposed needs a decision from you.";
+  }
+  const noun = pending === 1 ? "fact needs" : "facts need";
+  return `Compiler run finished. ${String(pending)} ${noun} your decision.`;
 }
 
 export function CompileConfirmation({

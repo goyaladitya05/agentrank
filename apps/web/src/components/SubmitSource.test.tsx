@@ -39,7 +39,8 @@ describe("<SubmitSourceForm>", () => {
 
   it("says what submitting does and does not do, and promises no improvement", () => {
     const html = form().toLowerCase();
-    expect(html).toContain("your existing snapshots do not change");
+    expect(html).toContain("your existing snapshots never change");
+    expect(html).toContain("unless this document is identical to your current");
     expect(html).toContain("nothing is compiled here");
     expect(html).toContain("does not change any price, stock level or order");
     expect(html).not.toContain("improve");

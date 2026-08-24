@@ -83,17 +83,26 @@ test("a merchant supplies newer source evidence, compiles it and publishes a sec
   const editor = page.getByRole("textbox", { name: "Source document" });
   const current: unknown = JSON.parse(await editor.inputValue());
   expect(current).toHaveProperty("products");
-  const document = current as { products: { description: string }[] };
+  const document = current as { products: { description: string; external_id?: string }[] };
   const first = document.products[0];
   expect(first).toBeDefined();
   if (first === undefined) return;
   first.description = CONTRADICTION;
 
-  // A document that is not a document is refused in place, and what was typed survives.
+  // A document that is not a document is refused before it is sent, in place.
   await editor.fill("{ not json");
   await page.getByRole("button", { name: "Submit source document" }).click();
   await expect(page.locator("#source-document-error")).toContainText("not valid JSON");
   await expect(editor).toHaveValue("{ not json");
+
+  // And one the API refuses is refused the same way, with the field named and the document
+  // still in the editor. This is the round trip: the message can only have come from the API.
+  const rejected = JSON.parse(JSON.stringify(document)) as typeof document;
+  (rejected.products[0] as { external_id: string }).external_id = "VE.CHG.100";
+  await editor.fill(JSON.stringify(rejected, null, 2));
+  await page.getByRole("button", { name: "Submit source document" }).click();
+  await expect(page.locator("#source-document-error")).toContainText("external_id");
+  await expect(editor).toHaveValue(JSON.stringify(rejected, null, 2));
 
   await editor.fill(JSON.stringify(document, null, 2));
   await page.getByRole("button", { name: "Submit source document" }).click();
@@ -115,7 +124,9 @@ test("a merchant supplies newer source evidence, compiles it and publishes a sec
   await expect(compile).toContainText("This publishes nothing and starts no benchmark.");
   await expect(compile).toContainText("No price, stock level or order changes.");
   await compile.getByRole("button", { name: "Run the compiler" }).click();
-  await expect(page.getByText("waiting for your review")).toBeVisible();
+  // The acknowledgement counts what is actually unanswered rather than asserting that something
+  // is. A run that could not read its snapshot is answered the same way and says so instead.
+  await expect(page.getByText("Compiler run finished. 2 facts need your decision.")).toBeVisible();
 
   // And it ends in the review workflow that already existed.
   await page.getByRole("link", { name: "Review this compiler run" }).click();
@@ -147,8 +158,11 @@ test("a merchant supplies newer source evidence, compiles it and publishes a sec
   expect(identity).toBeDefined();
   expect(identity).not.toBe(publishedBefore);
 
-  // Measuring it again is still a command nobody here ran.
+  // Measuring it again is still a command nobody here ran, and the launch history proves it
+  // rather than the sentence beside the link.
   await expect(publication).toContainText("request a re-evaluation");
+  await nav(page).getByRole("link", { name: "Re-evaluation" }).click();
+  await expect(page.getByText("No re-evaluations yet")).toBeVisible();
 
   // The first representation and the run behind it are exactly what they were.
   await nav(page).getByRole("link", { name: "Source" }).click();

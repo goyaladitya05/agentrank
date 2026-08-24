@@ -34,6 +34,18 @@ describe("<StartCompilerRun>", () => {
     expect(html).toContain("Run the compiler");
   });
 
+  it("keeps a refusal visible even when the snapshot was compiled elsewhere meanwhile", () => {
+    const html = renderToStaticMarkup(
+      <StartCompilerRun
+        sourceLabel="merchant-source@3"
+        compilable={false}
+        existingRunId="01a03000-0000-7000-8000-00000000000b"
+        action={async () => IDLE_COMPILE}
+      />,
+    );
+    expect(html).toContain("already been read by the compiler");
+  });
+
   it("offers the run that exists rather than a second reading of one snapshot", () => {
     const html = renderToStaticMarkup(
       <StartCompilerRun
@@ -93,14 +105,49 @@ describe("<CompileConfirmation>", () => {
 });
 
 describe("<CompileAccepted>", () => {
-  it("takes the merchant into the review workflow rather than claiming an outcome", () => {
-    const html = renderToStaticMarkup(
+  function accepted(state: Partial<CompileState>): string {
+    return renderToStaticMarkup(
       <CompileAccepted
-        state={{ ...IDLE_COMPILE, ok: true, runId: "01a03000-0000-7000-8000-00000000000a" }}
+        state={{
+          ...IDLE_COMPILE,
+          ok: true,
+          runId: "01a03000-0000-7000-8000-00000000000a",
+          runStatus: "COMPLETED",
+          pendingReviews: 0,
+          ...state,
+        }}
       />,
     );
-    expect(html).toContain("waiting for your review");
+  }
+
+  it("takes the merchant into the review workflow when there is something to review", () => {
+    const html = accepted({ pendingReviews: 2 });
+    expect(html).toContain("2 facts need your decision");
+    expect(html).toContain("Review this compiler run");
     expect(html).toContain("/compiler/runs/01a03000-0000-7000-8000-00000000000a");
     expect(html).toContain('role="status"');
+  });
+
+  it("counts one fact in the singular", () => {
+    expect(accepted({ pendingReviews: 1 })).toContain("1 fact needs your decision");
+  });
+
+  it("does not claim facts are waiting when nothing needs a decision", () => {
+    const html = accepted({ pendingReviews: 0 });
+    expect(html).toContain("Nothing it proposed needs a decision from you");
+    expect(html).not.toContain("need your decision");
+    expect(html).toContain("Open this compiler run");
+  });
+
+  it("says a run that could not read its snapshot did not read it", () => {
+    const html = accepted({ runStatus: "FAILED", pendingReviews: 0 });
+    expect(html).toContain("could not read this snapshot");
+    expect(html).not.toContain("Compiler run finished");
+  });
+
+  it("says an already published run cannot change", () => {
+    const html = accepted({ published: true });
+    expect(html).toContain("already compiled and published");
+    expect(html).toContain("cannot change");
   });
 });

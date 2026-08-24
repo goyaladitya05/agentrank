@@ -98,6 +98,10 @@ export function SubmitSourceForm({
   pending: boolean;
 }) {
   const value = state.values?.document ?? initialDocument;
+  // The error element renders only when there is a message and nothing is in flight, so the
+  // reference is set on exactly the same condition. Pointing at an element that is not there is
+  // a dangling reference for the length of every resubmission.
+  const showsError = state.message !== null && !pending;
   return (
     <form action={action} aria-label="Supply newer source evidence">
       <p>
@@ -106,7 +110,10 @@ export function SubmitSourceForm({
           : "You have no source snapshot yet. Enter your source document to create the first one."}
       </p>
       <ul className={styles.launchTerms}>
-        <li>Submitting stores an immutable snapshot. Your existing snapshots do not change.</li>
+        <li>
+          Submitting stores an immutable snapshot, unless this document is identical to your current
+          one, in which case nothing is written. Your existing snapshots never change.
+        </li>
         <li>Nothing is compiled here. Running the compiler is a separate command.</li>
         <li>
           This does not change any price, stock level or order. Your commerce runtime remains the
@@ -124,7 +131,7 @@ export function SubmitSourceForm({
         spellCheck={false}
         required
         defaultValue={value}
-        aria-describedby={state.message === null ? undefined : "source-document-error"}
+        aria-describedby={showsError ? "source-document-error" : undefined}
       />
       <div className={styles.buttonRow}>
         <button className={styles.button} type="submit" disabled={pending}>
@@ -136,7 +143,7 @@ export function SubmitSourceForm({
           Storing your source document
         </p>
       ) : null}
-      {state.message !== null && !pending ? (
+      {showsError ? (
         <p className={styles.mutationAlert} role="alert" id="source-document-error">
           {state.message}
           {state.stale && !state.unknown ? " The state shown here is current." : ""}
