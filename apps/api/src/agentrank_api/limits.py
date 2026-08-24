@@ -142,7 +142,13 @@ def _declared_length(scope: Scope) -> int | None:
 
 
 async def _drain(receive: Receive, max_bytes: int) -> bytes | None:
-    """Read the whole body, or None if it turns out to be larger than it declared."""
+    """Read the body, or None if it turns out to be larger than it declared.
+
+    A client that disconnects mid-body ends the read and what it sent so far is handed on, so the
+    application sees a short body and refuses it as one rather than raising a disconnect. Nothing
+    is at stake: a truncation can only make a body smaller and shallower, and the refusal goes to
+    a client that is no longer there.
+    """
     chunks: list[bytes] = []
     total = 0
     while True:

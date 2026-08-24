@@ -170,12 +170,16 @@ class MerchantSourceIntakeService:
                 merchant_slug=merchant_slug,
             )
             if current is not None and _evidence(current.payload) == submitted:
-                return await self._record(merchant_id, request_key, current, created=False)
+                return await self._record(
+                    merchant_id, request_key, current, submitted, created=False
+                )
             try:
                 snapshot = await MerchantSourceRepository(self._session).create(
                     merchant, definition
                 )
-                return await self._record(merchant_id, request_key, snapshot, created=True)
+                return await self._record(
+                    merchant_id, request_key, snapshot, submitted, created=True
+                )
             except IntegrityError:
                 # A version this command had already allocated. Unreachable between two callers
                 # holding the lock, and reachable from the operator command line, which publishes
@@ -205,8 +209,15 @@ class MerchantSourceIntakeService:
         version as current, and the next submission would compare its evidence against the wrong
         snapshot and write a duplicate.
 
-        The identifier is `uuid7`, generated in Python at insert. It is time ordered by when the
-        row was actually written, which is the order this question is asking about.
+        The identifier is `uuid7`, generated in Python at insert, so it is ordered by when the
+        row was actually written rather than by when its transaction began.
+
+        Narrowed rather than eliminated, and worth stating precisely. CPython's `uuid7` is
+        monotonic within one process; two processes generating one in the same millisecond share
+        the timestamp and get independent random counters, so their order is a coin flip. That is
+        reachable from a second API worker or from the operator command line. It replaces "wrong
+        whenever two transactions overlap", which the advisory lock guarantees to happen, with
+        "wrong only when two inserts land in the same millisecond from different processes".
         """
         return (
             await self._session.execute(
@@ -321,6 +332,7 @@ class MerchantSourceIntakeService:
         merchant_id: uuid.UUID,
         request_key: str,
         snapshot: MerchantSourceSnapshot,
+        submitted: str,
         *,
         created: bool,
     ) -> SubmissionOutcome:
@@ -343,7 +355,9 @@ class MerchantSourceIntakeService:
             await self._session.rollback()
             duplicate = await self._by_request_key(merchant_id, request_key)
             if duplicate is not None:
-                return duplicate
+                # Checked here too, so there is no path on which a reused key answers with
+                # another command's outcome. Unreachable while the lock is held, and one line.
+                return _same_request(duplicate, submitted, request_key)
             raise
         return SubmissionOutcome(submission=submission, snapshot=snapshot)
 
