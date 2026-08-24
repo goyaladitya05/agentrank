@@ -348,3 +348,46 @@ async def test_competing_publications_are_idempotent_in_postgresql(
 
     first, second = await asyncio.gather(publish(), publish())
     assert first == second
+
+
+async def test_the_overview_counts_the_facts_a_merchant_still_has_to_answer_for(
+    settings: Settings,
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+    issue_credential: CredentialIssuer,
+) -> None:
+    """The console's call to action is a count of real pending work, not of published facts.
+
+    A published representation cannot contain a review-required fact, so reading the artifact
+    always answered zero and the overview never asked a merchant to do anything.
+    """
+    merchant, run, candidates = await reviewable_run(session, slug="overview-count-shop")
+    token = await issue_credential(merchant.id)
+    other = await MerchantRepository(session).create(slug="overview-other-shop", name="Other")
+    await session.commit()
+    foreign = await issue_credential(other.id)
+    http = client(settings, factory)
+
+    def pending_count(credential: str) -> int:
+        response = http.get("/api/v1/insights/overview", headers=bearer(credential))
+        assert response.status_code == 200
+        return int(response.json()["representation_state"]["review_required_facts"])
+
+    assert pending_count(token) == 2
+    assert pending_count(foreign) == 0
+
+    watts = pending(candidates)
+    http.post(
+        f"/api/v1/compiler/candidates/{watts[0].id}/correct", headers=bearer(token), json=CORRECTION
+    )
+    assert pending_count(token) == 1
+
+    http.post(
+        f"/api/v1/compiler/candidates/{watts[1].id}/correct", headers=bearer(token), json=CORRECTION
+    )
+    assert pending_count(token) == 0
+    assert (
+        http.post(f"/api/v1/compiler/runs/{run.id}/publish", headers=bearer(token)).status_code
+        == 200
+    )
+    assert pending_count(token) == 0

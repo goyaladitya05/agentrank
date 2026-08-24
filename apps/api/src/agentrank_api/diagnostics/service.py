@@ -46,6 +46,7 @@ from agentrank_api.benchmark.models import (
 )
 from agentrank_api.benchmark.runner import BenchmarkRunService, outcomes_of
 from agentrank_api.commerce.models import Product, Variant
+from agentrank_api.compiler.models import CandidateState, CompilerCandidate, CompilerReview
 from agentrank_api.diagnostics.codes import engine_identity
 from agentrank_api.diagnostics.experiment import (
     ARM_COMPILED,
@@ -71,7 +72,7 @@ from agentrank_api.diagnostics.traces import (
 )
 from agentrank_api.errors import NotFoundError
 from agentrank_api.mandates.intent import AllowedCategory, RequiredAttribute
-from agentrank_api.representation.definitions import FactConfidence, RepresentationProducer
+from agentrank_api.representation.definitions import RepresentationProducer
 from agentrank_api.representation.models import CommerceRepresentation, MerchantSourceSnapshot
 
 RUN_RESOURCE = "benchmark_run"
@@ -904,25 +905,40 @@ class DiagnosticsService:
                 .limit(1)
             )
         ).scalar_one_or_none()
-        review_required = 0
-        if compiled is not None:
-            for product in compiled.payload.get("products", []):
-                for variant in product.get("variants", []):
-                    for attribute in variant.get("attributes", []):
-                        fact = attribute.get("fact", {})
-                        confidence = fact.get("confidence")
-                        review_state = fact.get("review_state")
-                        if (
-                            confidence == FactConfidence.REVIEW_REQUIRED.value
-                            or review_state == "REVIEW_REQUIRED"
-                        ):
-                            review_required += 1
         return RepresentationState(
             source_snapshot_id=None if snapshot is None else snapshot.id,
             source_snapshot_label=None if snapshot is None else snapshot.label,
             compiled_representation_id=None if compiled is None else compiled.id,
             compiled_representation_label=None if compiled is None else compiled.label,
-            review_required_facts=review_required,
+            review_required_facts=await self._pending_compiler_facts(merchant_id),
+        )
+
+    async def _pending_compiler_facts(self, merchant_id: uuid.UUID) -> int:
+        """How many compiler facts this merchant still has to answer for.
+
+        Counted from the compiler's own candidates rather than from the published
+        representation, because a published representation cannot contain a review-required fact:
+        publication refuses while one is unresolved. Reading the artifact therefore always
+        answered zero, which is a true statement about the artifact and a useless one for a
+        merchant deciding whether there is work to do.
+
+        The predicate is the compiler review queue's own: a candidate the compiler marked
+        review-required and nobody has decided yet. It is not a link between a diagnostic and a
+        candidate, and nothing here reads or writes benchmark evidence.
+        """
+        return int(
+            (
+                await self._session.execute(
+                    select(func.count())
+                    .select_from(CompilerCandidate)
+                    .outerjoin(CompilerReview, CompilerReview.candidate_id == CompilerCandidate.id)
+                    .where(
+                        CompilerCandidate.merchant_id == merchant_id,
+                        CompilerCandidate.state == CandidateState.REVIEW_REQUIRED,
+                        CompilerReview.id.is_(None),
+                    )
+                )
+            ).scalar_one()
         )
 
 
