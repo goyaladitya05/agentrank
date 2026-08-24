@@ -49,7 +49,12 @@ test-frontend: ## Run frontend tests
 test: test-backend test-frontend test-browser ## Run all tests
 
 test-browser: migrate build-frontend ## Run critical browser workflows against local services
-	@e2e_key="$$($(UV) run python scripts/seed_compiler_e2e.py)"; AGENTRANK_E2E_KEY="$$e2e_key" $(PNPM) $(WEB) test:e2e
+	@compiler_key="$$($(UV) run python scripts/seed_compiler_e2e.py)"; \
+		reevaluation="$$($(UV) run python scripts/seed_reevaluation_e2e.py)"; \
+		AGENTRANK_E2E_KEY="$$compiler_key" \
+		AGENTRANK_E2E_REEVALUATION_KEY="$$(printf '%s\n' "$$reevaluation" | sed -n 1p)" \
+		AGENTRANK_E2E_REEVALUATION_WORLD="$$(printf '%s\n' "$$reevaluation" | sed -n 2p)" \
+		$(PNPM) $(WEB) test:e2e
 
 build-frontend: ## Build the console the way production would
 	$(PNPM) $(WEB) build

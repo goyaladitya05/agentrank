@@ -21,6 +21,10 @@ export default defineConfig({
     {
       command: "uv run uvicorn agentrank_api.main:create_app --factory --port 8001",
       cwd: "../..",
+      // Provider credentials are emptied rather than inherited. A developer machine may have a
+      // real key in `.env`, and a browser test must never spend one; with none configured the
+      // launch is admitted for the deterministic reference buyer, which the console says.
+      env: { OPENAI_API_KEY: "", GEMINI_API_KEY: "" },
       url: "http://127.0.0.1:8001/health",
       reuseExistingServer: false,
     },

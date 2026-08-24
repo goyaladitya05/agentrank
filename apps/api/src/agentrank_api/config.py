@@ -137,17 +137,26 @@ class Settings(BaseSettings):
 
     @property
     def openai(self) -> OpenAICredentials | None:
-        """Runtime provider credentials, or None when live LLM runs are not configured."""
-        return (
-            None if self.openai_api_key is None else OpenAICredentials(api_key=self.openai_api_key)
-        )
+        """Runtime provider credentials, or None when live LLM runs are not configured.
+
+        A blank value counts as absent. `Settings` reads a `.env` file, so the only way a
+        deployment that has a key on disk can say it does not want one is to set the variable
+        empty in the environment, and a credential of zero length is not a credential in any
+        case: it would be carried all the way to a provider that then refuses it.
+        """
+        if self.openai_api_key is None or not self.openai_api_key.get_secret_value().strip():
+            return None
+        return OpenAICredentials(api_key=self.openai_api_key)
 
     @property
     def gemini(self) -> GeminiCredentials | None:
-        """Runtime Gemini credentials, or None when live Gemini runs are not configured."""
-        return (
-            None if self.gemini_api_key is None else GeminiCredentials(api_key=self.gemini_api_key)
-        )
+        """Runtime Gemini credentials, or None when live Gemini runs are not configured.
+
+        Blank counts as absent, for the same reasons as above.
+        """
+        if self.gemini_api_key is None or not self.gemini_api_key.get_secret_value().strip():
+            return None
+        return GeminiCredentials(api_key=self.gemini_api_key)
 
     @property
     def database_url(self) -> URL:

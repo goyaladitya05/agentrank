@@ -121,3 +121,32 @@ def test_the_base_url_loses_a_trailing_slash() -> None:
 
     assert credentials is not None
     assert credentials.api_base_url == "https://api.razorpay.com/v1"
+
+
+def test_a_model_provider_credential_is_optional() -> None:
+    """No provider configured is an ordinary state: nothing in the API needs one to answer."""
+    configured = settings_with()
+    assert configured.openai is None
+    assert configured.gemini is None
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_a_blank_model_provider_credential_counts_as_absent(blank: str) -> None:
+    """A key of zero length is not a key, and a deployment that sets one empty means it.
+
+    `Settings` reads a `.env` file, so emptying the variable in the environment is the only way
+    a machine that has a key on disk can say it does not want one used. Reading a blank value as
+    configured would send a benchmark to a provider that then refuses it, which is a real run
+    spent on nothing.
+    """
+    configured = settings_with(OPENAI_API_KEY=blank, GEMINI_API_KEY=blank)
+    assert configured.openai is None
+    assert configured.gemini is None
+
+
+def test_a_real_model_provider_credential_is_carried_as_a_secret() -> None:
+    configured = settings_with(OPENAI_API_KEY="not-a-real-key")
+    credentials = configured.openai
+    assert credentials is not None
+    assert credentials.api_key.get_secret_value() == "not-a-real-key"
+    assert "not-a-real-key" not in repr(configured)
