@@ -10,12 +10,16 @@ credential from the merchant's browser left to consult, so the merchant, the rep
 suite, the world and the buyer configuration all come from what admission froze. Nothing here
 takes an identity from a caller.
 
-The frozen buyer configuration is verified rather than adapted. `AgentConfiguration.from_payload`
-refuses a configuration this build cannot reproduce exactly, so a launch admitted by one build
-and executed by another fails by name instead of quietly running a different buyer. A provider
-credential that is not present fails the same way. Neither is substituted, because a run whose
-identity does not match what the merchant was shown is a measurement of something nobody asked
-for.
+Every frozen value is verified rather than adapted. `AgentConfiguration.from_payload` refuses a
+configuration this build cannot reproduce exactly, its digest is checked against the frozen one,
+the executor kind this build would record is compared with the frozen kind, and a provider
+credential that is not present fails the launch by name. None of them is substituted, because a
+run whose identity does not match what the merchant was shown is a measurement of something
+nobody asked for.
+
+A launch is claimed only for the world this process holds. A settled launch is terminal and
+cannot be deleted, so a worker that claimed one it could only refuse would destroy a merchant's
+request that a differently configured worker could have served.
 
 Execution reuses the same isolated boundary the operator command line uses: a loopback commerce
 endpoint, a short lived merchant credential bound to this run, and one worker process per

@@ -173,4 +173,10 @@ describe("<OverviewContent> product behavior", () => {
     );
     expect(html).toContain("no denominator");
   });
+
+  it("points a published representation at the command that measures it", () => {
+    const html = render(overviewWith(() => undefined));
+    expect(html).toContain("Publishing a representation never runs a benchmark");
+    expect(html).toContain('href="/re-evaluations"');
+  });
 });

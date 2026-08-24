@@ -324,6 +324,15 @@ function RepresentationPanel({ state }: { state: RepresentationState }) {
           .
         </p>
       ) : null}
+      {state.compiled_representation_id === null ? null : (
+        <p className={styles.finePrintTight}>
+          Publishing a representation never runs a benchmark.{" "}
+          <Link className={styles.textLink} href="/re-evaluations">
+            Request a re-evaluation
+          </Link>{" "}
+          to measure this one.
+        </p>
+      )}
       <TechnicalDetails summary="Artifact identifiers">
         <IdRow label="Source snapshot id" value={state.source_snapshot_id} />
         <IdRow label="Compiled representation id" value={state.compiled_representation_id} />
