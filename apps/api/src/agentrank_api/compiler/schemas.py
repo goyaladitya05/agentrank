@@ -101,3 +101,18 @@ class CorrectCandidateRequest(BaseModel):
     value: str | int | bool
     provenance_field: str = Field(min_length=1, max_length=256)
     provenance_excerpt: str | None = Field(default=None, max_length=500)
+
+
+class StartCompilerRunRequest(BaseModel):
+    """The whole of what a browser may say about starting a compiler run.
+
+    One snapshot identifier, checked against the merchant its credential authenticated. There is
+    no configuration field, because this build has exactly one compiler configuration and a
+    browser that could name one could ask for a reading nobody can reproduce. There is no request
+    key either: a run is unique on its source snapshot and its configuration digest already, so a
+    repeat resolves to the run that exists rather than to a second reading of one document.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_snapshot_id: uuid.UUID

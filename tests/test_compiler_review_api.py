@@ -433,4 +433,4 @@ async def test_the_compiler_namespace_is_authenticated_and_echoes_no_credential(
 
     document = http.get("/openapi.json").json()
     compiler_paths = [path for path in document["paths"] if path.startswith("/api/v1/compiler")]
-    assert len(compiler_paths) == 6
+    assert len(compiler_paths) == 7

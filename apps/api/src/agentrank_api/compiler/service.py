@@ -63,13 +63,19 @@ class MerchantCompilerService:
     ) -> CompilerRun:
         configuration = CompilerConfiguration() if configuration is None else configuration
         source = await self._source(merchant_id, source_snapshot_id)
-        existing = await self._run_for_input(source.id, configuration.configuration_digest)
+        digest = configuration.configuration_digest
+        # Read out as plain values before anything can roll back. A rollback expires every loaded
+        # instance, and the recovery below rolls back on purpose: reading `source.id` afterwards
+        # would be a lazy load, which is database IO in a place with no greenlet to run it. The
+        # snapshot is immutable, so a copy of it taken now is the same snapshot later.
+        source_id, content_hash, payload = source.id, source.content_hash, dict(source.payload)
+        existing = await self._run_for_input(source_id, digest)
         if existing is not None:
             return existing
         run = CompilerRun(
             merchant_id=merchant_id,
-            source_snapshot_id=source.id,
-            configuration_digest=configuration.configuration_digest,
+            source_snapshot_id=source_id,
+            configuration_digest=digest,
             configuration=configuration.payload(),
             status=CompilerRunStatus.PENDING,
         )
@@ -77,16 +83,19 @@ class MerchantCompilerService:
         try:
             await self._session.commit()
         except IntegrityError:
+            # Two launches of one snapshot under one configuration. The unique key is what makes
+            # them one run rather than two readings of one document, and the loser answers with
+            # the run the winner wrote rather than with an error nothing went wrong for.
             await self._session.rollback()
-            existing = await self._run_for_input(source.id, configuration.configuration_digest)
+            existing = await self._run_for_input(source_id, digest)
             if existing is not None:
                 return existing
             raise
         run.status = CompilerRunStatus.RUNNING
         await self._session.commit()
         try:
-            definition = parse_source(source.payload)
-            if definition.content_hash != source.content_hash:
+            definition = parse_source(payload)
+            if definition.content_hash != content_hash:
                 raise ValueError("persisted source content hash does not match its payload")
             candidates = extract(definition)
             self._validate_candidates(candidates, definition)
