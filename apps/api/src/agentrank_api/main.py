@@ -24,6 +24,7 @@ from agentrank_api.razorpay.wiring import build_razorpay_client
 from agentrank_api.routes import (
     checkouts,
     commerce,
+    compiler,
     constraints,
     insights,
     mandates,
@@ -176,4 +177,5 @@ def create_app(
     app.include_router(payments.router)
     app.include_router(razorpay.router)
     app.include_router(insights.router)
+    app.include_router(compiler.router)
     return app

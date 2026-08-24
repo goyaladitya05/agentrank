@@ -140,12 +140,17 @@ class MerchantCompilerService:
         correction: CandidateProposal | None = None,
         reviewer: str = "SYSTEM",
     ) -> CompilerReview:
+        # A candidate admits one immutable decision.  Locking the candidate makes two browser
+        # tabs observe one ordering: a retry of the winning command returns the same review,
+        # while a different stale command is refused without replacing historical evidence.
         candidate = (
             await self._session.execute(
-                select(CompilerCandidate).where(
+                select(CompilerCandidate)
+                .where(
                     CompilerCandidate.id == candidate_id,
                     CompilerCandidate.merchant_id == merchant_id,
                 )
+                .with_for_update()
             )
         ).scalar_one_or_none()
         if candidate is None:
@@ -195,7 +200,17 @@ class MerchantCompilerService:
         return row
 
     async def publish(self, merchant_id: uuid.UUID, run_id: uuid.UUID) -> CommerceRepresentation:
-        run = await self.get_run(merchant_id, run_id)
+        # Publishing is also a one-way transition.  Serializing on the run prevents two
+        # concurrent requests from producing equivalent representations or losing the run link.
+        run = (
+            await self._session.execute(
+                select(CompilerRun)
+                .where(CompilerRun.id == run_id, CompilerRun.merchant_id == merchant_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if run is None:
+            raise NotFoundError("compiler_run", str(run_id))
         if run.status is not CompilerRunStatus.COMPLETED:
             raise ConflictError("compiler_run_not_completed", str(run_id))
         if run.published_representation_id is not None:
