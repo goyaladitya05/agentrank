@@ -83,9 +83,14 @@ class CompilerReference:
 
     Not a suggestion and not a match. The compiler run is reached by lineage, from the
     representation the benchmark run pinned to the compiler run that produced it, and the
-    candidate is reached inside that run by its own `(run_id, target)` unique key. A reference
-    exists when both hold and does not exist otherwise, so the absence of one means "this
-    compiler run has no proposal at that address" rather than "we did not look hard enough".
+    candidate is reached inside that run by its own `(run_id, target)` unique key.
+
+    An absent reference means exactly one thing: this compiler run holds no proposal at that
+    exact address. It does not mean the compiler proposed nothing about that attribute. The
+    address is composed from the requirement name the mission stated, while the evaluator that
+    decided the attribute was missing compares names through a normalizing lookup, so a mission
+    requiring `Wattage` against a proposal written `wattage` produces no reference. That gap is
+    a missed link and never a wrong one, which is the direction to fail in.
     """
 
     compiler_run_id: uuid.UUID

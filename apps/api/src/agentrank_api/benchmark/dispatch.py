@@ -46,14 +46,13 @@ from agentrank_api.benchmark.isolation import (
     provider_worker_environment,
 )
 from agentrank_api.benchmark.launch import ReevaluationWorkerService
-from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus
 from agentrank_api.benchmark.llm import (
     GEMINI_PROVIDER,
     OPENAI_PROVIDER,
     AgentConfiguration,
     executor_kind,
 )
-from agentrank_api.benchmark.models import BenchmarkRun
+from agentrank_api.benchmark.models import BenchmarkEnvironment, BenchmarkRun
 from agentrank_api.benchmark.reevaluation import BenchmarkReevaluation, BuyerProfile
 from agentrank_api.benchmark.repository import BenchmarkSuiteRepository
 from agentrank_api.benchmark.runner import BenchmarkRunService
@@ -74,6 +73,10 @@ FAILURE_WORLD_MISMATCH = "benchmark_world_mismatch"
 FAILURE_SUITE_UNAVAILABLE = "benchmark_suite_unavailable"
 FAILURE_BUYER_CONFIGURATION = "buyer_configuration_invalid"
 FAILURE_REPRESENTATION_MISSING = "representation_unavailable"
+
+# The one refusal that means this launch has executed nothing and may still execute later. The
+# run service raises it when another run owns this merchant's world.
+RUN_ALREADY_ACTIVE = "run_already_active"
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,23 +111,32 @@ async def execute_next_reevaluation(
 
     None when nothing is queued, which is the ordinary answer and not an error.
 
-    Two workers cannot both execute one launch. The run table already allows at most one
-    executing run per merchant, and preparing a world a run owns is refused, so the second
-    worker is stopped before it writes anything. `bind_run` then refuses a launch that is no
-    longer queued, so a stale claim cannot attach a second run to it either.
+    The claim is scoped to the world this process holds, so a worker that could only refuse a
+    launch never takes it away from one that could execute it. The claim's row lock is released
+    before anything long starts: the loopback server takes as long as an application boot, and
+    holding a row lock across one would be an idle transaction bounded by a server start rather
+    than by a query.
+
+    Two workers therefore cannot both execute one launch, and neither can strand the other. The
+    run table allows at most one executing run per merchant and preparing a world a run owns is
+    refused, so the second worker is stopped before it writes anything. If a second worker does
+    reach `bind_run` first, the loser aborts the run it just created rather than leaving one
+    executing against a merchant with no launch naming it.
     """
     merchant = await MerchantRepository(session).get_by_slug(world.merchant_slug)
     if merchant is None:
         raise NotFoundError("merchant", world.merchant_slug)
+    environment = await BenchmarkEnvironmentService(session).require_registered(world.fixture)
     worker = ReevaluationWorkerService(session)
-    launch = await worker.claim_next(merchant.id)
+    launch = await worker.claim_next(merchant.id, environment_id=environment.id)
     if launch is None:
         await session.rollback()
         return None
     reevaluation_id = launch.id
+    merchant_id = launch.merchant_id
 
     try:
-        plan = await _dispatch_plan(session, launch, world=world, settings=settings)
+        plan = await _dispatch_plan(session, launch, environment=environment, settings=settings)
     except ReevaluationDispatchError as refused:
         await worker.settle_failed(reevaluation_id, failure_code=refused.failure_code)
         log.warning(
@@ -139,19 +151,39 @@ async def execute_next_reevaluation(
             detail=refused.detail,
         )
 
+    # The claim has done its work: this worker knows which launch it is executing and has
+    # verified it can. Releasing the lock here is what keeps the server start below out of a
+    # transaction, and it is safe because nothing this worker does next depends on the row
+    # staying locked. `bind_run` re-locks it and refuses a launch that moved.
+    #
+    # Everything the execution needs is a plain value by now. The rollback expires the loaded
+    # row, and reading an attribute off it afterwards would be a lazy load in the middle of an
+    # orchestration that has no transaction open.
+    await session.rollback()
+
     try:
         finished = await _execute(
             session,
             sessions,
-            launch=launch,
+            reevaluation_id=reevaluation_id,
+            merchant_id=merchant_id,
             plan=plan,
             world=world,
             provider=provider,
             settings=settings,
         )
     except ConflictError as refused:
-        # A world somebody else's run already owns. The launch has executed nothing, so it stays
-        # queued and honest rather than being failed for a condition that will pass.
+        # Exactly one conflict is an ordinary answer: a world somebody else's run already owns.
+        # The launch has executed nothing then, so it stays queued and honest rather than being
+        # failed for a condition that will pass.
+        #
+        # Every other conflict is deliberately not caught. A mission whose payment cannot be
+        # accounted for raises one from inside execution, and reporting that as "still queued"
+        # would tell an operator nothing had started while a run was executing and money may
+        # have moved. Those propagate, the command exits non zero with the evidence, and the run
+        # and its launch are closed the way a stopped run is always closed.
+        if refused.reason != RUN_ALREADY_ACTIVE:
+            raise
         await session.rollback()
         return DispatchOutcome(
             reevaluation_id=reevaluation_id,
@@ -161,23 +193,15 @@ async def execute_next_reevaluation(
             detail=refused.detail,
         )
 
-    if finished.status is BenchmarkRunStatus.COMPLETED:
-        await worker.settle_completed(reevaluation_id)
-        return DispatchOutcome(
-            reevaluation_id=reevaluation_id,
-            run_id=finished.id,
-            status="COMPLETED",
-            failure_code=None,
-        )
-    # An execution that stopped leaves the run exactly where it stopped. Nothing is replayed and
-    # nothing is tidied away: a mission that may have paid for something is an operator's to
-    # close, and closing it settles this launch.
+    # `execute_started_suite` either completes the run or raises. There is no third answer to
+    # report here, and inventing a branch for one would be describing a state this path cannot
+    # produce.
+    await worker.settle_completed(reevaluation_id)
     return DispatchOutcome(
         reevaluation_id=reevaluation_id,
         run_id=finished.id,
-        status="EXECUTING",
+        status="COMPLETED",
         failure_code=None,
-        detail="the run did not complete and is waiting on an operator",
     )
 
 
@@ -196,15 +220,18 @@ async def _dispatch_plan(
     session: AsyncSession,
     launch: BenchmarkReevaluation,
     *,
-    world: AuthoredWorld,
+    environment: BenchmarkEnvironment,
     settings: Settings,
 ) -> _Plan:
-    """Verify that this process can execute exactly what was admitted, or refuse by name."""
-    environment = await BenchmarkEnvironmentService(session).require_registered(world.fixture)
+    """Verify that this process can execute exactly what was admitted, or refuse by name.
+
+    The claim is already scoped to this world, so the world check here is a fail closed backstop
+    rather than the thing that prevents a cross-world dispatch.
+    """
     if environment.id != launch.environment_id:
         raise ReevaluationDispatchError(
             FAILURE_WORLD_MISMATCH,
-            f"this worker holds {world.fixture.label}, which is not the world this launch froze",
+            f"this worker holds {environment.label}, which is not the world this launch froze",
         )
     suite = await BenchmarkSuiteRepository(session).get_by_id(launch.suite_id)
     if suite is None:
@@ -213,6 +240,7 @@ async def _dispatch_plan(
         )
 
     if launch.buyer_profile is BuyerProfile.REFERENCE_BUYER:
+        _require_frozen_kind(launch, IsolatedMissionExecutor.identity.kind)
         return _Plan(
             suite_key=suite.suite_key,
             suite_version=suite.version,
@@ -243,17 +271,32 @@ async def _dispatch_plan(
         raise ReevaluationDispatchError(
             FAILURE_REPRESENTATION_MISSING, "the representation this launch froze is unreadable"
         )
+    kind = executor_kind(configuration)
+    _require_frozen_kind(launch, kind)
     return _Plan(
         suite_key=suite.suite_key,
         suite_version=suite.version,
         identity=ExecutorIdentity(
-            kind=executor_kind(configuration),
-            version=1,
-            revision=configuration.configuration_digest,
+            kind=kind, version=1, revision=configuration.configuration_digest
         ),
         configuration=configuration,
         representation=representation,
     )
+
+
+def _require_frozen_kind(launch: BenchmarkReevaluation, kind: str) -> None:
+    """Refuse to run a buyer whose recorded kind is not the one the launch froze.
+
+    The configuration digest covers the buyer's semantic configuration and not the mapping from
+    a provider to an executor kind, so a build that changed that mapping would pass every other
+    check and still record a different executor on the run than the merchant was shown. Every
+    other frozen value is verified; this makes the last one no different.
+    """
+    if kind != launch.executor_kind:
+        raise ReevaluationDispatchError(
+            FAILURE_BUYER_CONFIGURATION,
+            f"this build runs {kind} where the launch froze {launch.executor_kind}",
+        )
 
 
 def _provider_credential(settings: Settings, provider: str) -> bool:
@@ -269,7 +312,8 @@ async def _execute(
     session: AsyncSession,
     sessions: async_sessionmaker[AsyncSession],
     *,
-    launch: BenchmarkReevaluation,
+    reevaluation_id: uuid.UUID,
+    merchant_id: uuid.UUID,
     plan: _Plan,
     world: AuthoredWorld,
     provider: PaymentProvider,
@@ -287,8 +331,6 @@ async def _execute(
     """
     runs = BenchmarkRunService(session)
     worker = ReevaluationWorkerService(session)
-    merchant_id = launch.merchant_id
-    reevaluation_id = launch.id
     served = RequestLedger()
     async with LocalCommerceEndpoint(settings, provider=provider, observer=served) as endpoint:
         started = await runs.start_suite(
@@ -301,7 +343,15 @@ async def _execute(
             ),
             representation=plan.representation,
         )
-        await worker.bind_run(reevaluation_id, started.id)
+        try:
+            await worker.bind_run(reevaluation_id, started.id)
+        except ConflictError:
+            # Another worker reached this launch first. The run this process just created is
+            # therefore a run no launch names, so it is closed honestly here rather than left
+            # executing against a merchant with nothing to explain it. No mission has run yet,
+            # so nothing is lost by closing it.
+            await runs.abort_run(started.id, merchant_id=merchant_id)
+            raise
         capability = BenchmarkRunCapability(merchant_id=merchant_id, run_id=started.id)
         trusted = MerchantBuyerSurface(
             sessions, merchant_id=merchant_id, provider=provider, benchmark_capability=capability

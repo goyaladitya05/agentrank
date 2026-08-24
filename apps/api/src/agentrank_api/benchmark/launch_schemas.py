@@ -205,13 +205,20 @@ class MissionTransitionView(BaseModel):
 class InteractionChangeView(BaseModel):
     """Observed interaction cost, where it was observed at all.
 
-    `token_usage_complete` false means at least one provider invocation reported no usage, so
-    there is no honest token total and none is published.
+    Counts are published only when both runs recorded a trace, and which side did is carried
+    separately, because "neither run asked a model" and "only the later run did" are different
+    facts and reporting both as no data would state something that did not happen.
+
+    `token_usage_complete` has three states. True when every provider invocation on both sides
+    reported its usage, false when at least one did not so no honest token total exists, and
+    null when at least one run recorded no provider invocation at all.
     """
 
     model_invocations: CountChangeView | None
     tool_calls: CountChangeView | None
-    token_usage_complete: bool
+    baseline_traced: bool
+    candidate_traced: bool
+    token_usage_complete: bool | None
 
 
 class MethodologyWarningView(BaseModel):
@@ -227,8 +234,9 @@ class ComparisonConclusionView(BaseModel):
 class RunComparisonView(BaseModel):
     """One before and after reading, with everything that qualifies it attached.
 
-    `comparable` false means the two runs did not measure the same thing, and the deltas are
-    published anyway so a reader can see why rather than being shown an empty panel.
+    `comparable` false means the two runs did not measure the same thing. The deltas are still
+    on the wire, and the console deliberately does not render them: what a reader needs then is
+    which pin differed, and a table of numbers beside that reads as a comparison anyway.
     """
 
     engine_identity: str
@@ -308,6 +316,8 @@ class RunComparisonView(BaseModel):
                         delta=interactions.tool_calls.delta,
                     )
                 ),
+                baseline_traced=interactions.baseline_traced,
+                candidate_traced=interactions.candidate_traced,
                 token_usage_complete=interactions.token_usage_complete,
             ),
             baseline_runtime_seconds=before,

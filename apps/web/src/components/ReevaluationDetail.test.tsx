@@ -1,11 +1,12 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { LaunchConfirmation } from "./LaunchReevaluation";
+import { LaunchAccepted, LaunchConfirmation } from "./LaunchReevaluation";
 import { ReevaluationDetailContent } from "./ReevaluationDetail";
 import { decodePreflight, decodeReevaluationDetail } from "@/lib/reevaluation";
 import { IDLE_LAUNCH, type LaunchState } from "@/lib/reevaluation-mutation";
 import {
+  COMPARISON_FIXTURE,
   COMPLETED_REEVALUATION_FIXTURE,
   FAILED_REEVALUATION_FIXTURE,
   INCOMPARABLE_REEVALUATION_FIXTURE,
@@ -94,6 +95,25 @@ describe("<LaunchConfirmation>", () => {
   });
 });
 
+describe("<LaunchAccepted>", () => {
+  it("acknowledges an accepted launch and links to it", () => {
+    const html = renderToStaticMarkup(
+      <LaunchAccepted
+        state={{
+          ok: true,
+          message: null,
+          stale: false,
+          unknown: false,
+          reevaluationId: "01a0cccc-cccc-7ccc-8ccc-ccccccccccc1",
+        }}
+      />,
+    );
+    expect(html).toContain("Re-evaluation requested");
+    expect(html).toContain("Nothing has been executed yet");
+    expect(html).toContain("/re-evaluations/01a0cccc-cccc-7ccc-8ccc-ccccccccccc1");
+  });
+});
+
 describe("<ReevaluationDetailContent>", () => {
   it("says a queued launch has executed nothing", () => {
     const html = render(QUEUED_REEVALUATION_FIXTURE);
@@ -141,6 +161,34 @@ describe("<ReevaluationDetailContent>", () => {
     const html = render(COMPLETED_REEVALUATION_FIXTURE);
     expect(html).not.toMatch(/agentrank score/i);
     expect(html).not.toMatch(/overall score/i);
+  });
+
+  it("says which side recorded a model trace rather than claiming neither did", () => {
+    const oneSided = {
+      ...COMPLETED_REEVALUATION_FIXTURE,
+      comparison: {
+        ...COMPARISON_FIXTURE,
+        // A side with no provider invocation reported nothing about tokens, so the API raises
+        // no token warning for it either.
+        warnings: COMPARISON_FIXTURE.warnings.filter(
+          (warning) => warning.code !== "TOKEN_USAGE_UNAVAILABLE",
+        ),
+        interactions: {
+          model_invocations: null,
+          tool_calls: null,
+          baseline_traced: false,
+          candidate_traced: true,
+          token_usage_complete: null,
+        },
+      },
+    };
+    const html = renderToStaticMarkup(
+      <ReevaluationDetailContent launch={decodeReevaluationDetail(oneSided)} />,
+    );
+    expect(html).toContain("Only the later run recorded a model trace");
+    expect(html).not.toContain("Neither run recorded a model trace");
+    // No provider invocation reported nothing, so nothing claims one did.
+    expect(html).not.toContain("reported no token usage");
   });
 
   it("refuses to draw a comparison from two runs that measured different things", () => {

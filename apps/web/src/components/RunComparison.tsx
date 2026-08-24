@@ -249,11 +249,25 @@ function outcome(status: string | null, reason: string | null): string {
 }
 
 function Interactions({ comparison }: { comparison: RunComparison }) {
-  const { model_invocations: invocations, tool_calls: calls } = comparison.interactions;
-  if (invocations === null && calls === null) {
+  const {
+    model_invocations: invocations,
+    tool_calls: calls,
+    baseline_traced: before,
+    candidate_traced: after,
+    token_usage_complete: tokens,
+  } = comparison.interactions;
+  if (!before && !after) {
     return (
       <p className={styles.reviewMeta}>
         Neither run recorded a model trace, so there is no interaction cost to compare.
+      </p>
+    );
+  }
+  if (!before || !after) {
+    return (
+      <p className={styles.reviewMeta}>
+        Only the {before ? "earlier" : "later"} run recorded a model trace, so interaction cost
+        cannot be compared between them.
       </p>
     );
   }
@@ -264,9 +278,9 @@ function Interactions({ comparison }: { comparison: RunComparison }) {
         ? "round trips not recorded"
         : `${String(invocations.before)} to ${String(invocations.after)} provider round trips`}
       {calls === null ? "" : `, ${String(calls.before)} to ${String(calls.after)} tool calls`}.{" "}
-      {comparison.interactions.token_usage_complete
-        ? ""
-        : "Some provider invocations reported no token usage, so token totals are unknown and none is shown."}
+      {tokens === false
+        ? "Some provider invocations reported no token usage, so token totals are unknown and none is shown."
+        : ""}
     </p>
   );
 }

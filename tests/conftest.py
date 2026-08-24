@@ -23,24 +23,17 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-import agentrank_api.audit.models as audit_models  # noqa: F401  registers tables
-import agentrank_api.auth.models as auth_models  # noqa: F401  registers tables
-import agentrank_api.benchmark.experiment as benchmark_experiment  # noqa: F401  registers tables
-import agentrank_api.benchmark.models as benchmark_models  # noqa: F401  registers tables
-import agentrank_api.checkout.models as checkout_models  # noqa: F401  registers tables
-import agentrank_api.commerce.models as commerce_models  # noqa: F401  registers tables
-import agentrank_api.compiler.models as compiler_models  # noqa: F401  registers tables
-import agentrank_api.constraints.models as constraint_models  # noqa: F401  registers tables
-import agentrank_api.inventory.models as inventory_models  # noqa: F401  registers tables
-import agentrank_api.mandates.models as mandate_models  # noqa: F401  registers tables
-import agentrank_api.payments.models as payment_models  # noqa: F401  registers tables
-import agentrank_api.razorpay.models as razorpay_models  # noqa: F401  registers tables
-import agentrank_api.representation.models as representation_models  # noqa: F401  registers tables
 from agentrank_api.auth.service import MerchantCredentialService
 from agentrank_api.auth.tokens import TokenMarker
 from agentrank_api.config import Settings, get_settings
 from agentrank_api.database import create_session_factory
-from agentrank_api.models import Base
+
+# The one list, imported rather than repeated. This file used to keep its own copy of every model
+# module, which meant a package registered here only if somebody remembered, and a table missing
+# from it was a table `TRUNCATE_ALL` never emptied: rows would survive teardown and leak into the
+# next test. `agentrank_api.registry` exists to be that list for the Alembic environment, the
+# scripts and here alike.
+from agentrank_api.registry import Base
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 

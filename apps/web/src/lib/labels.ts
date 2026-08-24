@@ -322,15 +322,27 @@ export function traceEventLabel(eventType: string): string {
   return EVENT_TYPE_LABELS[eventType] ?? humanize(eventType);
 }
 
+/**
+ * The bucket names the API actually sends, which are uppercase on every surface.
+ *
+ * Two vocabularies reach here and both are wired. A mission diagnosis reports demand as
+ * `CAPTURED`, `AT_RISK` or `NOT_MEASURED`; a run comparison reports the four totals a run
+ * carries, `POTENTIAL`, `CAPTURED`, `LOST` and `NOT_MEASURED`. AT_RISK and LOST are the same
+ * bucket named from two directions and both read as lost demand, which is what they are.
+ */
 const DEMAND_BUCKET_LABELS: Record<string, string> = {
-  potential: "Simulated potential demand",
-  captured: "Simulated captured demand",
-  lost: "Simulated lost demand",
-  not_measured: "Simulated unmeasured demand",
+  POTENTIAL: "Simulated potential demand",
+  CAPTURED: "Simulated captured demand",
+  AT_RISK: "Simulated lost demand",
+  LOST: "Simulated lost demand",
+  NOT_MEASURED: "Simulated unmeasured demand",
 };
 
 export function demandBucketLabel(bucket: string): string {
-  return DEMAND_BUCKET_LABELS[bucket] ?? `Simulated ${humanize(bucket).toLowerCase()} demand`;
+  return (
+    DEMAND_BUCKET_LABELS[bucket.toUpperCase()] ??
+    `Simulated ${humanize(bucket).toLowerCase()} demand`
+  );
 }
 
 /** Fallback that keeps an unexpected value readable without pretending to understand it. */

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useActionState, useState } from "react";
 
 import styles from "@/components/console.module.css";
@@ -34,6 +35,9 @@ export function LaunchReevaluation({
 }) {
   const [confirming, setConfirming] = useState(false);
   const [state, formAction, pending] = useActionState(action, IDLE_LAUNCH);
+  if (state.ok) {
+    return <LaunchAccepted state={state} />;
+  }
   if (!confirming) {
     return (
       <button className={styles.button} type="button" onClick={() => setConfirming(true)}>
@@ -49,6 +53,31 @@ export function LaunchReevaluation({
       pending={pending}
       onCancel={() => setConfirming(false)}
     />
+  );
+}
+
+/**
+ * What a merchant is told when the launch was accepted.
+ *
+ * A form that simply closed would leave the most expensive command in this console with no
+ * acknowledgement at all. This says what was accepted and what has not happened yet, and links
+ * to the launch, which is the only page that knows anything further.
+ */
+export function LaunchAccepted({ state }: { state: LaunchState }) {
+  return (
+    <div role="status">
+      <p>Re-evaluation requested. Nothing has been executed yet.</p>
+      {state.reevaluationId === null ? null : (
+        <p className={styles.reviewMeta}>
+          <Link
+            className={styles.rowLink}
+            href={`/re-evaluations/${encodeURIComponent(state.reevaluationId)}`}
+          >
+            Follow this re-evaluation
+          </Link>
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -118,9 +147,11 @@ export function LaunchConfirmation({
         <button className={styles.button} type="submit" disabled={pending}>
           Request re-evaluation
         </button>
-        <button className={styles.textLink} type="button" onClick={onCancel} disabled={pending}>
-          Cancel
-        </button>
+        {onCancel === undefined ? null : (
+          <button className={styles.textLink} type="button" onClick={onCancel} disabled={pending}>
+            Cancel
+          </button>
+        )}
       </div>
       {pending ? (
         <p className={styles.mutationPending} role="status">

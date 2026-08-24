@@ -43,7 +43,7 @@ async def launch_and_execute(
     """One admitted launch carried all the way to a completed run."""
     launch = await MerchantReevaluationService(session, settings).request(
         world.merchant_id,
-        representation_id=world.representation.id,
+        representation_id=world.representation_id,
         request_key=request_key,
     )
     launch_id = launch.id

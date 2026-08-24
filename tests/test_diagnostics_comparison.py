@@ -75,7 +75,6 @@ def facts(**overrides: object) -> RunFacts:
         "executor_revision": "sha256:" + "d" * 64,
         "buyer_configuration_digest": "sha256:" + "e" * 64,
         "representation_id": None,
-        "requested_models": ("gpt-5.6-terra",),
         "resolved_models": ("gpt-5.6-terra",),
         "metrics": metrics(),
         "missions_with_provider_errors": 0,
@@ -151,6 +150,32 @@ class TestDifferences:
         assert transition.direction == TRANSITION_REGRESSED
         assert "no longer completed" in comparison.conclusion.statement
 
+    def test_any_published_count_that_moves_refuses_parity(self) -> None:
+        """The conclusion is judged against everything the panel prints.
+
+        A ground truth disagreement moves a published count without moving a single mission's
+        terminal position, so a parity conclusion here would sit directly above a table headed
+        "counts that moved" and contradict it.
+        """
+        moved = metrics()
+        after = facts(
+            metrics=BenchmarkMetrics(
+                missions_total=moved.missions_total,
+                missions_succeeded=moved.missions_succeeded,
+                missions_abstained=moved.missions_abstained,
+                purchase_missions=moved.purchase_missions,
+                control_missions=moved.control_missions,
+                correct_abstentions=moved.correct_abstentions,
+                oracle_disagreements=1,
+                simulated_demand=moved.simulated_demand,
+            )
+        )
+        comparison = compare_runs(facts(), after, engine_identity=ENGINE)
+
+        assert comparison.conclusion.kind == "OUTCOME_DIFFERENCES"
+        assert "oracle_disagreements 0 to 1" in comparison.conclusion.statement
+        assert comparison.transitions == ()
+
     def test_a_safety_change_alone_is_reported_as_a_difference(self) -> None:
         after = facts(metrics=metrics(unsafe_completions=1))
         comparison = compare_runs(facts(), after, engine_identity=ENGINE)
@@ -177,14 +202,19 @@ class TestMethodology:
         assert comparison.comparable is False
         assert "RUN_NOT_COMPLETED" in codes(comparison)
 
-    def test_a_different_buyer_is_named_rather_than_absorbed(self) -> None:
+    def test_a_different_buyer_makes_the_two_runs_incomparable(self) -> None:
+        """One of the five pins this benchmark has always required to match.
+
+        A deterministic buyer measured against a model buyer is the realistic case here, and
+        their numbers are not two readings of the same thing.
+        """
         comparison = compare_runs(
             facts(executor_label="reference-isolated-v1"), facts(), engine_identity=ENGINE
         )
 
         assert "EXECUTOR_DIFFERS" in codes(comparison)
-        # A buyer change is a qualification, not a reason to refuse the reading.
-        assert comparison.comparable is True
+        assert comparison.comparable is False
+        assert comparison.conclusion.kind == "INCOMPLETE"
 
     def test_the_same_buyer_built_from_different_code_is_still_flagged(self) -> None:
         comparison = compare_runs(
@@ -194,14 +224,22 @@ class TestMethodology:
         assert "EXECUTOR_REVISION_DIFFERS" in codes(comparison)
         assert "EXECUTOR_DIFFERS" not in codes(comparison)
 
-    def test_a_moved_catalog_pin_says_the_difference_is_jointly_caused(self) -> None:
+    def test_a_moved_catalog_pin_claims_no_share_of_the_difference(self) -> None:
+        """A moved shelf is fatal, and the sentence attributes nothing to what was published.
+
+        Saying a difference is "jointly caused by the representation" would presuppose the
+        representation caused part of it, which is exactly the reading every comparison here
+        refuses.
+        """
         comparison = compare_runs(
             facts(catalog_hash="sha256:" + "1" * 64), facts(), engine_identity=ENGINE
         )
 
         assert "CATALOG_PIN_DIFFERS" in codes(comparison)
+        assert comparison.comparable is False
         message = next(w.message for w in comparison.warnings if w.code == "CATALOG_PIN_DIFFERS")
-        assert "jointly caused" in message
+        assert "caused" not in message
+        assert "different merchant data" in message
 
     def test_only_one_run_seeing_a_representation_is_a_methodology_difference(self) -> None:
         comparison = compare_runs(
@@ -209,6 +247,18 @@ class TestMethodology:
         )
 
         assert "REPRESENTATION_DELIVERY_DIFFERS" in codes(comparison)
+
+    def test_the_same_representation_on_both_sides_is_said_out_loud(self) -> None:
+        """Re-running an unchanged artifact is variation, and the reader is told so."""
+        representation = uuid.uuid7()
+        comparison = compare_runs(
+            facts(representation_id=representation),
+            facts(representation_id=representation),
+            engine_identity=ENGINE,
+        )
+
+        assert "REPRESENTATION_UNCHANGED" in codes(comparison)
+        assert comparison.comparable is True
 
     def test_a_different_resolved_model_is_flagged(self) -> None:
         comparison = compare_runs(
@@ -249,16 +299,34 @@ class TestHonestNumbers:
         # Round trips and tool calls are real counts and are still compared.
         assert comparison.interactions.model_invocations is not None
 
-    def test_a_run_with_no_trace_reports_no_interaction_counts(self) -> None:
+    def test_no_provider_invocation_is_not_the_same_as_no_usage_reported(self) -> None:
+        """Three states, kept apart.
+
+        "Nobody asked a model" is not "a model answered and said nothing about tokens", and
+        collapsing them would let the console assert a report that was never made.
+        """
+        comparison = compare_runs(
+            facts(model_invocations=None, tool_calls=None, token_usage_reported=None),
+            facts(model_invocations=None, tool_calls=None, token_usage_reported=None),
+            engine_identity=ENGINE,
+        )
+
+        assert comparison.interactions.token_usage_complete is None
+        assert "TOKEN_USAGE_UNAVAILABLE" not in codes(comparison)
+
+    def test_a_trace_on_one_side_only_is_reported_as_such(self) -> None:
         comparison = compare_runs(
             facts(model_invocations=None, tool_calls=None, token_usage_reported=None),
             facts(),
             engine_identity=ENGINE,
         )
 
+        assert comparison.interactions.baseline_traced is False
+        assert comparison.interactions.candidate_traced is True
+        # No count is published against a side that recorded nothing, because zero is not what
+        # "no model was asked" means.
         assert comparison.interactions.model_invocations is None
         assert comparison.interactions.tool_calls is None
-        assert "TOKEN_USAGE_UNAVAILABLE" not in codes(comparison)
 
     def test_an_empty_denominator_stays_null_rather_than_zero(self) -> None:
         empty = metrics(succeeded=0, purchase_missions=0)

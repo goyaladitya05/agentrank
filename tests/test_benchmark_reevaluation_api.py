@@ -17,6 +17,9 @@ from reevaluation_support import build_launch_world, with_openai, without_provid
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from agentrank_api.auth.service import MerchantCredentialService
+from agentrank_api.auth.tokens import TokenMarker
+from agentrank_api.benchmark.execution import BenchmarkRunCapability
 from agentrank_api.benchmark.launch import (
     MerchantReevaluationService,
     ReevaluationWorkerService,
@@ -156,6 +159,54 @@ class TestAuthorization:
                 BenchmarkReevaluation.__table__.select().with_only_columns(BenchmarkReevaluation.id)
             )
         ) is None
+
+
+class TestBenchmarkCredentialBoundary:
+    async def test_a_benchmark_buyers_credential_cannot_command_a_benchmark(
+        self,
+        settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        """A buyer executing a run must have no route to that run's lifecycle.
+
+        The loopback server an isolated buyer is given does not mount this router at all, which
+        is the layer that holds even if this one were removed. This is the second layer, and it
+        holds for any deployment where a benchmark credential can reach the ordinary API.
+        """
+        world = await build_launch_world(session, "buyer-credential-shop")
+        started = await BenchmarkRunService(session).start_run(
+            suite_key=world.suite.suite_key,
+            suite_version=world.suite.version,
+            merchant_slug=world.merchant_slug,
+        )
+        capability = BenchmarkRunCapability(merchant_id=world.merchant_id, run_id=started.id)
+        issued = await MerchantCredentialService(session).issue_for_benchmark(
+            capability=capability, label="benchmark executor", marker=TokenMarker.DEVELOPMENT
+        )
+        http = client(settings, factory)
+        headers = bearer(issued.token)
+
+        assert http.get(PREFLIGHT, headers=headers).status_code == 401
+        assert http.get(LAUNCH, headers=headers).status_code == 401
+        assert http.get(f"{LAUNCH}/{uuid.uuid7()}", headers=headers).status_code == 401
+        refused = http.post(
+            LAUNCH,
+            headers=headers,
+            json={
+                "representation_id": str(world.representation.id),
+                "request_key": "buyer-launch-key",
+            },
+        )
+        assert refused.status_code == 401
+        # Byte for byte the refusal an unknown credential gets: which of the two it is says
+        # something about the credential, and this says nothing.
+        assert refused.json() == {
+            "error": "unauthenticated",
+            "detail": "a valid merchant API credential is required",
+            "resource": None,
+            "identifier": None,
+        }
 
 
 class TestPreflight:

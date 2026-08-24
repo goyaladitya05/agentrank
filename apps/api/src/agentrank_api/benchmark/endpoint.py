@@ -12,7 +12,9 @@ is given the payment provider the command line is already holding rather than bu
 benchmark's payments and the operator's view of them are the same provider's. It has no benchmark
 routes on it: publishing a suite, starting a run and reading a result are operator commands and
 have deliberately never been endpoints, so nothing an executor can reach over this can touch a
-run, an oracle or a mission definition.
+run, an oracle or a mission definition. The merchant re-evaluation command is the one benchmark
+surface that is an endpoint, and it is built out of this application rather than left mounted:
+a buyer that could queue a re-evaluation could touch the lifecycle of the run it is inside.
 
 `issued_benchmark_credential` is the key. It is issued only after the run has a durable RUNNING
 claim and is structurally bound to that run as well as its merchant. It is still not a superuser
@@ -273,7 +275,10 @@ class LocalCommerceEndpoint:
         provider: PaymentProvider,
         observer: RequestLedger | None = None,
     ) -> None:
-        application = create_app(settings, payment_provider=provider)
+        # Without the merchant benchmark command surface. This server is what an untrusted
+        # buyer is given a credential for, and a buyer that could queue a re-evaluation could
+        # touch the lifecycle of the run it is executing inside.
+        application = create_app(settings, payment_provider=provider, benchmark_commands=False)
         self._app: ASGIApp = application if observer is None else _Recording(application, observer)
         self._server = uvicorn.Server(
             uvicorn.Config(

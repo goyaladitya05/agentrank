@@ -265,6 +265,13 @@ class DiagnosticsService:
         variants = await self._selected_variants(run, merchant_id=merchant_id)
         pin_verified = await self._catalog_pin_verified(run, merchant_id=merchant_id)
         lineage = await self._compiler_lineage(run, merchant_id=merchant_id)
+        # A compiler address is built out of the selected variant's SKU and its product's
+        # external identifier, both read from today's rows. Those are the same rows whose values
+        # are withheld when the catalog pin does not verify, and an address built from a shelf
+        # that has moved can name a proposal about a different product. So the lineage reaches a
+        # diagnosis only while the pin says today's rows are the ones the run measured. The run's
+        # own compiler run link below is unaffected: it is foreign keys and no catalog at all.
+        addressable = lineage if pin_verified is True else None
 
         diagnoses: list[MissionDiagnosis] = []
         outages = 0
@@ -287,7 +294,9 @@ class DiagnosticsService:
                     outages += 1
                 else:
                     throttles += facts.provider_faults.throttles_recovered
-            diagnoses.append(self._diagnose_mission(result, variants, facts, pin_verified, lineage))
+            diagnoses.append(
+                self._diagnose_mission(result, variants, facts, pin_verified, addressable)
+            )
 
         resolved_models = sorted(
             {
@@ -422,9 +431,6 @@ class DiagnosticsService:
             executor_revision=run.executor_revision,
             buyer_configuration_digest=_configuration_digest(run),
             representation_id=run.representation_id,
-            requested_models=tuple(
-                sorted({model for model in (u.requested_model for u in flat_usages) if model})
-            ),
             resolved_models=tuple(
                 sorted({model for model in (u.actual_model for u in flat_usages) if model})
             ),

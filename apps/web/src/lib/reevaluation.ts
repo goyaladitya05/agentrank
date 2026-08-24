@@ -101,7 +101,10 @@ export interface ComparisonMissionTransition {
 export interface InteractionChange {
   readonly model_invocations: CountChange | null;
   readonly tool_calls: CountChange | null;
-  readonly token_usage_complete: boolean;
+  readonly baseline_traced: boolean;
+  readonly candidate_traced: boolean;
+  /** True, false, or null when at least one run recorded no provider invocation at all. */
+  readonly token_usage_complete: boolean | null;
 }
 
 export interface RunComparison {
@@ -167,6 +170,10 @@ function nullableNumber(value: unknown, where: string): number | null {
 function bool(value: unknown, where: string): boolean {
   if (typeof value !== "boolean") throw new DecodeError(`${where}: expected a boolean`);
   return value;
+}
+
+function nullableBoolean(value: unknown, where: string): boolean | null {
+  return value === null ? null : bool(value, where);
 }
 
 function status(value: unknown): ReevaluationStatus {
@@ -342,7 +349,12 @@ function decodeComparison(value: unknown): RunComparison {
           ? null
           : countChange(interactions.model_invocations),
       tool_calls: interactions.tool_calls === null ? null : countChange(interactions.tool_calls),
-      token_usage_complete: bool(interactions.token_usage_complete, "token_usage_complete"),
+      baseline_traced: bool(interactions.baseline_traced, "baseline_traced"),
+      candidate_traced: bool(interactions.candidate_traced, "candidate_traced"),
+      token_usage_complete: nullableBoolean(
+        interactions.token_usage_complete,
+        "token_usage_complete",
+      ),
     },
     baseline_runtime_seconds: nullableNumber(
       source.baseline_runtime_seconds,

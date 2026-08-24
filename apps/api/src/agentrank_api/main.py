@@ -39,6 +39,8 @@ def create_app(
     settings: Settings | None = None,
     payment_provider: PaymentProvider | None = None,
     razorpay_client: RazorpayClient | None = None,
+    *,
+    benchmark_commands: bool = True,
 ) -> FastAPI:
     """Build the application.
 
@@ -52,6 +54,13 @@ def create_app(
     to different providers. It is a deterministic fake, because it is the only implementation
     that exists. Phase 1F is provider independent on purpose, and no request field can select a
     different outcome.
+
+    `benchmark_commands` is the one router that is optional, and the reason is the loopback
+    commerce endpoint an untrusted buyer is given. Publishing a suite, starting a run and reading
+    a result have deliberately never been endpoints, so nothing an executor can reach over that
+    server touches a run, an oracle or a mission definition. The merchant re-evaluation command
+    is a benchmark write, and mounting it on the server a buyer holds a credential for would let
+    a buyer queue a benchmark. The console's application mounts it; the buyer's does not.
 
     The Razorpay transport is injectable for the same reasons, and it is deliberately not the
     payment provider. Standard Checkout is interactive: the browser collects the payment and
@@ -186,5 +195,6 @@ def create_app(
     app.include_router(razorpay.router)
     app.include_router(insights.router)
     app.include_router(compiler.router)
-    app.include_router(reevaluations.router)
+    if benchmark_commands:
+        app.include_router(reevaluations.router)
     return app

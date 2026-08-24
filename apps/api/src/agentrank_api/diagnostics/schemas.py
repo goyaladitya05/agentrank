@@ -71,9 +71,11 @@ class CompilerReferenceView(BaseModel):
     """One compiler candidate a merchant can act on this finding through.
 
     Present only where the relationship is provable: the run pinned a compiler-produced
-    representation, and that representation's compiler run holds a proposal at exactly the
-    address this finding names. An empty list means no such proposal exists, never that one
-    was not looked for.
+    representation, the merchant's catalog still hashes to what that run was measured against,
+    and that representation's compiler run holds a proposal at exactly the address this finding
+    names. An empty list means no proposal was found at that exact address, which is not the
+    same as the compiler having proposed nothing about the attribute; the addresses are composed
+    from names rather than matched loosely, so the list errs towards being short.
     """
 
     compiler_run_id: uuid.UUID

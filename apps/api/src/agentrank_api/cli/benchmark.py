@@ -261,6 +261,22 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
     _add_json(reevaluating)
     reevaluating.set_defaults(command=reevaluate)
 
+    settling = commands.add_parser(
+        "settle",
+        help="close the merchant launch behind a run that has already finished",
+        description=(
+            "Settle the re-evaluation a finished run belonged to. The worker that executes a"
+            " launch settles it when the run ends, so this is only needed when that process died"
+            " in between: the launch is then left executing against a run nobody can reach, and"
+            " it holds this merchant's one pending launch slot until it is closed. The launch is"
+            " settled to agree with the run, which is the only settlement the database accepts."
+        ),
+    )
+    settling.add_argument("run_id", type=uuid.UUID, help="the benchmark run identifier")
+    _add_world(settling)
+    _add_json(settling)
+    settling.set_defaults(command=settle)
+
     diagnosing = commands.add_parser(
         "diagnose",
         help="one run's deterministic merchant diagnosis: findings, ownership, demand",
@@ -554,6 +570,52 @@ async def reevaluate(
         if outcome.detail is not None:
             print(f"detail      {outcome.detail}", file=out)
     return ExitCode.OK if outcome.failure_code is None else ExitCode.REFUSED
+
+
+async def settle(
+    session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
+    provider: PaymentProvider,
+    arguments: argparse.Namespace,
+    out: TextIO,
+    settings: Settings,
+) -> int:
+    """Close the merchant launch behind a run that has already finished.
+
+    Idempotent: a launch that is already settled is reported as it stands. Refused while the run
+    is still going, because a launch that names a run nobody has closed is not stranded, it is
+    running.
+    """
+    del sessions, provider, settings
+    merchant_id = await _benchmark_merchant(session, read_world(arguments.world))
+    run = await BenchmarkRunService(session).load(arguments.run_id, merchant_id=merchant_id)
+    if not run.is_terminal:
+        print(
+            f"refused     benchmark run {run.id} is {run.status.value} and has not finished",
+            file=out,
+        )
+        return ExitCode.REFUSED
+    settled = await ReevaluationWorkerService(session).settle_for_terminal_run(run.id)
+    payload = {
+        "run_id": str(run.id),
+        "status": run.status.value,
+        "reevaluation_id": None if settled is None else str(settled.id),
+        "reevaluation_status": None if settled is None else settled.status.value,
+    }
+    if arguments.as_json:
+        write_json(out, payload)
+        return ExitCode.OK
+
+    print(f"run         {payload['run_id']}  {payload['status']}", file=out)
+    if settled is None:
+        print("launch      this run belongs to no merchant re-evaluation", file=out)
+    else:
+        print(
+            f"launch      {payload['reevaluation_id']} is"
+            f" {str(payload['reevaluation_status']).lower()}",
+            file=out,
+        )
+    return ExitCode.OK
 
 
 async def compare_create(
@@ -1122,7 +1184,12 @@ async def abort(
     out: TextIO,
     settings: Settings,
 ) -> int:
-    """Close a run that stopped, and say what state it is being closed in."""
+    """Close a run that stopped, and say what state it is being closed in.
+
+    A run that has already finished is refused rather than closed again, which is the existing
+    guarantee and stays. The launch behind a run that finished without being settled has its own
+    command: see `settle`.
+    """
     del sessions, provider, settings
     service = BenchmarkRunService(session)
     merchant_id = await _benchmark_merchant(session, read_world(arguments.world))
@@ -1131,11 +1198,12 @@ async def abort(
     closed = await service.abort_run(arguments.run_id, merchant_id=merchant_id)
     # A run an operator has closed is not coming back, so the merchant launch behind it is over
     # too. Leaving it executing would hold this merchant's one pending slot against nothing.
-    settled = await ReevaluationWorkerService(session).settle_for_aborted_run(closed.id)
+    settled = await ReevaluationWorkerService(session).settle_for_terminal_run(closed.id)
 
     payload = {
         "run_id": str(closed.id),
         "reevaluation_id": None if settled is None else str(settled.id),
+        "reevaluation_status": None if settled is None else settled.status.value,
         "status": closed.status.value,
         "missions_unfinished": len(unfinished),
         "missions_started_and_unfinished": sum(
@@ -1149,7 +1217,11 @@ async def abort(
     print(f"run         {payload['run_id']}", file=out)
     print(f"status      {payload['status']}", file=out)
     if payload["reevaluation_id"] is not None:
-        print(f"launch      {payload['reevaluation_id']} settled as failed", file=out)
+        print(
+            f"launch      {payload['reevaluation_id']} is"
+            f" {str(payload['reevaluation_status']).lower()}",
+            file=out,
+        )
     print(
         f"unfinished  {payload['missions_unfinished']} missions never reached an outcome", file=out
     )

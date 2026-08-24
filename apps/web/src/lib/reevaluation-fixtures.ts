@@ -145,6 +145,8 @@ export const COMPARISON_FIXTURE = {
   interactions: {
     model_invocations: { key: "model_invocations", before: 40, after: 38, delta: -2 },
     tool_calls: { key: "tool_calls", before: 60, after: 57, delta: -3 },
+    baseline_traced: true,
+    candidate_traced: true,
     token_usage_complete: false,
   },
   baseline_runtime_seconds: 270.0,

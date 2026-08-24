@@ -78,7 +78,7 @@ export const OVERVIEW_FIXTURE = {
       product_ids: ["01996666-6666-7666-8666-666666666666"],
       variant_ids: ["01997777-7777-7777-8777-777777777777"],
       attribute_keys: ["wattage"],
-      simulated_demand: [{ currency: "INR", bucket: "lost", simulated_amount_minor: 419900 }],
+      simulated_demand: [{ currency: "INR", bucket: "AT_RISK", simulated_amount_minor: 419900 }],
       compiler_references: [
         {
           compiler_run_id: "01a0aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa1",
@@ -255,7 +255,7 @@ export const RUN_DIAGNOSTICS_FIXTURE = {
           compiler_references: [],
         },
       ],
-      simulated_demand: [{ currency: "INR", bucket: "lost", simulated_amount_minor: 259900 }],
+      simulated_demand: [{ currency: "INR", bucket: "AT_RISK", simulated_amount_minor: 259900 }],
       model_invocations: 5,
       tool_calls: 9,
       tool_errors: 1,

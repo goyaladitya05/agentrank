@@ -79,7 +79,6 @@ class RunFacts:
     executor_revision: str | None
     buyer_configuration_digest: str | None
     representation_id: uuid.UUID | None
-    requested_models: tuple[str, ...]
     resolved_models: tuple[str, ...]
     metrics: BenchmarkMetrics
     missions_with_provider_errors: int
@@ -174,11 +173,22 @@ class InteractionChange:
     Counts of provider round trips and tool calls, which are facts this system records. Token
     usage is deliberately absent as a total: a run in which some invocation reported none has no
     honest total, and the warning says so instead of a number filling the gap.
+
+    Which side recorded a trace is carried separately from the counts, because "neither run
+    asked a model" and "only the later run did" are different facts and a comparison that
+    reported both as no data would state something that did not happen.
+
+    `token_usage_complete` keeps the three states the facts have. True when every provider
+    invocation on both sides reported usage, False when at least one did not, and None when at
+    least one side recorded no provider invocation at all, which is not the same as a provider
+    that answered and said nothing about tokens.
     """
 
     model_invocations: CountChange | None
     tool_calls: CountChange | None
-    token_usage_complete: bool
+    baseline_traced: bool
+    candidate_traced: bool
+    token_usage_complete: bool | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,19 +214,22 @@ def compare_runs(baseline: RunFacts, candidate: RunFacts, *, engine_identity: st
     warnings = _warnings(baseline, candidate)
     fatal = any(warning.code in _NOT_COMPARABLE_CODES for warning in warnings)
     transitions = _transitions(baseline, candidate)
+    counts = _counts(baseline, candidate)
+    rates = _rates(baseline, candidate)
+    demand = _demand(baseline, candidate)
     return RunComparison(
         engine_identity=engine_identity,
         baseline_run_id=baseline.run_id,
         candidate_run_id=candidate.run_id,
         comparable=not fatal,
-        counts=_counts(baseline, candidate),
-        rates=_rates(baseline, candidate),
-        simulated_demand=_demand(baseline, candidate),
+        counts=counts,
+        rates=rates,
+        simulated_demand=demand,
         transitions=transitions,
         interactions=_interactions(baseline, candidate),
         runtime_seconds=(baseline.duration_seconds, candidate.duration_seconds),
         warnings=warnings,
-        conclusion=_conclusion(baseline, candidate, transitions, fatal),
+        conclusion=_conclusion(baseline, candidate, counts, rates, demand, transitions, fatal),
     )
 
 
@@ -356,36 +369,54 @@ def _direction(before: MissionOutcomeFact | None, after: MissionOutcomeFact | No
 
 
 def _interactions(baseline: RunFacts, candidate: RunFacts) -> InteractionChange:
-    complete = baseline.token_usage_reported is True and candidate.token_usage_reported is True
-    both_traced = baseline.model_invocations is not None and candidate.model_invocations is not None
+    """What the two runs cost in interactions, only where both of them recorded it.
+
+    A count is published when both sides have one, because a delta against a side that recorded
+    nothing would be a delta against zero, and zero is not what "nobody asked a model" means.
+    """
     return InteractionChange(
-        model_invocations=(
-            CountChange(
-                key="model_invocations",
-                before=baseline.model_invocations or 0,
-                after=candidate.model_invocations or 0,
-            )
-            if both_traced
-            else None
+        model_invocations=_count_change(
+            "model_invocations", baseline.model_invocations, candidate.model_invocations
         ),
-        tool_calls=(
-            CountChange(
-                key="tool_calls",
-                before=baseline.tool_calls or 0,
-                after=candidate.tool_calls or 0,
-            )
-            if baseline.tool_calls is not None and candidate.tool_calls is not None
-            else None
-        ),
-        token_usage_complete=complete,
+        tool_calls=_count_change("tool_calls", baseline.tool_calls, candidate.tool_calls),
+        baseline_traced=baseline.model_invocations is not None,
+        candidate_traced=candidate.model_invocations is not None,
+        token_usage_complete=_token_usage(baseline, candidate),
     )
 
 
-# Differences that make a before and after meaningless rather than merely qualified. Each one
-# means the two runs measured different things, so a delta between them is not about the
-# merchant at all.
+def _count_change(key: str, before: int | None, after: int | None) -> CountChange | None:
+    if before is None or after is None:
+        return None
+    return CountChange(key=key, before=before, after=after)
+
+
+def _token_usage(baseline: RunFacts, candidate: RunFacts) -> bool | None:
+    """Whether every provider invocation across both runs reported its token usage.
+
+    None when at least one side recorded no provider invocation, because there is nothing there
+    to have reported usage and calling that incomplete would describe an absence as a gap.
+    """
+    if baseline.token_usage_reported is None or candidate.token_usage_reported is None:
+        return None
+    return baseline.token_usage_reported and candidate.token_usage_reported
+
+
+# Differences that make a before and after meaningless rather than merely qualified.
+#
+# Four of them are the pins this benchmark has always required to match before two runs may be
+# compared at all: the suite, the world, the catalog the run was measured against, the marking
+# rules, and what did the shopping. A delta across any of those is not about the merchant. The
+# fifth is a run that did not finish, whose counts describe part of a workload.
 _NOT_COMPARABLE_CODES = frozenset(
-    {"SUITE_DIFFERS", "ENVIRONMENT_DIFFERS", "EVALUATOR_DIFFERS", "RUN_NOT_COMPLETED"}
+    {
+        "SUITE_DIFFERS",
+        "ENVIRONMENT_DIFFERS",
+        "CATALOG_PIN_DIFFERS",
+        "EVALUATOR_DIFFERS",
+        "EXECUTOR_DIFFERS",
+        "RUN_NOT_COMPLETED",
+    }
 )
 
 
@@ -441,8 +472,8 @@ def _warnings(baseline: RunFacts, candidate: RunFacts) -> tuple[MethodologyWarni
                 code="CATALOG_PIN_DIFFERS",
                 message=(
                     "Your authoritative catalog was not identical at the start of both runs, so"
-                    " differences are jointly caused by the representation and by whatever else"
-                    " changed in your data."
+                    " these two runs were measured against different merchant data and a"
+                    " difference between them is not a reading about anything you published."
                 ),
             )
         )
@@ -483,6 +514,20 @@ def _warnings(baseline: RunFacts, candidate: RunFacts) -> tuple[MethodologyWarni
                 message=(
                     "Only one of these runs was measured against a published agent-ready"
                     " representation, so the two buyers were not shown the same kind of surface."
+                ),
+            )
+        )
+    if (
+        baseline.representation_id is not None
+        and baseline.representation_id == candidate.representation_id
+    ):
+        warnings.append(
+            MethodologyWarning(
+                code="REPRESENTATION_UNCHANGED",
+                message=(
+                    "Both runs were measured against the same published representation, so any"
+                    " difference between them is variation between two executions rather than"
+                    " anything about the artifact."
                 ),
             )
         )
@@ -542,10 +587,19 @@ def _warnings(baseline: RunFacts, candidate: RunFacts) -> tuple[MethodologyWarni
 def _conclusion(
     baseline: RunFacts,
     candidate: RunFacts,
+    counts: tuple[CountChange, ...],
+    rates: tuple[RateChange, ...],
+    demand: tuple[SimulatedDemandChange, ...],
     transitions: tuple[MissionTransition, ...],
     fatal: bool,
 ) -> ComparisonConclusion:
-    """The strongest statement this evidence deterministically supports, and no stronger."""
+    """The strongest statement this evidence deterministically supports, and no stronger.
+
+    PARITY is judged against everything this comparison publishes rather than against a chosen
+    few dimensions. A conclusion saying nothing measurable changed, printed above a table headed
+    "counts that moved", would be the panel contradicting itself, and the reader would be right
+    to believe the table.
+    """
     if fatal:
         return ComparisonConclusion(
             kind=CONCLUSION_INCOMPLETE,
@@ -554,14 +608,14 @@ def _conclusion(
                 " is offered."
             ),
         )
-    differences = _difference_descriptions(baseline, candidate, transitions)
-    if not differences:
+    differences = _difference_descriptions(counts, demand, transitions)
+    if not differences and all(rate.before == rate.after for rate in rates):
         return ComparisonConclusion(
             kind=CONCLUSION_PARITY,
             statement=(
-                "Every mission ended in the same place, safety totals were identical and the"
-                " same simulated demand was captured. Nothing measurable changed between these"
-                " two runs, which is not evidence that the representation cannot help."
+                "Every mission ended in the same place and every count and rate this comparison"
+                " publishes is identical. Nothing measurable changed between these two runs,"
+                " which is not evidence that the representation cannot help."
             ),
         )
     return ComparisonConclusion(
@@ -570,8 +624,15 @@ def _conclusion(
     )
 
 
+# Counts whose movement is described in its own words, in this order. Everything else that moved
+# is named by its own key, so no published number can change without the conclusion saying so.
+_SAFETY_COUNTS = ("unsafe_attempts", "unverified_attempts", "unsafe_completions")
+
+
 def _difference_descriptions(
-    baseline: RunFacts, candidate: RunFacts, transitions: tuple[MissionTransition, ...]
+    counts: tuple[CountChange, ...],
+    demand: tuple[SimulatedDemandChange, ...],
+    transitions: tuple[MissionTransition, ...],
 ) -> list[str]:
     """Exactly which dimensions moved, named rather than summarised."""
     described: list[str] = []
@@ -582,36 +643,29 @@ def _difference_descriptions(
             f"{len(transitions)} mission(s) ended differently"
             f" ({improved} newly completed, {regressed} no longer completed)"
         )
-    safety = (
-        ("unsafe attempts", baseline.metrics.unsafe_attempts, candidate.metrics.unsafe_attempts),
-        (
-            "unverified attempts",
-            baseline.metrics.unverified_attempts,
-            candidate.metrics.unverified_attempts,
-        ),
-        (
-            "unsafe completions",
-            baseline.metrics.unsafe_completions,
-            candidate.metrics.unsafe_completions,
-        ),
-    )
-    moved = [f"{name} {before} to {after}" for name, before, after in safety if before != after]
-    if moved:
-        described.append("safety counts changed (" + ", ".join(moved) + ")")
-    captured = {
-        entry.currency: entry.captured_amount_minor
-        for entry in baseline.metrics.simulated_demand.by_currency
-    }
-    after_captured = {
-        entry.currency: entry.captured_amount_minor
-        for entry in candidate.metrics.simulated_demand.by_currency
-    }
-    currencies = sorted(set(captured) | set(after_captured))
-    demand = [
-        f"{currency} {captured.get(currency, 0)} to {after_captured.get(currency, 0)}"
-        for currency in currencies
-        if captured.get(currency, 0) != after_captured.get(currency, 0)
+    moved = {change.key: change for change in counts if change.delta != 0}
+    safety = [
+        f"{name} {moved[name].before} to {moved[name].after}"
+        for name in _SAFETY_COUNTS
+        if name in moved
     ]
-    if demand:
-        described.append("captured simulated demand changed (" + ", ".join(demand) + ")")
+    if safety:
+        described.append("safety counts changed (" + ", ".join(safety) + ")")
+    captured = [
+        f"{change.currency} {change.before_amount_minor} to {change.after_amount_minor}"
+        for change in demand
+        if change.bucket == DEMAND_CAPTURED and change.delta_amount_minor != 0
+    ]
+    if captured:
+        described.append("captured simulated demand changed (" + ", ".join(captured) + ")")
+    # Anything else this comparison publishes and that moved. Named by key rather than by a
+    # written sentence, because a count with no sentence is still a count a reader can see in
+    # the table and a conclusion that omitted it would be the panel disagreeing with itself.
+    remaining = [
+        f"{key} {change.before} to {change.after}"
+        for key, change in moved.items()
+        if key not in _SAFETY_COUNTS
+    ]
+    if remaining:
+        described.append("other counts changed (" + ", ".join(sorted(remaining)) + ")")
     return described

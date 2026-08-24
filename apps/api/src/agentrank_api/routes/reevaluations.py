@@ -9,6 +9,10 @@ launches nothing, which is a product decision as well as an engineering one: a b
 spends model quota and takes as long as a suite takes, and starting one as a side effect of a
 publish would spend on the merchant's behalf without being asked.
 
+Neither does a benchmark buyer. `OperatorDep` refuses a credential the benchmark runner minted
+for a run, and the loopback server such a credential is given does not mount this router at all,
+so a buyer has no route to the lifecycle of the run it is executing inside.
+
 Nothing here executes a benchmark. Admission writes a durable queued launch and answers, and a
 separate worker process claims it. That is what keeps this endpoint an ordinary short request
 rather than a browser connection held open across an entire suite.
@@ -26,7 +30,7 @@ from agentrank_api.benchmark.launch_schemas import (
     ReevaluationRequest,
     ReevaluationView,
 )
-from agentrank_api.dependencies import MerchantDep, SessionDep, SettingsDep
+from agentrank_api.dependencies import OperatorDep, SessionDep, SettingsDep
 from agentrank_api.diagnostics.service import DiagnosticsService
 
 router = APIRouter(prefix="/api/v1/benchmark/re-evaluations", tags=["benchmark"])
@@ -35,7 +39,7 @@ router = APIRouter(prefix="/api/v1/benchmark/re-evaluations", tags=["benchmark"]
 @router.get("/preflight")
 async def preflight(
     session: SessionDep,
-    merchant: MerchantDep,
+    merchant: OperatorDep,
     settings: SettingsDep,
 ) -> ReevaluationPreflightView:
     """What a re-evaluation would evaluate now, and what stops it if anything does."""
@@ -46,7 +50,7 @@ async def preflight(
 @router.get("")
 async def list_reevaluations(
     session: SessionDep,
-    merchant: MerchantDep,
+    merchant: OperatorDep,
     settings: SettingsDep,
     limit: Annotated[int, Query(ge=1, le=50)] = 10,
 ) -> list[ReevaluationView]:
@@ -61,7 +65,7 @@ async def list_reevaluations(
 async def read_reevaluation(
     reevaluation_id: uuid.UUID,
     session: SessionDep,
-    merchant: MerchantDep,
+    merchant: OperatorDep,
     settings: SettingsDep,
 ) -> ReevaluationDetailView:
     """One launch and its comparison. A foreign identifier is indistinguishable from an unknown
@@ -79,7 +83,7 @@ async def read_reevaluation(
 async def request_reevaluation(
     request: ReevaluationRequest,
     session: SessionDep,
-    merchant: MerchantDep,
+    merchant: OperatorDep,
     settings: SettingsDep,
 ) -> ReevaluationView:
     """Admit one launch, or answer with the one this request key already produced.

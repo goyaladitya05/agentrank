@@ -401,3 +401,45 @@ async def test_diagnose_answers_not_found_for_a_foreign_run(
     )
 
     assert result.code == ExitCode.NOT_FOUND
+
+
+async def test_settle_reports_a_run_that_belongs_to_no_launch(
+    catalog_settings: Settings, provider: FakePaymentProvider, session: AsyncSession
+) -> None:
+    """The command answers honestly about a run nobody launched from the console.
+
+    What it settles is covered where the settlement lives; what this pins is that the command
+    exists, resolves a run, and says plainly when there is no launch behind it rather than
+    inventing one.
+    """
+    await cli(catalog_settings, provider, "benchmark", "seed")
+    await cli(catalog_settings, provider, "benchmark", "run")
+    finished = await only_run(session)
+
+    result = await cli(
+        catalog_settings, provider, "benchmark", "settle", str(finished.id), "--json"
+    )
+
+    assert result.code == ExitCode.OK
+    payload = result.json()
+    assert payload["status"] == BenchmarkRunStatus.COMPLETED.value
+    assert payload["reevaluation_id"] is None
+
+
+async def test_settle_refuses_a_run_that_has_not_finished(
+    catalog_settings: Settings, provider: FakePaymentProvider, session: AsyncSession
+) -> None:
+    """A launch naming a run nobody has closed is not stranded, it is running."""
+    await cli(catalog_settings, provider, "benchmark", "seed")
+    merchant = await MerchantRepository(session).get_by_slug(VOLTEDGE.merchant_slug)
+    assert merchant is not None
+    started = await BenchmarkRunService(session).start_run(
+        suite_key=VOLTEDGE.suite.key,
+        suite_version=VOLTEDGE.suite.version,
+        merchant_slug=VOLTEDGE.merchant_slug,
+    )
+
+    result = await cli(catalog_settings, provider, "benchmark", "settle", str(started.id))
+
+    assert result.code == ExitCode.REFUSED
+    assert "has not finished" in result.out

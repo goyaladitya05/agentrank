@@ -27,7 +27,7 @@ including which merchant this is, comes from the credential and from the databas
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -566,11 +566,14 @@ class MerchantReevaluationService:
             )
         compiler_run = await self._compiler_run(merchant.id, current)
         if compiler_run is None:
+            # Its own code rather than the one above. A merchant who has published is not told
+            # to publish, and a representation whose compiler run cannot be read is a broken
+            # lineage rather than an absent artifact.
             raise ConflictError(
-                "no_published_representation",
-                "The published representation names no compiler run.",
-                resource=RESOURCE,
-                identifier=str(merchant.id),
+                "representation_lineage_unreadable",
+                "The published representation names a compiler run that cannot be read.",
+                resource="commerce_representation",
+                identifier=str(current.id),
             )
         suite = await self._current_suite(merchant.id)
         if suite is None:
@@ -742,8 +745,16 @@ class ReevaluationWorkerService:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def claim_next(self, merchant_id: uuid.UUID) -> BenchmarkReevaluation | None:
-        """The oldest queued launch for one merchant, locked for this transaction.
+    async def claim_next(
+        self, merchant_id: uuid.UUID, *, environment_id: uuid.UUID
+    ) -> BenchmarkReevaluation | None:
+        """The oldest queued launch for one merchant's world, locked for this transaction.
+
+        Scoped to the world the claiming worker holds, and that scope is load bearing rather
+        than an optimisation. A settled launch is terminal and cannot be deleted, so a worker
+        that claimed a launch it could only refuse would destroy a merchant's request that a
+        differently configured worker could have served. A launch this worker cannot serve is
+        never taken from one that can.
 
         `SKIP LOCKED` so a second worker takes the next one instead of waiting on a row it is
         never going to get. The launch is not transitioned here: it stays QUEUED until a run
@@ -755,6 +766,7 @@ class ReevaluationWorkerService:
                 select(BenchmarkReevaluation)
                 .where(
                     BenchmarkReevaluation.merchant_id == merchant_id,
+                    BenchmarkReevaluation.environment_id == environment_id,
                     BenchmarkReevaluation.status == ReevaluationStatus.QUEUED,
                 )
                 .order_by(BenchmarkReevaluation.requested_at, BenchmarkReevaluation.id)
@@ -774,7 +786,7 @@ class ReevaluationWorkerService:
                 identifier=str(launch.id),
             )
         launch.run_id = run_id
-        launch.started_at = datetime.now(UTC)
+        launch.started_at = await self._clock()
         launch.status = ReevaluationStatus.EXECUTING
         await self._session.commit()
 
@@ -788,7 +800,7 @@ class ReevaluationWorkerService:
         if launch.status is not ReevaluationStatus.EXECUTING:
             return
         launch.status = ReevaluationStatus.COMPLETED
-        launch.settled_at = datetime.now(UTC)
+        launch.settled_at = await self._clock()
         await self._session.commit()
 
     async def settle_failed(self, reevaluation_id: uuid.UUID, *, failure_code: str) -> None:
@@ -802,15 +814,21 @@ class ReevaluationWorkerService:
             return
         launch.status = ReevaluationStatus.FAILED
         launch.failure_code = failure_code
-        launch.settled_at = datetime.now(UTC)
+        launch.settled_at = await self._clock()
         await self._session.commit()
 
-    async def settle_for_aborted_run(self, run_id: uuid.UUID) -> BenchmarkReevaluation | None:
-        """Close the launch an aborted run belonged to, if it belonged to one.
+    async def settle_for_terminal_run(self, run_id: uuid.UUID) -> BenchmarkReevaluation | None:
+        """Close the launch a finished run belonged to, if it belonged to one.
 
-        An aborted run is an operator saying that a stopped execution is not coming back. The
-        launch behind it is then over too, and leaving it EXECUTING would hold this merchant's
-        one pending slot against a run nobody is going to finish.
+        This is the operator's recovery as well as the ordinary abort path. A worker settles its
+        own launch when it finishes, and a worker that dies between closing the run and settling
+        the launch leaves one executing against a run that is already terminal. Nothing else can
+        reach that launch: the dispatcher only claims queued ones, and the merchant's one pending
+        slot is held against it until somebody does. So this reads the bound run and settles the
+        launch to agree with it, which is the only settlement the database will accept anyway.
+
+        None when the run belongs to no launch, and unchanged when the launch is already settled,
+        so running it twice is running it once.
         """
         launch = (
             await self._session.execute(
@@ -821,11 +839,35 @@ class ReevaluationWorkerService:
         ).scalar_one_or_none()
         if launch is None or launch.status is not ReevaluationStatus.EXECUTING:
             return launch
-        launch.status = ReevaluationStatus.FAILED
-        launch.failure_code = "run_aborted"
-        launch.settled_at = datetime.now(UTC)
+        run = (
+            await self._session.execute(
+                select(BenchmarkRun).where(
+                    BenchmarkRun.id == run_id, BenchmarkRun.merchant_id == launch.merchant_id
+                )
+            )
+        ).scalar_one_or_none()
+        if run is None or not run.is_terminal:
+            return launch
+        settled = await self._clock()
+        if run.status is BenchmarkRunStatus.COMPLETED:
+            launch.status = ReevaluationStatus.COMPLETED
+        else:
+            launch.status = ReevaluationStatus.FAILED
+            launch.failure_code = "run_aborted"
+        launch.settled_at = settled
         await self._session.commit()
         return launch
+
+    async def _clock(self) -> datetime:
+        """The database's own clock, which is the one `requested_at` was written from.
+
+        A launch's timestamps are compared with each other by check constraints, and this
+        process's clock and the database's are two clocks. Skew between them would turn an
+        ordinary bind into a raw integrity error after a run had already been created.
+        """
+        now = await self._session.scalar(select(func.now()))
+        assert now is not None  # `now()` always answers
+        return now
 
     async def _locked(self, reevaluation_id: uuid.UUID) -> BenchmarkReevaluation:
         launch = (

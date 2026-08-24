@@ -159,6 +159,29 @@ async def require_merchant(
 MerchantDep = Annotated[AuthenticatedMerchant, Depends(require_merchant)]
 
 
+async def require_operator_merchant(merchant: MerchantDep) -> AuthenticatedMerchant:
+    """Refuse a benchmark executor's own credential the merchant command surface.
+
+    A credential the benchmark runner issued carries the run it was minted for, and it exists so
+    one buyer process can shop one merchant for the length of one run. It is still a merchant
+    credential, so it authenticates; what it must not do is command the benchmark it is running
+    inside. A buyer that could queue a re-evaluation could touch the lifecycle of its own run.
+
+    The loopback endpoint an isolated buyer is given already has no benchmark command surface on
+    it at all, which is the layer that holds even if this one were removed. This is the second
+    layer, and it holds for any deployment where a benchmark credential can reach the ordinary
+    API. `AuthenticationError` rather than a 403, for the same reason every other refusal here
+    is: this credential has not established that it is a merchant operator, and saying which of
+    the two it is would be saying something about the credential.
+    """
+    if merchant.benchmark_capability is not None:
+        raise AuthenticationError()
+    return merchant
+
+
+OperatorDep = Annotated[AuthenticatedMerchant, Depends(require_operator_merchant)]
+
+
 async def require_mutation_permission(session: SessionDep, merchant: MerchantDep) -> None:
     """Refuse an ordinary credential changing a merchant an active run owns."""
     await BenchmarkMutationGuard(session).require_allowed(

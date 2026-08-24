@@ -115,10 +115,21 @@ def world_source(slug: str, *, version: int = 1) -> MerchantSourceDefinition:
 
 @dataclass(frozen=True, slots=True)
 class LaunchWorld:
-    """Everything a launch resolves, so a test can assert what was frozen against it."""
+    """Everything a launch resolves, so a test can assert what was frozen against it.
+
+    The identifiers are held as plain values beside the rows they came from. The dispatcher
+    deliberately ends its own transaction partway through, which expires every loaded instance,
+    and a test that read an attribute off one afterwards would be asserting through a lazy load
+    rather than against the value it set up.
+    """
 
     merchant_id: uuid.UUID
     merchant_slug: str
+    representation_id: uuid.UUID
+    suite_id: uuid.UUID
+    suite_key: str
+    suite_version: int
+    environment_id: uuid.UUID
     fixture: BenchmarkFixture
     environment: BenchmarkEnvironment
     suite: BenchmarkSuite
@@ -160,6 +171,11 @@ async def build_launch_world(
     return LaunchWorld(
         merchant_id=merchant.id,
         merchant_slug=slug,
+        representation_id=representation.id,
+        suite_id=published.id,
+        suite_key=published.suite_key,
+        suite_version=published.version,
+        environment_id=registered.id,
         fixture=world,
         environment=registered,
         suite=published,
