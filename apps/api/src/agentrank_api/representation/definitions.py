@@ -364,6 +364,25 @@ class CommerceIRDefinition:
         }
 
 
+# Merchant prose that impersonates instructions to whatever reads it next. A compiled
+# representation is handed to a buyer agent as its discovery surface, and a product field is never
+# a legitimate place to address one.
+#
+# Narrow on purpose and not a content filter. It catches one shape this repository has decided is
+# never legitimate, and everything else a merchant writes is settled by the review workflow, which
+# is where a disputed fact belongs. Widening it into a general prompt-injection detector would be
+# a filter this repository would have to keep in step with language.
+_INSTRUCTION_LIKE = re.compile(
+    r"\b(ignore|disregard)\s+(all\s+)?(previous|compiler|system)\s+instructions?\b",
+    re.IGNORECASE,
+)
+
+
+def instruction_like(text: str) -> bool:
+    """Whether one merchant string impersonates instructions to whatever reads it next."""
+    return _INSTRUCTION_LIKE.search(text) is not None
+
+
 def _hash(payload: dict[str, Any]) -> str:
     digest = hashlib.sha256(canonical_json(payload).encode("utf-8"))
     return f"{HASH_ALGORITHM}:{digest.hexdigest()}"

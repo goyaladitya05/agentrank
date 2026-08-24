@@ -39,6 +39,7 @@ from agentrank_api.representation.definitions import (
     MerchantSourceDefinition,
     SourceProduct,
     SourceVariant,
+    instruction_like,
 )
 from agentrank_api.representation.models import SUBMISSION_KEY_PATTERN
 
@@ -48,9 +49,13 @@ MAX_SOURCE_REQUEST_BYTES = 128 * 1024
 
 # How deeply a source document may nest. Seven is what the shape below actually needs: the
 # document, its product array, one product, its variant array, one variant, that variant's
-# metadata, and a value inside it. Twelve leaves room and is still far below the depth at which
-# the JSON parser recurses into the interpreter's stack limit, which is a `RecursionError` rather
-# than a parse error and would otherwise reach a caller as a 500.
+# metadata, and a value inside it. Twelve leaves room.
+#
+# Not a crash fix. The JSON parser handles tens of thousands of levels and answers 400 through the
+# framework's own body handling past that, and the 500 a deep body used to cause was in the
+# validation error handler and is fixed in `agentrank_api.main` for every route. This is a
+# statement about what a source document is: past twelve levels it is not one, and finding that
+# out should not require parsing it.
 MAX_SOURCE_REQUEST_DEPTH = 12
 
 MAX_PRODUCTS = 50
@@ -89,6 +94,13 @@ Identifier = Annotated[str, Field(pattern=IDENTIFIER_PATTERN)]
 MetadataValue = str | int | bool
 
 
+def _plain(value: str | None, name: str) -> str | None:
+    """One merchant string, refused if it addresses whatever reads it next."""
+    if value is not None and instruction_like(value):
+        raise ValueError(f"{name} may not address the reader of this document")
+    return value
+
+
 class SourceVariantInput(BaseModel):
     """One purchasable variant as the merchant describes it, not as the runtime holds it."""
 
@@ -105,6 +117,11 @@ class SourceVariantInput(BaseModel):
     @classmethod
     def bounded_metadata(cls, value: dict[str, MetadataValue]) -> dict[str, MetadataValue]:
         return _bounded_map(value, MAX_METADATA_ENTRIES, MAX_METADATA_VALUE_LENGTH, "metadata")
+
+    @field_validator("label")
+    @classmethod
+    def plain_label(cls, value: str | None) -> str | None:
+        return _plain(value, "a variant label")
 
     def domain(self) -> SourceVariant:
         return SourceVariant(
@@ -133,6 +150,11 @@ class SourceProductInput(BaseModel):
     @classmethod
     def bounded_metadata(cls, value: dict[str, MetadataValue]) -> dict[str, MetadataValue]:
         return _bounded_map(value, MAX_METADATA_ENTRIES, MAX_METADATA_VALUE_LENGTH, "metadata")
+
+    @field_validator("title", "description", "category")
+    @classmethod
+    def plain_text(cls, value: str | None) -> str | None:
+        return _plain(value, "a product field")
 
     def domain(self) -> SourceProduct:
         return SourceProduct(
@@ -167,6 +189,7 @@ class SourceDocumentInput(BaseModel):
         for name, body in bounded.items():
             if not body.strip():
                 raise ValueError(f"policy text {name} must not be blank")
+            _plain(body, f"policy text {name}")
         return bounded
 
     @field_validator("products")
@@ -314,6 +337,8 @@ def _bounded_map(value: dict[str, Any], entries: int, body: int, name: str) -> d
             raise ValueError(f"{name} name {key!r} is not a valid identifier")
         if isinstance(item, str) and len(item) > body:
             raise ValueError(f"{name} {key} is longer than {body} characters")
+        if isinstance(item, str):
+            _plain(item, f"{name} {key}")
         if (
             isinstance(item, int)
             and not isinstance(item, bool)

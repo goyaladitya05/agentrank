@@ -23,6 +23,7 @@ from agentrank_api.representation.definitions import (
     SemanticFact,
     SourceReference,
     ValueState,
+    instruction_like,
 )
 
 
@@ -112,12 +113,16 @@ def extract(source: MerchantSourceDefinition) -> list[tuple[CandidateProposal, C
                 ]
             )
             finish = variant.merchant_metadata.get("finish")
-            # Guarded like every other merchant string the extractor reads. A metadata field is
-            # a shorter place to write prose than a description, not a more trustworthy one, and
-            # this candidate is accepted without review and reaches a buyer agent's discovery
-            # surface unaltered. `_instruction_like` is the same refusal the title, the
-            # description and the warranty text already get.
-            if isinstance(finish, str) and finish.strip() and not _instruction_like(finish):
+            # A metadata field is a shorter place to write prose than a description, not a more
+            # trustworthy one, and this candidate is accepted without review and reaches a buyer
+            # agent's discovery surface unaltered. The same refusal the derived readings below
+            # already apply to a title and a description.
+            #
+            # This is the second layer. The first is `agentrank_api.representation.schemas`,
+            # which refuses instruction-shaped text in any field of a merchant-submitted
+            # document, so a snapshot with one in it can only have come from the operator command
+            # line reading an authored file.
+            if isinstance(finish, str) and finish.strip() and not instruction_like(finish):
                 output.append(
                     (
                         CandidateProposal(
@@ -271,11 +276,10 @@ def _semantic_product(
 
 
 def _instruction_like(text: str) -> bool:
-    """Do not interpret a source string that impersonates compiler instructions."""
-    return bool(
-        re.search(
-            r"\b(ignore|disregard)\s+(all\s+)?(previous|compiler|system)\s+instructions?\b",
-            text,
-            re.IGNORECASE,
-        )
-    )
+    """Do not interpret a source string that impersonates compiler instructions.
+
+    Kept as a name in this module because the extractor is where the rule was first needed and
+    where it is read most; the predicate itself now lives beside the document it judges, so the
+    intake boundary can refuse such a string before it is ever stored.
+    """
+    return instruction_like(text)
