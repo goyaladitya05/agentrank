@@ -6,9 +6,14 @@ A body that is wrong is a refusal and never a failure. The framework's own answe
 error encodes the offending value, which recurses once per nesting level of whatever arrived,
 inside an exception handler that no `try` in the request path wraps. A body of a few hundred
 nested brackets therefore left this application answering 500 to a request that was merely wrong,
-on every route with a body schema and before authentication ran. The handler in
+on every route with a body schema.
+
+An authenticated caller, to be exact: body field errors are collected inside dependency solving
+and after the dependencies themselves run, so an anonymous caller is refused before a validation
+error exists to be rendered. Every route here takes a merchant credential and a merchant is not a
+trusted caller, so the narrower blast radius is not a smaller bug. The handler in
 `agentrank_api.main` answers without encoding the value, and these are the tests that hold it
-there.
+there, including that the answer never grows with the body.
 
 And the merchant source path, which is the one body a caller composes freely, is bounded in size
 and in nesting before anything parses it. Those bounds are exercised in `test_source_api.py`
@@ -94,7 +99,12 @@ async def test_a_deeply_nested_body_is_refused_before_authentication(
     session: AsyncSession,
     factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """Body validation runs before dependencies, so an anonymous caller reached the same crash."""
+    """An anonymous caller never reached the crash, and still must not reach a 500.
+
+    Body field errors are collected inside dependency solving and after the dependencies run, so
+    `require_merchant` refuses first and no validation error is ever built. Asserted rather than
+    assumed, because the ordering is the framework's and not this application's.
+    """
     http = client(settings, factory)
 
     answer = http.post(
@@ -142,6 +152,33 @@ async def test_a_validation_refusal_names_the_field_and_echoes_no_value(
     # The caller's own value would leak nothing, and it is still not repeated: a refusal that
     # quoted the body would grow with the body.
     assert "not-a-uuid-at-all" not in answer.text
+
+
+async def test_a_refusal_does_not_grow_with_the_body_that_caused_it(
+    settings: Settings,
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+    issue_credential: CredentialIssuer,
+) -> None:
+    """An unexpected field puts the caller's own key name into the location it is refused at.
+
+    Bounding the number of location parts is not enough, because the part itself is whatever the
+    caller called it. Unbounded, a megabyte of key name comes back twice: once in the location and
+    once in the sentence built from it.
+    """
+    merchant, _ = await merchant_with_source(session, "boundary-amplify-shop")
+    token = await issue_credential(merchant.id)
+    http = client(settings, factory)
+    invented = "K" * 100_000
+    body = f'{{"source_snapshot_id": "{uuid.uuid7()}", "{invented}": 1}}'
+
+    answer = http.post(
+        RUNS, headers={**bearer(token), "Content-Type": "application/json"}, content=body
+    )
+
+    assert answer.status_code == 422
+    assert len(answer.text) < 2048
+    assert invented not in answer.text
 
 
 async def test_a_validation_refusal_is_bounded_however_many_fields_are_wrong(

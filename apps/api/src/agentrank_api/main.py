@@ -43,10 +43,17 @@ from agentrank_api.routes import (
     system,
 )
 
-# What a validation refusal may say about one field. Bounded because the location and the
-# message both come from a schema whose depth and field names a caller partly chooses.
+# What a validation refusal may say about one field.
+#
+# All three bounds exist for one reason: a location part can be a field name the caller invented.
+# A body rejected for an unexpected field puts that name into the location, so without a bound on
+# its length a megabyte of key name comes back twice over, in the location and again in the
+# sentence built from it. The number of parts and the message length are bounded for symmetry;
+# neither is reachable by a caller, because the deepest location any schema here produces is seven
+# parts and every message is a validator's own fixed string.
 MAX_INVALID_FIELDS = 20
 MAX_FIELD_LOCATION_PARTS = 12
+MAX_FIELD_LOCATION_PART_LENGTH = 64
 MAX_FIELD_MESSAGE_LENGTH = 200
 
 
@@ -110,6 +117,16 @@ def create_app(
         title="AgentRank API",
         version="0.0.0",
         lifespan=lifespan,
+        # Declared once, for every operation. FastAPI documents a 422 as its own
+        # `HTTPValidationError` on any route with a schema, and this application does not answer
+        # with that shape: `detail` is a sentence and the structured half is `fields`. A generated
+        # client that trusted the default would fail to decode a refusal.
+        responses={
+            status.HTTP_422_UNPROCESSABLE_CONTENT: {
+                "model": InvalidRequestResponse,
+                "description": "The request body could not be read",
+            }
+        },
     )
     # Set here as well as in the lifespan, because none of the three needs a lifecycle: they are
     # decided when the application is built and nothing closes them. The engine and its session
@@ -151,18 +168,28 @@ def create_app(
         an `input` field holding the fragment of the caller's body that failed. Encoding it
         recurses once per nesting level, inside an exception handler that no `try` in the request
         path wraps, so a body of a few hundred nested brackets left this application answering
-        500 to a request that was merely wrong. It did so on every route with a body schema and
-        before authentication, because body validation runs first.
+        500 to a request that was merely wrong, on every route with a body schema.
+
+        An authenticated caller, to be exact. Body field errors are collected inside dependency
+        solving and after the dependencies themselves run, so `require_merchant` refuses an
+        anonymous caller before a validation error is ever built. That is a narrower blast radius
+        than it first looked and not a smaller bug: every route here takes a merchant credential,
+        and a merchant is not a trusted caller.
 
         So the value is never encoded. What comes back is where the body was wrong and what was
-        wrong with it: a location path and the validator's own sentence, both bounded, plus a
-        `detail` string naming the first few so a caller that reads only prose still learns
-        something. Nothing here is recursive and nothing here is the caller's data.
+        wrong with it, plus a `detail` string naming the first few so a caller that reads only
+        prose still learns something. Every part of it is bounded, including the length of a
+        location part, because an unexpected-field error puts the caller's own key name there.
+        Nothing here is recursive and the size of a refusal does not follow the size of what was
+        refused.
         """
         fields = [
             InvalidField(
-                location=[str(part) for part in entry.get("loc", ())][:MAX_FIELD_LOCATION_PARTS],
-                message=str(entry.get("msg", "is not valid"))[:MAX_FIELD_MESSAGE_LENGTH],
+                location=[
+                    _shortened(str(part), MAX_FIELD_LOCATION_PART_LENGTH)
+                    for part in entry.get("loc", ())
+                ][:MAX_FIELD_LOCATION_PARTS],
+                message=_shortened(str(entry.get("msg", "is not valid")), MAX_FIELD_MESSAGE_LENGTH),
             )
             for entry in error.errors()[:MAX_INVALID_FIELDS]
         ]
@@ -262,3 +289,10 @@ def create_app(
         },
     )
     return app
+
+
+def _shortened(value: str, limit: int) -> str:
+    """One string, bounded for a response, saying so rather than looking whole."""
+    if len(value) <= limit:
+        return value
+    return value[: limit - 3] + "..."
