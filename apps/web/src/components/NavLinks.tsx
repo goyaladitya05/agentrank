@@ -9,6 +9,7 @@ const LINKS = [
   { href: "/overview", label: "Overview" },
   { href: "/runs", label: "Runs" },
   { href: "/compiler", label: "Compiler" },
+  { href: "/re-evaluations", label: "Re-evaluation" },
   { href: "/status", label: "System status" },
 ];
 

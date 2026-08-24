@@ -298,6 +298,17 @@
   color: var(--text);
 }
 
+.launchTerms {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.launchTerms li {
+  margin-top: 4px;
+}
+
 .findingActions {
   margin: 8px 0 0;
   font-size: 12px;

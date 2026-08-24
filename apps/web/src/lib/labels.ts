@@ -163,10 +163,147 @@ export function transitionDirectionLabel(direction: string): { label: string; to
       return { label: "Compiled succeeded, raw did not", tone: "ok" };
     case "COMPILED_LOSS":
       return { label: "Raw succeeded, compiled did not", tone: "warn" };
+    case "IMPROVED":
+      return { label: "Newly completed", tone: "ok" };
+    case "REGRESSED":
+      return { label: "No longer completed", tone: "warn" };
     case "CHANGED":
       return { label: "Changed failure mode", tone: "neutral" };
     default:
       return { label: humanize(direction), tone: "neutral" };
+  }
+}
+
+/**
+ * Where one launch has got to. Launch state and run state are different facts and read as
+ * different sentences: queued means nothing has executed, and executing means the run beside it
+ * carries what is happening.
+ */
+export function launchStatusLabel(status: string): { label: string; tone: Tone } {
+  switch (status) {
+    case "QUEUED":
+      return { label: "Queued", tone: "neutral" };
+    case "EXECUTING":
+      return { label: "Running", tone: "info" };
+    case "COMPLETED":
+      return { label: "Completed", tone: "ok" };
+    case "FAILED":
+      return { label: "Not completed", tone: "warn" };
+    default:
+      return { label: humanize(status), tone: "neutral" };
+  }
+}
+
+/** Why a launch could not produce a finished run, in words rather than in a code. */
+export function launchFailureLabel(code: string): string {
+  switch (code) {
+    case "provider_credential_unavailable":
+      return "AgentRank had no credential for the model provider this launch was frozen for, so it was not run with a different one.";
+    case "benchmark_world_mismatch":
+      return "The benchmark world this launch was frozen against is not the one the operator process holds.";
+    case "benchmark_suite_unavailable":
+      return "The benchmark suite this launch was frozen against is no longer published.";
+    case "buyer_configuration_invalid":
+      return "The buyer configuration this launch froze is not one the current AgentRank build can reproduce exactly.";
+    case "representation_unavailable":
+      return "The representation this launch froze could not be read.";
+    case "run_aborted":
+      return "The benchmark run this launch started was stopped and closed by an operator. Nothing was replayed.";
+    default:
+      return humanize(code);
+  }
+}
+
+/**
+ * Every methodology caveat the comparison engine can raise, as a heading a merchant can scan.
+ * The sentence beside it comes from the API and is never rewritten here.
+ */
+export function warningLabel(code: string): string {
+  switch (code) {
+    case "NOT_A_CONTROLLED_EXPERIMENT":
+      return "Not a controlled experiment";
+    case "SMALL_SAMPLE":
+      return "One run on each side";
+    case "SUITE_DIFFERS":
+      return "Different workload";
+    case "ENVIRONMENT_DIFFERS":
+      return "Different benchmark world";
+    case "EVALUATOR_DIFFERS":
+      return "Different marking rules";
+    case "CATALOG_PIN_DIFFERS":
+      return "Your catalog changed";
+    case "EXECUTOR_DIFFERS":
+      return "Different buyer";
+    case "EXECUTOR_REVISION_DIFFERS":
+      return "Buyer code changed";
+    case "BUYER_CONFIGURATION_DIFFERS":
+      return "Different buyer configuration";
+    case "REPRESENTATION_DELIVERY_DIFFERS":
+      return "Only one run saw a representation";
+    case "RESOLVED_MODEL_MISMATCH":
+      return "Different resolved models";
+    case "PROVIDER_FAILURES_PRESENT":
+      return "Provider failures present";
+    case "TOKEN_USAGE_UNAVAILABLE":
+      return "Token usage unknown";
+    case "RUN_NOT_COMPLETED":
+      return "A run did not complete";
+    default:
+      return humanize(code);
+  }
+}
+
+/** The counts a comparison publishes, in merchant words rather than as field names. */
+export function comparisonCountLabel(key: string): string {
+  switch (key) {
+    case "missions_total":
+      return "Missions";
+    case "missions_succeeded":
+      return "Compliant purchases";
+    case "missions_failed":
+      return "Failed missions";
+    case "missions_abstained":
+      return "Abstentions";
+    case "missions_errored":
+      return "Missions AgentRank could not measure";
+    case "missions_unfinished":
+      return "Missions with no outcome";
+    case "purchase_missions":
+      return "Missions where a purchase was available";
+    case "control_missions":
+      return "Control missions";
+    case "correct_abstentions":
+      return "Correct abstentions";
+    case "incorrect_abstentions":
+      return "Incorrect abstentions";
+    case "unsafe_attempts":
+      return "Unsafe attempts blocked";
+    case "unverified_attempts":
+      return "Unverified attempts";
+    case "unsafe_completions":
+      return "Enforcement escapes";
+    case "oracle_disagreements":
+      return "Ground truth disagreements";
+    case "provider_failure_missions":
+      return "Missions with provider errors";
+    case "model_invocations":
+      return "Provider round trips";
+    case "tool_calls":
+      return "Tool calls";
+    default:
+      return humanize(key);
+  }
+}
+
+/** The two rates a comparison publishes. There is no weighted score to label. */
+export function comparisonRateLabel(key: string): string {
+  switch (key) {
+    case "task_completion_rate":
+      return "Task completion";
+    case "correct_abstention_rate":
+      return "Correct abstention";
+    default:
+      return humanize(key);
   }
 }
 

@@ -1,0 +1,137 @@
+"use server";
+
+/**
+ * The console's one benchmark write command.
+ *
+ * A launch spends model quota and takes as long as a suite takes, so this is the most expensive
+ * thing a merchant can do here and it is treated accordingly.
+ *
+ * Three things are deliberate.
+ *
+ * The request key comes from the rendered form rather than from this action. One preflight
+ * render is one launch: submitting the same form twice, or retrying after a lost response,
+ * repeats the key and the API answers with the launch that key already produced. Opening the
+ * page again is a new key and therefore a deliberate second launch.
+ *
+ * A response the console never saw is not a failure. A network error leaves the launch in an
+ * unknown state, and saying "it failed" would be a guess that reads as fact. The merchant is
+ * told to reload, and retrying the same form cannot produce a second run.
+ *
+ * And refusal codes become sentences here rather than in the API, for the same reason compiler
+ * refusals do: the API's other caller is an agent, and `representation_superseded` is not
+ * something to show a shopkeeper.
+ */
+
+import { revalidatePath } from "next/cache";
+
+import { requireConsoleApiKey } from "@/lib/auth/credential";
+import { apiBaseUrl } from "@/lib/config";
+import { decodeReevaluation } from "@/lib/reevaluation";
+import type { LaunchState } from "@/lib/reevaluation-mutation";
+
+const REFUSALS: Record<string, string> = {
+  no_published_representation:
+    "Publish an agent-ready representation before requesting a re-evaluation.",
+  representation_superseded:
+    "A newer agent-ready representation has been published since this page loaded. Reload to evaluate the current one.",
+  reevaluation_already_pending:
+    "A re-evaluation is already queued or running for your merchant. Wait for it to finish before starting another.",
+  reevaluation_request_key_reused:
+    "This form has already launched a re-evaluation of a different representation. Reload and try again.",
+  run_already_active:
+    "A benchmark run is already executing against your world. Only one run may own it at a time.",
+  benchmark_suite_unavailable:
+    "No benchmark suite is published for your merchant, so there is nothing to run.",
+  benchmark_world_unregistered:
+    "Your merchant has no registered benchmark world, so a run has no catalog to be put back to.",
+  not_found: "This representation is no longer available. Reload to see the current one.",
+  unauthenticated: "Your session has expired. Sign in again to request a re-evaluation.",
+};
+
+function refusal(status: number, payload: unknown): LaunchState {
+  const body =
+    typeof payload === "object" && payload !== null && !Array.isArray(payload)
+      ? (payload as { error?: unknown; detail?: unknown })
+      : {};
+  const code = typeof body.error === "string" ? body.error : null;
+  // A 409 or a 404 means the world moved while the merchant was reading it. A 422 means this
+  // request was wrong and the world did not move.
+  const stale = status === 409 || status === 404;
+  const known = code === null ? undefined : REFUSALS[code];
+  if (known !== undefined) {
+    return { ok: false, message: known, stale, unknown: false, reevaluationId: null };
+  }
+  if (typeof body.detail === "string") {
+    return { ok: false, message: body.detail, stale, unknown: false, reevaluationId: null };
+  }
+  return {
+    ok: false,
+    message: `AgentRank refused this request (HTTP ${String(status)}).`,
+    stale,
+    unknown: false,
+    reevaluationId: null,
+  };
+}
+
+export async function requestReevaluation(
+  representationId: string,
+  requestKey: string,
+  _: LaunchState,
+): Promise<LaunchState> {
+  // Resolved before the try. `requireConsoleApiKey` redirects by throwing the framework's own
+  // control-flow error, and catching that here would turn an expired session into a message
+  // about the network instead of a login page.
+  const apiKey = await requireConsoleApiKey();
+  let response: Response;
+  try {
+    response = await fetch(`${apiBaseUrl().replace(/\/+$/, "")}/api/v1/benchmark/re-evaluations`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ representation_id: representationId, request_key: requestKey }),
+      cache: "no-store",
+    });
+  } catch {
+    return {
+      ok: false,
+      message:
+        "The console could not reach AgentRank, so whether this launch was accepted is unknown. Reload this page to see the current state; submitting again cannot start a second run.",
+      stale: false,
+      unknown: true,
+      reevaluationId: null,
+    };
+  }
+
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const failed = refusal(response.status, payload);
+    if (failed.stale) refreshed();
+    return failed;
+  }
+
+  let launched;
+  try {
+    launched = decodeReevaluation(payload);
+  } catch {
+    return {
+      ok: false,
+      message:
+        "AgentRank answered with something this console cannot read. Reload to see the current state.",
+      stale: true,
+      unknown: true,
+      reevaluationId: null,
+    };
+  }
+  refreshed();
+  return {
+    ok: true,
+    message: null,
+    stale: false,
+    unknown: false,
+    reevaluationId: launched.reevaluation_id,
+  };
+}
+
+function refreshed(): void {
+  revalidatePath("/re-evaluations");
+  revalidatePath("/overview");
+}

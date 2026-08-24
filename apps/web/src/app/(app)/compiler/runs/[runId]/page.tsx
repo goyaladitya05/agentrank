@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { CandidateReview } from "@/components/CandidateReview";
@@ -65,7 +66,10 @@ export default async function CompilerRunPage({ params }: { params: Promise<{ ru
           </TechnicalDetails>
         </Panel>
       </Section>
-      <Section title="Publication" hint="Publishing does not run a benchmark.">
+      <Section
+        title="Publication"
+        hint="Publishing never runs a benchmark. Re-evaluation is a separate command."
+      >
         <Panel>
           <Publication run={run} />
         </Panel>
@@ -88,6 +92,13 @@ function Publication({ run }: { run: CompilerRun }) {
         <p className={styles.reviewMeta}>
           This representation and the reviews behind it can no longer change. Compile a newer source
           snapshot to publish again.
+        </p>
+        <p className={styles.reviewMeta}>
+          Publishing did not run a benchmark. Measuring this representation is a separate command:{" "}
+          <Link className={styles.rowLink} href="/re-evaluations">
+            request a re-evaluation
+          </Link>
+          .
         </p>
       </>
     );
