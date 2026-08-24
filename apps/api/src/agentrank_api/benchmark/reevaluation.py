@@ -209,6 +209,12 @@ class BenchmarkReevaluation(Base):
         CheckConstraint("run_id IS NULL OR started_at IS NOT NULL", name="run_needs_a_start"),
         CheckConstraint("started_at IS NULL OR started_at >= requested_at", name="start_order"),
         CheckConstraint("settled_at IS NULL OR settled_at >= requested_at", name="settle_order"),
+        # All three instants come from the database's own clock, so this is a property the table
+        # can hold rather than one that depends on which host wrote the row.
+        CheckConstraint(
+            "settled_at IS NULL OR started_at IS NULL OR settled_at >= started_at",
+            name="settle_after_start",
+        ),
         # A launch is never its own baseline.
         CheckConstraint(
             "baseline_run_id IS NULL OR run_id IS NULL OR baseline_run_id <> run_id",

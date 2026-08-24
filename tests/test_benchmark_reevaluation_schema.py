@@ -210,6 +210,23 @@ class TestLifecycle:
         assert "frozen at admission" in str(refused.value)
         await session.rollback()
 
+    async def test_a_launch_cannot_settle_before_it_started(self, session: AsyncSession) -> None:
+        """All three instants come from the database's clock, so ordering is the table's rule."""
+        world = await build_launch_world(session, "ordered-shop")
+        identifier = await insert_launch(session, world, request_key="ordered-request")
+
+        with pytest.raises(IntegrityError):
+            await session.execute(
+                text(
+                    "UPDATE benchmark_reevaluation SET status = 'FAILED',"
+                    " failure_code = 'run_aborted', started_at = now(),"
+                    " settled_at = now() - interval '1 hour' WHERE id = :id"
+                ),
+                {"id": identifier},
+            )
+            await session.commit()
+        await session.rollback()
+
     async def test_a_launch_cannot_be_deleted(self, session: AsyncSession) -> None:
         world = await build_launch_world(session, "durable-shop")
         identifier = await insert_launch(session, world, request_key="durable-request")
