@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -14,15 +15,20 @@ from agentrank_api.errors import (
     AuthenticationError,
     ConflictError,
     ErrorResponse,
+    InvalidField,
+    InvalidRequestResponse,
     NotFoundError,
     UpstreamError,
 )
-from agentrank_api.limits import RequestBodyLimit
+from agentrank_api.limits import BodyLimit, RequestBodyLimit
 from agentrank_api.payments.provider import PaymentProvider
 from agentrank_api.payments.wiring import build_payment_provider
 from agentrank_api.razorpay.client import HttpRazorpayClient, RazorpayClient
 from agentrank_api.razorpay.wiring import build_razorpay_client
-from agentrank_api.representation.schemas import MAX_SOURCE_REQUEST_BYTES
+from agentrank_api.representation.schemas import (
+    MAX_SOURCE_REQUEST_BYTES,
+    MAX_SOURCE_REQUEST_DEPTH,
+)
 from agentrank_api.routes import (
     checkouts,
     commerce,
@@ -36,6 +42,12 @@ from agentrank_api.routes import (
     sources,
     system,
 )
+
+# What a validation refusal may say about one field. Bounded because the location and the
+# message both come from a schema whose depth and field names a caller partly chooses.
+MAX_INVALID_FIELDS = 20
+MAX_FIELD_LOCATION_PARTS = 12
+MAX_FIELD_MESSAGE_LENGTH = 200
 
 
 def create_app(
@@ -131,6 +143,41 @@ def create_app(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    @app.exception_handler(RequestValidationError)
+    async def handle_invalid_request(_: Request, error: RequestValidationError) -> JSONResponse:
+        """A request body this application could not read, without serializing what arrived.
+
+        FastAPI's own handler answers by encoding `exc.errors()`, and every entry of that carries
+        an `input` field holding the fragment of the caller's body that failed. Encoding it
+        recurses once per nesting level, inside an exception handler that no `try` in the request
+        path wraps, so a body of a few hundred nested brackets left this application answering
+        500 to a request that was merely wrong. It did so on every route with a body schema and
+        before authentication, because body validation runs first.
+
+        So the value is never encoded. What comes back is where the body was wrong and what was
+        wrong with it: a location path and the validator's own sentence, both bounded, plus a
+        `detail` string naming the first few so a caller that reads only prose still learns
+        something. Nothing here is recursive and nothing here is the caller's data.
+        """
+        fields = [
+            InvalidField(
+                location=[str(part) for part in entry.get("loc", ())][:MAX_FIELD_LOCATION_PARTS],
+                message=str(entry.get("msg", "is not valid"))[:MAX_FIELD_MESSAGE_LENGTH],
+            )
+            for entry in error.errors()[:MAX_INVALID_FIELDS]
+        ]
+        named = "; ".join(
+            f"{'.'.join(field.location) or 'body'}: {field.message}" for field in fields[:3]
+        )
+        body = InvalidRequestResponse(
+            error="invalid_request",
+            detail=named or "the request body could not be read",
+            fields=fields,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, content=body.model_dump()
+        )
+
     @app.exception_handler(NotFoundError)
     async def handle_not_found(_: Request, error: NotFoundError) -> JSONResponse:
         """Services raise NotFoundError; routes never have to translate it."""
@@ -201,12 +248,17 @@ def create_app(
     app.include_router(sources.router)
     if benchmark_commands:
         app.include_router(reevaluations.router)
-    # In front of routing rather than in a dependency, because FastAPI reads a request body
-    # before it solves dependencies: by the time a schema or a route could look at the size, the
-    # bytes have already been received and held. A merchant source document is the one body this
-    # application accepts that a caller composes freely, so it is the one with a declared bound.
+    # In front of routing rather than in a dependency, because FastAPI reads and parses a request
+    # body before it solves dependencies: by the time a schema or a route could look at it, the
+    # bytes have been received and the parser has already recursed through them. A merchant source
+    # document is the one body this application accepts that a caller composes freely, so it is
+    # the one with a declared bound on both its size and its nesting.
     app.add_middleware(
         RequestBodyLimit,
-        limits={("POST", sources.router.prefix): MAX_SOURCE_REQUEST_BYTES},
+        limits={
+            ("POST", sources.router.prefix): BodyLimit(
+                max_bytes=MAX_SOURCE_REQUEST_BYTES, max_depth=MAX_SOURCE_REQUEST_DEPTH
+            )
+        },
     )
     return app

@@ -112,3 +112,28 @@ class ErrorResponse(BaseModel):
     detail: str
     resource: str | None = None
     identifier: str | None = None
+
+
+class InvalidField(BaseModel):
+    """Where one request body was wrong, and what was wrong with it.
+
+    `location` and `message` and nothing else. In particular not the value: it is the caller's
+    own, so returning it leaks nothing, and it is also the caller's own in size and in shape,
+    which is the whole problem. The framework's default handler serializes it, recursing once
+    per nesting level of whatever arrived, and a body of a thousand open brackets is a thousand
+    frames inside an exception handler that no `try` in the request path is outside of.
+    """
+
+    location: list[str]
+    message: str
+
+
+class InvalidRequestResponse(ErrorResponse):
+    """A request body this application could not read, said in a way an agent can act on.
+
+    Extends the ordinary error shape rather than replacing it, so a caller that already parses
+    `error` and `detail` needs no second parser, and one that wants to fix a specific field has
+    `fields` to read instead of a sentence.
+    """
+
+    fields: list[InvalidField]
