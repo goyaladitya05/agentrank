@@ -16,6 +16,7 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from agentrank_api.benchmark.identity import HASH_PATTERN
 from agentrank_api.benchmark.launch import ReevaluationDetail, ReevaluationPlan
 from agentrank_api.benchmark.reevaluation import (
     REQUEST_KEY_PATTERN,
@@ -33,9 +34,15 @@ class LaunchBlockerView(BaseModel):
 
 
 class ReevaluationPreflightView(BaseModel):
-    """What a re-evaluation would evaluate, before the merchant commits to spending one."""
+    """What a re-evaluation would evaluate, before the merchant commits to spending one.
+
+    `plan_digest` covers every identity field below. A launch carries it back, and admission
+    refuses one whose plan has moved since this was read, so what a merchant committed to is
+    what runs rather than whatever was resolvable a moment later.
+    """
 
     launchable: bool
+    plan_digest: str
     representation_id: uuid.UUID | None
     representation_label: str | None
     compiler_run_id: uuid.UUID | None
@@ -62,6 +69,7 @@ class ReevaluationPreflightView(BaseModel):
     def from_domain(cls, plan: ReevaluationPlan) -> Self:
         return cls(
             launchable=plan.launchable,
+            plan_digest=plan.digest,
             representation_id=plan.representation_id,
             representation_label=plan.representation_label,
             compiler_run_id=plan.compiler_run_id,
@@ -93,9 +101,14 @@ class ReevaluationRequest(BaseModel):
     """The whole of what a browser may say about a launch.
 
     A representation identifier, so a page rendered against an artifact that has since been
-    superseded is refused rather than quietly running something else, and a request key, so a
-    double submit and a retry after a lost response are the same launch. Which merchant this is
-    comes from the credential and is not a field here or anywhere else.
+    superseded is refused rather than quietly running something else. A request key, so a double
+    submit and a retry after a lost response are the same launch. And the preflight digest, so
+    every other thing the merchant was shown, the suite, the world and the buyer, is refused if
+    it moved rather than frozen silently.
+
+    None of the three selects anything. Each is checked against what the server resolves for the
+    merchant its credential authenticated, and which merchant that is comes from the credential
+    and is not a field here or anywhere else.
 
     `extra="forbid"` so a body carrying `merchant_id`, a suite, a buyer configuration or an
     execution limit is refused rather than ignored. A field this schema does not have is a field
@@ -107,6 +120,7 @@ class ReevaluationRequest(BaseModel):
 
     representation_id: uuid.UUID
     request_key: str = Field(pattern=REQUEST_KEY_PATTERN)
+    plan_digest: str = Field(pattern=HASH_PATTERN)
 
 
 class ReevaluationView(BaseModel):

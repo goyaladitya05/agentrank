@@ -36,6 +36,8 @@ const REFUSALS: Record<string, string> = {
     "AgentRank could not read the compiler run behind your published representation. Contact your operator; this is not something you can fix from here.",
   representation_superseded:
     "A newer agent-ready representation has been published since this page loaded. Reload to evaluate the current one.",
+  preflight_superseded:
+    "What this re-evaluation would run has changed since this page loaded. Reload to see what would be evaluated now.",
   reevaluation_already_pending:
     "A re-evaluation is already queued or running for your merchant. Wait for it to finish before starting another.",
   reevaluation_request_key_reused:
@@ -78,6 +80,7 @@ function refusal(status: number, payload: unknown): LaunchState {
 export async function requestReevaluation(
   representationId: string,
   requestKey: string,
+  planDigest: string,
   _: LaunchState,
 ): Promise<LaunchState> {
   // Resolved before the try. `requireConsoleApiKey` redirects by throwing the framework's own
@@ -89,7 +92,11 @@ export async function requestReevaluation(
     response = await fetch(`${apiBaseUrl().replace(/\/+$/, "")}/api/v1/benchmark/re-evaluations`, {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ representation_id: representationId, request_key: requestKey }),
+      body: JSON.stringify({
+        representation_id: representationId,
+        request_key: requestKey,
+        plan_digest: planDigest,
+      }),
       cache: "no-store",
     });
   } catch {

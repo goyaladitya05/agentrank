@@ -12,11 +12,10 @@ import uuid
 import pytest
 from conftest import CredentialIssuer, bearer
 from fastapi.testclient import TestClient
-from reevaluation_support import LaunchWorld, build_launch_world, without_providers
+from reevaluation_support import LaunchWorld, build_launch_world, queue_launch, without_providers
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.benchmark.dispatch import execute_next_reevaluation
-from agentrank_api.benchmark.launch import MerchantReevaluationService
 from agentrank_api.config import Settings
 from agentrank_api.main import create_app
 from agentrank_api.payments.fake import FakePaymentProvider
@@ -41,12 +40,7 @@ async def launch_and_execute(
     request_key: str,
 ) -> uuid.UUID:
     """One admitted launch carried all the way to a completed run."""
-    launch = await MerchantReevaluationService(session, settings).request(
-        world.merchant_id,
-        representation_id=world.representation_id,
-        request_key=request_key,
-    )
-    launch_id = launch.id
+    launch_id = await queue_launch(session, settings, world, request_key=request_key)
     outcome = await execute_next_reevaluation(
         session,
         factory,

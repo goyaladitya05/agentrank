@@ -16,12 +16,11 @@ import asyncio
 import uuid
 
 import pytest
-from reevaluation_support import LaunchWorld, build_launch_world, without_providers
+from reevaluation_support import LaunchWorld, build_launch_world, queue_launch, without_providers
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
-from agentrank_api.benchmark.launch import MerchantReevaluationService
 from agentrank_api.benchmark.reevaluation import BenchmarkReevaluation
 from agentrank_api.config import Settings
 from agentrank_api.errors import ConflictError
@@ -46,16 +45,11 @@ async def launch_in_new_session(
     """One launch on its own connection, so the two can genuinely race."""
     async with sessions() as session:
         try:
-            launch = await MerchantReevaluationService(
-                session, without_providers(settings)
-            ).request(
-                world.merchant_id,
-                representation_id=world.representation.id,
-                request_key=request_key,
+            return await queue_launch(
+                session, without_providers(settings), world, request_key=request_key
             )
         except ConflictError as refused:
             return refused
-        return launch.id
 
 
 async def still_waiting(*attempts: asyncio.Task[object]) -> bool:

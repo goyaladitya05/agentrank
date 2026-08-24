@@ -16,7 +16,7 @@ import uuid
 from dataclasses import replace
 
 import pytest
-from reevaluation_support import LaunchWorld, build_launch_world, with_openai, without_providers
+from reevaluation_support import build_launch_world, queue_launch, with_openai, without_providers
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -38,18 +38,6 @@ from agentrank_api.payments.fake import FakePaymentProvider
 from agentrank_api.payments.models import PaymentAttempt
 
 pytestmark = pytest.mark.anyio
-
-
-async def queue(
-    session: AsyncSession, settings: Settings, world: LaunchWorld, *, request_key: str
-) -> uuid.UUID:
-    """One admitted launch, through the merchant-facing service the console calls."""
-    launch = await MerchantReevaluationService(session, settings).request(
-        world.merchant_id,
-        representation_id=world.representation_id,
-        request_key=request_key,
-    )
-    return launch.id
 
 
 async def reload(session: AsyncSession, launch_id: uuid.UUID) -> BenchmarkReevaluation:
@@ -90,7 +78,7 @@ class TestExecution:
     ) -> None:
         settings = without_providers(catalog_settings)
         world = await build_launch_world(session, "dispatch-shop")
-        launch_id = await queue(session, settings, world, request_key="dispatch-request")
+        launch_id = await queue_launch(session, settings, world, request_key="dispatch-request")
 
         outcome = await execute_next_reevaluation(
             session,
@@ -128,7 +116,7 @@ class TestExecution:
     ) -> None:
         settings = without_providers(catalog_settings)
         world = await build_launch_world(session, "once-shop")
-        await queue(session, settings, world, request_key="once-request")
+        await queue_launch(session, settings, world, request_key="once-request")
         first = await execute_next_reevaluation(
             session,
             factory,
@@ -162,7 +150,7 @@ class TestExecution:
     ) -> None:
         settings = without_providers(catalog_settings)
         world = await build_launch_world(session, "history-shop")
-        await queue(session, settings, world, request_key="history-one")
+        await queue_launch(session, settings, world, request_key="history-one")
         first = await execute_next_reevaluation(
             session,
             factory,
@@ -174,7 +162,7 @@ class TestExecution:
         diagnostics = DiagnosticsService(session)
         before = await diagnostics.run_diagnostics(first.run_id, merchant_id=world.merchant_id)
 
-        await queue(session, settings, world, request_key="history-two")
+        await queue_launch(session, settings, world, request_key="history-two")
         second = await execute_next_reevaluation(
             session,
             factory,
@@ -208,7 +196,7 @@ class TestExecution:
         settings = without_providers(catalog_settings)
         bystander = await build_launch_world(session, "bystander-shop")
         world = await build_launch_world(session, "isolated-shop")
-        await queue(session, settings, world, request_key="isolation-request")
+        await queue_launch(session, settings, world, request_key="isolation-request")
 
         async def counts(merchant_id: uuid.UUID) -> tuple[int, int]:
             mandates = (
@@ -246,7 +234,7 @@ class TestRefusals:
         """No substitution. A launch the merchant was shown as an AI run is not quietly
         downgraded to a deterministic one."""
         world = await build_launch_world(session, "unconfigured-shop")
-        launch_id = await queue(
+        launch_id = await queue_launch(
             session, with_openai(catalog_settings), world, request_key="model-request"
         )
 
@@ -286,7 +274,7 @@ class TestRefusals:
         """
         settings = without_providers(catalog_settings)
         world = await build_launch_world(session, "matched-shop")
-        launch_id = await queue(session, settings, world, request_key="mismatch-request")
+        launch_id = await queue_launch(session, settings, world, request_key="mismatch-request")
         # The same merchant, a newer registered world. The launch froze the older one.
         other = replace(world.authored.fixture, version=world.authored.fixture.version + 1)
         await BenchmarkEnvironmentService(session).register(other)
@@ -326,7 +314,7 @@ class TestWorldContention:
         """An ordinary answer, not a failure: nothing was executed and it may execute later."""
         settings = without_providers(catalog_settings)
         world = await build_launch_world(session, "contended-shop")
-        launch_id = await queue(session, settings, world, request_key="contended-request")
+        launch_id = await queue_launch(session, settings, world, request_key="contended-request")
         # An operator run already owns this merchant's world.
         await BenchmarkRunService(session).start_run(
             suite_key=world.suite_key,
@@ -367,7 +355,7 @@ class TestWorldContention:
         """
         settings = without_providers(catalog_settings)
         world = await build_launch_world(session, "propagating-shop")
-        launch_id = await queue(session, settings, world, request_key="propagating-request")
+        launch_id = await queue_launch(session, settings, world, request_key="propagating-request")
 
         async def unaccounted(*arguments: object, **keywords: object) -> None:
             raise ConflictError(
@@ -401,7 +389,7 @@ class TestOperatorRecovery:
     ) -> None:
         settings = without_providers(catalog_settings)
         world = await build_launch_world(session, "recovery-shop")
-        launch_id = await queue(session, settings, world, request_key="recovery-request")
+        launch_id = await queue_launch(session, settings, world, request_key="recovery-request")
         runs = BenchmarkRunService(session)
         started = await runs.start_run(
             suite_key=world.suite_key,
@@ -435,7 +423,7 @@ class TestOperatorRecovery:
         """
         settings = without_providers(catalog_settings)
         world = await build_launch_world(session, "stranded-shop")
-        launch_id = await queue(session, settings, world, request_key="stranded-request")
+        launch_id = await queue_launch(session, settings, world, request_key="stranded-request")
         runs = BenchmarkRunService(session)
         started = await runs.start_run(
             suite_key=world.suite_key,
@@ -483,7 +471,7 @@ class TestOperatorRecovery:
         """
         settings = without_providers(catalog_settings)
         world = await build_launch_world(session, "bind-race-shop")
-        await queue(session, settings, world, request_key="bind-race-request")
+        await queue_launch(session, settings, world, request_key="bind-race-request")
 
         async def taken(*arguments: object, **keywords: object) -> None:
             raise ConflictError("reevaluation_not_queued", "another worker got there first")

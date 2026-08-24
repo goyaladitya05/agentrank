@@ -19,6 +19,9 @@ export interface LaunchBlocker {
 
 export interface ReevaluationPreflight {
   readonly launchable: boolean;
+  /** Covers every identity field below. The launch carries it back so a plan that moved since
+   * this page rendered is refused rather than frozen silently. */
+  readonly plan_digest: string;
   readonly representation_id: string | null;
   readonly representation_label: string | null;
   readonly compiler_run_id: string | null;
@@ -201,6 +204,7 @@ export function decodePreflight(value: unknown): ReevaluationPreflight {
   const source = object(value, "re-evaluation preflight");
   return {
     launchable: bool(source.launchable, "launchable"),
+    plan_digest: string(source.plan_digest, "plan_digest"),
     representation_id: nullableString(source.representation_id, "representation_id"),
     representation_label: nullableString(source.representation_label, "representation_label"),
     compiler_run_id: nullableString(source.compiler_run_id, "compiler_run_id"),

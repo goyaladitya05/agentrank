@@ -51,6 +51,7 @@ export default async function ReevaluationsPage() {
               null,
               preflight.data.representation_id ?? "",
               requestKey,
+              preflight.data.plan_digest,
             )}
           />
         </Panel>

@@ -24,10 +24,12 @@ What the browser may say is a representation identifier and a request key. Every
 including which merchant this is, comes from the credential and from the database.
 """
 
+import hashlib
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -35,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
 from agentrank_api.benchmark.execution import REFERENCE_ISOLATED_KIND
+from agentrank_api.benchmark.identity import canonical_json
 from agentrank_api.benchmark.lifecycle import TERMINAL_MISSION_STATUSES, BenchmarkRunStatus
 from agentrank_api.benchmark.llm import (
     GEMINI_PROVIDER,
@@ -163,6 +166,50 @@ class ReevaluationPlan:
     def launchable(self) -> bool:
         return not self.blockers
 
+    @property
+    def digest(self) -> str:
+        """A labelled digest over everything this preflight tells the merchant will be used.
+
+        The launch carries it back and admission refuses a mismatch. Only the representation was
+        guarded before, which left the suite, the world and the buyer free to be re-resolved
+        between the page render and the submit: a newly published suite version, a newly
+        registered fixture, or a provider credential appearing or disappearing between two API
+        processes would all have been frozen silently. The values were recorded, so nothing was
+        corrupted, but a merchant was never told they had changed, and this makes the refusal
+        the same shape the representation already had.
+
+        Blockers and the pending launch are deliberately outside it. They are state rather than
+        identity, they are refused on their own terms, and folding them in would turn every
+        ordinary refusal into an unexplained digest mismatch.
+        """
+        return "sha256:" + hashlib.sha256(canonical_json(self._identity()).encode()).hexdigest()
+
+    def _identity(self) -> dict[str, Any]:
+        """Exactly the fields a merchant reads off the preflight before committing."""
+        return {
+            "representation_id": _text(self.representation_id),
+            "compiler_run_id": _text(self.compiler_run_id),
+            "source_snapshot_id": _text(self.source_snapshot_id),
+            "suite_id": _text(self.suite_id),
+            "suite_label": self.suite_label,
+            "suite_definition_hash": self.suite_definition_hash,
+            "mission_count": self.mission_count,
+            "environment_id": _text(self.environment_id),
+            "environment_label": self.environment_label,
+            "buyer_profile": self.buyer_profile.value,
+            "executor_kind": self.executor_kind,
+            "provider": self.provider,
+            "requested_model": self.requested_model,
+            "max_model_turns": self.max_model_turns,
+            "max_tool_calls": self.max_tool_calls,
+            "mission_deadline_seconds": self.mission_deadline_seconds,
+            "baseline_run_id": _text(self.baseline_run_id),
+        }
+
+
+def _text(value: uuid.UUID | None) -> str | None:
+    return None if value is None else str(value)
+
 
 @dataclass(frozen=True, slots=True)
 class _Labels:
@@ -207,18 +254,6 @@ class ReevaluationDetail:
     run_status: str | None
     missions_completed: int | None
     baseline_run_id: uuid.UUID | None
-
-
-@dataclass(frozen=True, slots=True)
-class _Resolved:
-    """The identities a launch freezes, once every one of them exists."""
-
-    merchant: Merchant
-    representation: CommerceRepresentation
-    compiler_run: CompilerRun
-    suite: BenchmarkSuite
-    environment: BenchmarkEnvironment
-    baseline: BenchmarkRun | None
 
 
 class MerchantReevaluationService:
@@ -319,7 +354,12 @@ class MerchantReevaluationService:
         )
 
     async def request(
-        self, merchant_id: uuid.UUID, *, representation_id: uuid.UUID, request_key: str
+        self,
+        merchant_id: uuid.UUID,
+        *,
+        representation_id: uuid.UUID,
+        request_key: str,
+        plan_digest: str,
     ) -> BenchmarkReevaluation:
         """Admit one launch, or answer with the one this request key already produced.
 
@@ -328,9 +368,11 @@ class MerchantReevaluationService:
         unique index happens to give them. The index is still what makes the invariant true
         across processes; this makes the answer the same every time.
 
-        Nothing is executed here and nothing external is called, so this whole method is one
-        short transaction. What comes back is a queued launch, which is the only thing an honest
-        answer can promise while the work has not started.
+        What is frozen is the plan resolved under that lock, and it is frozen only after being
+        checked against the plan the merchant was actually shown. Nothing is executed here and
+        nothing external is called, so this whole method is one short transaction. What comes
+        back is a queued launch, which is the only thing an honest answer can promise while the
+        work has not started.
         """
         merchant = await self._merchant(merchant_id)
         existing = await self._by_request_key(merchant_id, request_key)
@@ -345,15 +387,20 @@ class MerchantReevaluationService:
         if existing is not None:
             return self._same_request(existing, representation_id)
 
-        resolved = await self._require_launchable(merchant, representation_id)
+        plan = await self.plan(merchant_id)
+        self._require_launchable(plan, merchant, representation_id, plan_digest)
         buyer = resolve_buyer(self._settings)
+        assert plan.representation_id is not None  # a launchable plan resolved every identity
+        assert plan.compiler_run_id is not None
+        assert plan.suite_id is not None
+        assert plan.environment_id is not None
         launch = BenchmarkReevaluation(
             merchant_id=merchant.id,
             request_key=request_key,
-            representation_id=resolved.representation.id,
-            compiler_run_id=resolved.compiler_run.id,
-            suite_id=resolved.suite.id,
-            environment_id=resolved.environment.id,
+            representation_id=plan.representation_id,
+            compiler_run_id=plan.compiler_run_id,
+            suite_id=plan.suite_id,
+            environment_id=plan.environment_id,
             buyer_profile=buyer.profile,
             buyer_configuration=(
                 None if buyer.configuration is None else buyer.configuration.payload()
@@ -363,7 +410,7 @@ class MerchantReevaluationService:
             ),
             executor_kind=buyer.executor_kind,
             status=ReevaluationStatus.QUEUED,
-            baseline_run_id=None if resolved.baseline is None else resolved.baseline.id,
+            baseline_run_id=plan.baseline_run_id,
         )
         self._session.add(launch)
         try:
@@ -379,6 +426,48 @@ class MerchantReevaluationService:
                 return self._same_request(duplicate, representation_id)
             raise
         return launch
+
+    def _require_launchable(
+        self,
+        plan: ReevaluationPlan,
+        merchant: Merchant,
+        representation_id: uuid.UUID,
+        plan_digest: str,
+    ) -> None:
+        """Refuse a launch this merchant cannot have, or one they were shown differently.
+
+        Blockers first and by their own name, because a merchant with nothing published needs to
+        be told that rather than told a digest disagreed. The representation second, because it
+        is the artifact the whole command is about and deserves its own sentence. Everything
+        else the preflight showed is covered by the digest at once: what a merchant committed to
+        is the whole plan they read, and any part of it moving underneath them is one refusal.
+        """
+        blocker = next(iter(plan.blockers), None)
+        if blocker is not None:
+            raise ConflictError(
+                blocker.code,
+                blocker.message,
+                resource=RESOURCE,
+                identifier=str(merchant.id),
+            )
+        if plan.representation_id != representation_id:
+            # Either somebody published a newer representation while this page was open, or the
+            # browser named an older one. Both are the same refusal: a re-evaluation measures
+            # what is published now, and running an artifact the merchant is no longer publishing
+            # would produce evidence about nothing they can act on.
+            raise ConflictError(
+                "representation_superseded",
+                "A newer agent-ready representation has been published since this page was loaded.",
+                resource="commerce_representation",
+                identifier=str(plan.representation_id),
+            )
+        if plan.digest != plan_digest:
+            raise ConflictError(
+                "preflight_superseded",
+                "What this re-evaluation would run has changed since this page was loaded.",
+                resource=RESOURCE,
+                identifier=str(merchant.id),
+            )
 
     async def detail(
         self, merchant_id: uuid.UUID, reevaluation_id: uuid.UUID
@@ -540,81 +629,6 @@ class MerchantReevaluationService:
                 identifier=str(existing.id),
             )
         return existing
-
-    async def _require_launchable(
-        self, merchant: Merchant, representation_id: uuid.UUID
-    ) -> _Resolved:
-        """Resolve every frozen identity, refusing by name when one is missing or stale."""
-        current = await self._current_representation(merchant.id)
-        if current is None:
-            raise ConflictError(
-                "no_published_representation",
-                "This merchant has no published agent-ready representation to evaluate.",
-                resource=RESOURCE,
-                identifier=str(merchant.id),
-            )
-        if current.id != representation_id:
-            # Either somebody published a newer representation while this page was open, or the
-            # browser named an older one. Both are the same refusal: a re-evaluation measures
-            # what is published now, and running an artifact the merchant is no longer publishing
-            # would produce evidence about nothing they can act on.
-            raise ConflictError(
-                "representation_superseded",
-                "A newer agent-ready representation has been published since this page was loaded.",
-                resource="commerce_representation",
-                identifier=str(current.id),
-            )
-        compiler_run = await self._compiler_run(merchant.id, current)
-        if compiler_run is None:
-            # Its own code rather than the one above. A merchant who has published is not told
-            # to publish, and a representation whose compiler run cannot be read is a broken
-            # lineage rather than an absent artifact.
-            raise ConflictError(
-                "representation_lineage_unreadable",
-                "The published representation names a compiler run that cannot be read.",
-                resource="commerce_representation",
-                identifier=str(current.id),
-            )
-        suite = await self._current_suite(merchant.id)
-        if suite is None:
-            raise ConflictError(
-                "benchmark_suite_unavailable",
-                "No benchmark suite is published for this merchant.",
-                resource="benchmark_suite",
-                identifier=merchant.slug,
-            )
-        environment = await self._current_environment(merchant.id)
-        if environment is None:
-            raise ConflictError(
-                "benchmark_world_unregistered",
-                "This merchant has no registered benchmark world.",
-                resource="benchmark_environment",
-                identifier=merchant.slug,
-            )
-        pending = await self._pending(merchant.id)
-        if pending is not None:
-            raise ConflictError(
-                "reevaluation_already_pending",
-                "A re-evaluation is already queued or running for this merchant.",
-                resource=RESOURCE,
-                identifier=str(pending.id),
-            )
-        active = await self._runs.active_run_id(merchant_id=merchant.id)
-        if active is not None:
-            raise ConflictError(
-                "run_already_active",
-                f"benchmark run {active} is executing against this merchant's world",
-                resource="benchmark_run",
-                identifier=str(active),
-            )
-        return _Resolved(
-            merchant=merchant,
-            representation=current,
-            compiler_run=compiler_run,
-            suite=suite,
-            environment=environment,
-            baseline=await self._baseline(merchant.id, suite.id),
-        )
 
     async def _merchant(self, merchant_id: uuid.UUID) -> Merchant:
         merchant = (

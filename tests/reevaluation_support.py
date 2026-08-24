@@ -23,6 +23,7 @@ from agentrank_api.benchmark.authored import AuthoredWorld
 from agentrank_api.benchmark.definitions import BenchmarkMissionDefinition
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
 from agentrank_api.benchmark.fixtures import BenchmarkFixture
+from agentrank_api.benchmark.launch import MerchantReevaluationService
 from agentrank_api.benchmark.models import BenchmarkEnvironment, BenchmarkSuite
 from agentrank_api.benchmark.suites import BenchmarkSuiteService
 from agentrank_api.commerce.catalog_fixture import SeedProduct, SeedVariant
@@ -212,3 +213,23 @@ def with_gemini(settings: Settings) -> Settings:
     return settings.model_copy(
         update={"openai_api_key": None, "gemini_api_key": SecretStr("test-gemini-key")}
     )
+
+
+async def queue_launch(
+    session: AsyncSession, settings: Settings, world: LaunchWorld, *, request_key: str
+) -> uuid.UUID:
+    """One admitted launch, through the merchant-facing service the console calls.
+
+    The preflight is read first and its digest carried into the request, which is what the
+    console does and what admission checks. A test that skipped it would be admitting a plan
+    nobody was shown.
+    """
+    service = MerchantReevaluationService(session, settings)
+    plan = await service.plan(world.merchant_id)
+    launch = await service.request(
+        world.merchant_id,
+        representation_id=world.representation_id,
+        request_key=request_key,
+        plan_digest=plan.digest,
+    )
+    return launch.id

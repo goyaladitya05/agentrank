@@ -9,16 +9,24 @@ lets a browser request stay an ordinary short request.
 """
 
 import uuid
+from dataclasses import replace
 
 import pytest
 from conftest import CredentialIssuer, bearer
 from fastapi.testclient import TestClient
-from reevaluation_support import build_launch_world, with_openai, without_providers, world_source
+from reevaluation_support import (
+    build_launch_world,
+    queue_launch,
+    with_openai,
+    without_providers,
+    world_source,
+)
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from agentrank_api.auth.service import MerchantCredentialService
 from agentrank_api.auth.tokens import TokenMarker
+from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
 from agentrank_api.benchmark.execution import BenchmarkRunCapability
 from agentrank_api.benchmark.launch import (
     MerchantReevaluationService,
@@ -37,6 +45,22 @@ pytestmark = pytest.mark.anyio
 
 PREFLIGHT = "/api/v1/benchmark/re-evaluations/preflight"
 LAUNCH = "/api/v1/benchmark/re-evaluations"
+
+
+def launch_body(
+    http: TestClient, token: str, *, representation_id: str, request_key: str
+) -> dict[str, str]:
+    """The body the console sends: what it is looking at, and what request this is.
+
+    The digest comes from the preflight this "page" just read, which is exactly what the console
+    binds into its form. A test that invented one would be admitting a plan nobody was shown.
+    """
+    preflight = http.get(PREFLIGHT, headers=bearer(token)).json()
+    return {
+        "representation_id": representation_id,
+        "request_key": request_key,
+        "plan_digest": preflight["plan_digest"],
+    }
 
 
 def client(settings: Settings, sessions: async_sessionmaker[AsyncSession]) -> TestClient:
@@ -78,6 +102,7 @@ class TestAuthorization:
                 json={
                     "representation_id": str(world.representation.id),
                     "request_key": "anonymous-key",
+                    "plan_digest": "sha256:" + "0" * 64,
                 },
             ).status_code
             == 401
@@ -92,17 +117,13 @@ class TestAuthorization:
     ) -> None:
         mine = await build_launch_world(session, "mine-api-shop")
         theirs = await build_launch_world(session, "theirs-api-shop")
-        theirs_launch = await MerchantReevaluationService(
-            session, without_providers(settings)
-        ).request(
-            theirs.merchant_id,
-            representation_id=theirs.representation.id,
-            request_key="their-request",
+        theirs_launch_id = await queue_launch(
+            session, without_providers(settings), theirs, request_key="their-request"
         )
         token = await issue_credential(mine.merchant_id)
         http = client(settings, factory)
 
-        response = http.get(f"{LAUNCH}/{theirs_launch.id}", headers=bearer(token))
+        response = http.get(f"{LAUNCH}/{theirs_launch_id}", headers=bearer(token))
         assert response.status_code == 404
         unknown = http.get(f"{LAUNCH}/{uuid.uuid7()}", headers=bearer(token))
         assert unknown.status_code == 404
@@ -124,10 +145,14 @@ class TestAuthorization:
             LAUNCH,
             headers=bearer(token),
             json={
-                "representation_id": str(mine.representation.id),
-                "request_key": "widened-key",
+                **launch_body(
+                    http,
+                    token,
+                    representation_id=str(mine.representation_id),
+                    request_key="widened-key",
+                ),
                 "merchant_id": str(theirs.merchant_id),
-                "suite_id": str(theirs.suite.id),
+                "suite_id": str(theirs.suite_id),
             },
         )
         assert refused.status_code == 422
@@ -147,10 +172,12 @@ class TestAuthorization:
         refused = http.post(
             LAUNCH,
             headers=bearer(token),
-            json={
-                "representation_id": str(theirs.representation.id),
-                "request_key": "cross-tenant-key",
-            },
+            json=launch_body(
+                http,
+                token,
+                representation_id=str(theirs.representation_id),
+                request_key="cross-tenant-key",
+            ),
         )
         assert refused.status_code == 409
         assert refused.json()["error"] == "representation_superseded"
@@ -194,8 +221,9 @@ class TestBenchmarkCredentialBoundary:
             LAUNCH,
             headers=headers,
             json={
-                "representation_id": str(world.representation.id),
+                "representation_id": str(world.representation_id),
                 "request_key": "buyer-launch-key",
+                "plan_digest": "sha256:" + "0" * 64,
             },
         )
         assert refused.status_code == 401
@@ -300,10 +328,12 @@ class TestAdmission:
         response = http.post(
             LAUNCH,
             headers=bearer(token),
-            json={
-                "representation_id": str(world.representation.id),
-                "request_key": "freeze-request",
-            },
+            json=launch_body(
+                http,
+                token,
+                representation_id=str(world.representation_id),
+                request_key="freeze-request",
+            ),
         )
 
         assert response.status_code == 201
@@ -328,10 +358,12 @@ class TestAdmission:
         world = await build_launch_world(session, "retry-shop")
         token = await issue_credential(world.merchant_id)
         http = client(settings, factory)
-        body = {
-            "representation_id": str(world.representation.id),
-            "request_key": "double-submitted",
-        }
+        body = launch_body(
+            http,
+            token,
+            representation_id=str(world.representation_id),
+            request_key="double-submitted",
+        )
 
         first = http.post(LAUNCH, headers=bearer(token), json=body)
         second = http.post(LAUNCH, headers=bearer(token), json=body)
@@ -355,16 +387,22 @@ class TestAdmission:
         http.post(
             LAUNCH,
             headers=bearer(token),
-            json={
-                "representation_id": str(world.representation.id),
-                "request_key": "reused-key",
-            },
+            json=launch_body(
+                http,
+                token,
+                representation_id=str(world.representation_id),
+                request_key="reused-key",
+            ),
         )
 
         refused = http.post(
             LAUNCH,
             headers=bearer(token),
-            json={"representation_id": str(uuid.uuid7()), "request_key": "reused-key"},
+            json={
+                "representation_id": str(uuid.uuid7()),
+                "request_key": "reused-key",
+                "plan_digest": "sha256:" + "0" * 64,
+            },
         )
 
         assert refused.status_code == 409
@@ -383,24 +421,72 @@ class TestAdmission:
         http.post(
             LAUNCH,
             headers=bearer(token),
-            json={
-                "representation_id": str(world.representation.id),
-                "request_key": "first-launch",
-            },
+            json=launch_body(
+                http,
+                token,
+                representation_id=str(world.representation_id),
+                request_key="first-launch",
+            ),
         )
 
         refused = http.post(
             LAUNCH,
             headers=bearer(token),
             json={
-                "representation_id": str(world.representation.id),
+                "representation_id": str(world.representation_id),
                 "request_key": "second-launch",
+                "plan_digest": "sha256:" + "0" * 64,
             },
         )
 
         assert refused.status_code == 409
         assert refused.json()["error"] == "reevaluation_already_pending"
         assert http.get(PREFLIGHT, headers=bearer(token)).json()["launchable"] is False
+
+    async def test_a_plan_that_moved_since_the_page_rendered_is_refused(
+        self,
+        settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+        issue_credential: CredentialIssuer,
+    ) -> None:
+        """What a merchant committed to is the whole plan they read, not just the artifact.
+
+        The representation has its own refusal because it is what the command is about. Every
+        other thing the preflight showed, the suite, the world and the buyer, is covered at once
+        by the digest, so none of them can be frozen silently between the render and the submit.
+        """
+        world = await build_launch_world(session, "moved-plan-shop")
+        token = await issue_credential(world.merchant_id)
+        http = client(settings, factory)
+        body = launch_body(
+            http,
+            token,
+            representation_id=str(world.representation_id),
+            request_key="moved-plan-key",
+        )
+        # A newer benchmark world is registered while the page is open, so the run this launch
+        # would produce is no longer prepared against the world the merchant was shown.
+        await BenchmarkEnvironmentService(session).register(
+            replace(world.fixture, version=world.fixture.version + 1)
+        )
+
+        refused = http.post(LAUNCH, headers=bearer(token), json=body)
+
+        assert refused.status_code == 409
+        assert refused.json()["error"] == "preflight_superseded"
+        # Reading the page again and submitting what it now says is accepted.
+        accepted = http.post(
+            LAUNCH,
+            headers=bearer(token),
+            json=launch_body(
+                http,
+                token,
+                representation_id=str(world.representation_id),
+                request_key="reloaded-plan-key",
+            ),
+        )
+        assert accepted.status_code == 201
 
     async def test_a_superseded_representation_is_refused_rather_than_substituted(
         self,
@@ -424,7 +510,7 @@ class TestAdmission:
         refused = http.post(
             LAUNCH,
             headers=bearer(token),
-            json={"representation_id": str(stale), "request_key": "stale-key"},
+            json=launch_body(http, token, representation_id=str(stale), request_key="stale-key"),
         )
 
         assert refused.status_code == 409
@@ -434,7 +520,9 @@ class TestAdmission:
         accepted = http.post(
             LAUNCH,
             headers=bearer(token),
-            json={"representation_id": str(newer.id), "request_key": "current-key"},
+            json=launch_body(
+                http, token, representation_id=str(newer.id), request_key="current-key"
+            ),
         )
         assert accepted.status_code == 201
 
@@ -462,10 +550,12 @@ class TestBuyerResolution:
         launched = http.post(
             LAUNCH,
             headers=bearer(token),
-            json={
-                "representation_id": str(world.representation.id),
-                "request_key": "model-buyer-key",
-            },
+            json=launch_body(
+                http,
+                token,
+                representation_id=str(world.representation_id),
+                request_key="model-buyer-key",
+            ),
         ).json()
         assert launched["buyer_profile"] == "AI_BUYER"
         assert launched["executor_kind"] == "llm-openai"
@@ -515,13 +605,11 @@ class TestReadCost:
         service = MerchantReevaluationService(session, pinned)
         worker = ReevaluationWorkerService(session)
         for index in range(3):
-            launch = await service.request(
-                world.merchant_id,
-                representation_id=world.representation.id,
-                request_key=f"cost-request-{index}",
+            launch_id = await queue_launch(
+                session, pinned, world, request_key=f"cost-request-{index}"
             )
             # Settled without a run, so the merchant's one pending slot frees for the next.
-            await worker.settle_failed(launch.id, failure_code="run_aborted")
+            await worker.settle_failed(launch_id, failure_code="run_aborted")
 
         counted: list[str] = []
 

@@ -8,6 +8,7 @@
 
 export const PREFLIGHT_FIXTURE = {
   launchable: true,
+  plan_digest: "sha256:" + "9".repeat(64),
   representation_id: "01a00000-0000-7000-8000-000000000002",
   representation_label: "compiler:sha256:cfg000:sha256:ir0000",
   compiler_run_id: "01a0aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa1",

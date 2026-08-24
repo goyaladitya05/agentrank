@@ -98,5 +98,6 @@ async def request_reevaluation(
         merchant.merchant_id,
         representation_id=request.representation_id,
         request_key=request.request_key,
+        plan_digest=request.plan_digest,
     )
     return ReevaluationView.from_domain(await service.detail(merchant.merchant_id, launch.id))
