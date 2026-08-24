@@ -22,6 +22,7 @@ from agentrank_api.benchmark.reevaluation import (
     BuyerProfile,
     ReevaluationStatus,
 )
+from agentrank_api.diagnostics.comparison import RunComparison
 
 
 class LaunchBlockerView(BaseModel):
@@ -159,4 +160,183 @@ class ReevaluationView(BaseModel):
             run_status=detail.run_status,
             missions_completed=detail.missions_completed,
             baseline_run_id=detail.baseline_run_id,
+        )
+
+
+class CountChangeView(BaseModel):
+    """One count before and after, with the difference stated rather than left to arithmetic."""
+
+    key: str
+    before: int
+    after: int
+    delta: int
+
+
+class RateChangeView(BaseModel):
+    """One rate before and after. Null is an empty denominator and is never rendered as zero."""
+
+    key: str
+    before: float | None
+    after: float | None
+    delta: float | None
+
+
+class SimulatedDemandChangeView(BaseModel):
+    """Simulated demand in one bucket of one currency. Currencies are never summed."""
+
+    currency: str
+    bucket: str
+    simulated_before_amount_minor: int
+    simulated_after_amount_minor: int
+    simulated_delta_amount_minor: int
+
+
+class MissionTransitionView(BaseModel):
+    """One mission that ended somewhere different in the two runs."""
+
+    mission_key: str
+    before_status: str | None
+    before_primary_failure_reason: str | None
+    after_status: str | None
+    after_primary_failure_reason: str | None
+    direction: str
+
+
+class InteractionChangeView(BaseModel):
+    """Observed interaction cost, where it was observed at all.
+
+    `token_usage_complete` false means at least one provider invocation reported no usage, so
+    there is no honest token total and none is published.
+    """
+
+    model_invocations: CountChangeView | None
+    tool_calls: CountChangeView | None
+    token_usage_complete: bool
+
+
+class MethodologyWarningView(BaseModel):
+    code: str
+    message: str
+
+
+class ComparisonConclusionView(BaseModel):
+    kind: str
+    statement: str
+
+
+class RunComparisonView(BaseModel):
+    """One before and after reading, with everything that qualifies it attached.
+
+    `comparable` false means the two runs did not measure the same thing, and the deltas are
+    published anyway so a reader can see why rather than being shown an empty panel.
+    """
+
+    engine_identity: str
+    baseline_run_id: uuid.UUID
+    candidate_run_id: uuid.UUID
+    comparable: bool
+    counts: list[CountChangeView]
+    rates: list[RateChangeView]
+    simulated_demand: list[SimulatedDemandChangeView]
+    transitions: list[MissionTransitionView]
+    interactions: InteractionChangeView
+    baseline_runtime_seconds: float | None
+    candidate_runtime_seconds: float | None
+    warnings: list[MethodologyWarningView]
+    conclusion: ComparisonConclusionView
+
+    @classmethod
+    def from_domain(cls, comparison: RunComparison) -> Self:
+        before, after = comparison.runtime_seconds
+        interactions = comparison.interactions
+        return cls(
+            engine_identity=comparison.engine_identity,
+            baseline_run_id=comparison.baseline_run_id,
+            candidate_run_id=comparison.candidate_run_id,
+            comparable=comparison.comparable,
+            counts=[
+                CountChangeView(
+                    key=change.key, before=change.before, after=change.after, delta=change.delta
+                )
+                for change in comparison.counts
+            ],
+            rates=[
+                RateChangeView(
+                    key=change.key, before=change.before, after=change.after, delta=change.delta
+                )
+                for change in comparison.rates
+            ],
+            simulated_demand=[
+                SimulatedDemandChangeView(
+                    currency=change.currency,
+                    bucket=change.bucket,
+                    simulated_before_amount_minor=change.before_amount_minor,
+                    simulated_after_amount_minor=change.after_amount_minor,
+                    simulated_delta_amount_minor=change.delta_amount_minor,
+                )
+                for change in comparison.simulated_demand
+            ],
+            transitions=[
+                MissionTransitionView(
+                    mission_key=transition.mission_key,
+                    before_status=transition.before_status,
+                    before_primary_failure_reason=transition.before_primary_failure_reason,
+                    after_status=transition.after_status,
+                    after_primary_failure_reason=transition.after_primary_failure_reason,
+                    direction=transition.direction,
+                )
+                for transition in comparison.transitions
+            ],
+            interactions=InteractionChangeView(
+                model_invocations=(
+                    None
+                    if interactions.model_invocations is None
+                    else CountChangeView(
+                        key=interactions.model_invocations.key,
+                        before=interactions.model_invocations.before,
+                        after=interactions.model_invocations.after,
+                        delta=interactions.model_invocations.delta,
+                    )
+                ),
+                tool_calls=(
+                    None
+                    if interactions.tool_calls is None
+                    else CountChangeView(
+                        key=interactions.tool_calls.key,
+                        before=interactions.tool_calls.before,
+                        after=interactions.tool_calls.after,
+                        delta=interactions.tool_calls.delta,
+                    )
+                ),
+                token_usage_complete=interactions.token_usage_complete,
+            ),
+            baseline_runtime_seconds=before,
+            candidate_runtime_seconds=after,
+            warnings=[
+                MethodologyWarningView(code=warning.code, message=warning.message)
+                for warning in comparison.warnings
+            ],
+            conclusion=ComparisonConclusionView(
+                kind=comparison.conclusion.kind, statement=comparison.conclusion.statement
+            ),
+        )
+
+
+class ReevaluationDetailView(ReevaluationView):
+    """One launch with its comparison, when there is one to give.
+
+    `comparison` is null while nothing has been measured against a prior run yet: no run, no
+    prior run of the same suite, or a run that has not finished. Null is not an empty comparison
+    and must never be rendered as "nothing changed".
+    """
+
+    comparison: RunComparisonView | None
+
+    @classmethod
+    def with_comparison(
+        cls, detail: ReevaluationDetail, comparison: RunComparison | None
+    ) -> ReevaluationDetailView:
+        return cls(
+            **ReevaluationView.from_domain(detail).model_dump(),
+            comparison=None if comparison is None else RunComparisonView.from_domain(comparison),
         )

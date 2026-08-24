@@ -35,6 +35,7 @@ from agentrank_api.benchmark.experiment import (
     CompilerImpactSample,
     RepresentationKind,
 )
+from agentrank_api.benchmark.llm import digest
 from agentrank_api.benchmark.metrics import BenchmarkMetrics, compute_metrics
 from agentrank_api.benchmark.models import (
     AgentProviderUsage,
@@ -44,10 +45,17 @@ from agentrank_api.benchmark.models import (
     BenchmarkRun,
     BenchmarkSuite,
 )
+from agentrank_api.benchmark.reevaluation import BenchmarkReevaluation
 from agentrank_api.benchmark.runner import BenchmarkRunService, outcomes_of
 from agentrank_api.commerce.models import Product, Variant
 from agentrank_api.compiler.models import CandidateState, CompilerCandidate, CompilerReview
 from agentrank_api.diagnostics.codes import engine_identity
+from agentrank_api.diagnostics.comparison import (
+    MissionOutcomeFact,
+    RunComparison,
+    RunFacts,
+    compare_runs,
+)
 from agentrank_api.diagnostics.experiment import (
     ARM_COMPILED,
     ARM_RAW,
@@ -331,6 +339,137 @@ class DiagnosticsService:
             provider_health=health,
             catalog_pin_verified=pin_verified,
         )
+
+    async def run_comparison(
+        self,
+        baseline_run_id: uuid.UUID,
+        candidate_run_id: uuid.UUID,
+        *,
+        merchant_id: uuid.UUID,
+    ) -> RunComparison:
+        """One merchant's run read against an earlier one of theirs.
+
+        Both reads are merchant scoped, so a comparison can never be built across tenants and a
+        foreign identifier answers exactly as an unknown one does. Everything else is the pure
+        engine's, which has no database and cannot decide to read one more row to make a
+        difference look better.
+        """
+        baseline = await self._comparison_facts(baseline_run_id, merchant_id=merchant_id)
+        candidate = await self._comparison_facts(candidate_run_id, merchant_id=merchant_id)
+        return compare_runs(baseline, candidate, engine_identity=engine_identity())
+
+    async def reevaluation_comparison(
+        self, reevaluation_id: uuid.UUID, *, merchant_id: uuid.UUID
+    ) -> RunComparison | None:
+        """The before and after for one launch, when there is one to give.
+
+        None whenever a comparison would be premature or meaningless rather than an empty
+        comparison that reads as "nothing changed": a launch that has produced no run yet, a
+        merchant whose first run has no prior run of the same suite to be read against, and a
+        run that has not reached a terminal state, whose counts describe part of a workload.
+        """
+        launch = (
+            await self._session.execute(
+                select(BenchmarkReevaluation).where(
+                    BenchmarkReevaluation.id == reevaluation_id,
+                    BenchmarkReevaluation.merchant_id == merchant_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if launch is None:
+            raise NotFoundError("benchmark_reevaluation", str(reevaluation_id))
+        if launch.run_id is None or launch.baseline_run_id is None:
+            return None
+        candidate = await self._runs.load(launch.run_id, merchant_id=merchant_id)
+        if not candidate.is_terminal:
+            return None
+        return await self.run_comparison(
+            launch.baseline_run_id, launch.run_id, merchant_id=merchant_id
+        )
+
+    async def _comparison_facts(self, run_id: uuid.UUID, *, merchant_id: uuid.UUID) -> RunFacts:
+        """Everything one run contributes to a comparison, flattened from persisted rows."""
+        run = await self._runs.load(run_id, merchant_id=merchant_id)
+        suite = await self._suite(run.suite_id)
+        results = await self._mission_rows(run_id, merchant_id=merchant_id)
+        events = await self._trace_events(run_id, merchant_id=merchant_id)
+        usages = await self._provider_usage(run_id, merchant_id=merchant_id)
+        flat_events = [event for items in events.values() for event in items]
+        flat_usages = [usage for items in usages.values() for usage in items]
+        reported_flags = [
+            usage.input_tokens is not None or usage.total_tokens is not None
+            for usage in flat_usages
+            if usage.measurement_kind is AgentUsageKind.PROVIDER_REPORTED
+        ]
+        fault_facts = [
+            trace_facts(
+                [
+                    TraceEventRecord(str(event.id), event.event_type.value, event.payload)
+                    for event in mission_events
+                ]
+            ).provider_faults
+            for mission_events in events.values()
+        ]
+        return RunFacts(
+            run_id=run.id,
+            status=run.status.value,
+            suite_label=await self._runs.suite_label(run),
+            suite_definition_hash=None if suite is None else suite.definition_hash,
+            environment_label=await self._runs.environment_label(run),
+            catalog_hash=run.catalog_hash,
+            evaluator_version=run.evaluator_version,
+            executor_label=run.executor_label,
+            executor_revision=run.executor_revision,
+            buyer_configuration_digest=_configuration_digest(run),
+            representation_id=run.representation_id,
+            requested_models=tuple(
+                sorted({model for model in (u.requested_model for u in flat_usages) if model})
+            ),
+            resolved_models=tuple(
+                sorted({model for model in (u.actual_model for u in flat_usages) if model})
+            ),
+            metrics=compute_metrics(outcomes_of(results)),
+            missions_with_provider_errors=sum(
+                1
+                for mission_events in events.values()
+                if any(event.event_type.value == "PROVIDER_ERROR" for event in mission_events)
+            ),
+            terminated_provider_outages=sum(
+                1
+                for faults in fault_facts
+                if faults is not None and faults.outage_terminated_mission
+            ),
+            model_invocations=(
+                sum(1 for event in flat_events if event.event_type.value == "MODEL_REQUEST")
+                if flat_events
+                else None
+            ),
+            tool_calls=(
+                sum(1 for event in flat_events if event.event_type.value == "TOOL_CALL")
+                if flat_events
+                else None
+            ),
+            token_usage_reported=all(reported_flags) if reported_flags else None,
+            outcomes=tuple(
+                MissionOutcomeFact(
+                    mission_key=result.mission.mission_key,
+                    status=result.status.value,
+                    primary_failure_reason=(
+                        None
+                        if result.primary_failure_reason is None
+                        else result.primary_failure_reason.value
+                    ),
+                )
+                for result in results
+            ),
+            started_at=run.started_at,
+            completed_at=run.completed_at,
+        )
+
+    async def _suite(self, suite_id: uuid.UUID) -> BenchmarkSuite | None:
+        return (
+            await self._session.execute(select(BenchmarkSuite).where(BenchmarkSuite.id == suite_id))
+        ).scalar_one_or_none()
 
     async def mission_trace(
         self,
@@ -1006,6 +1145,21 @@ class DiagnosticsService:
                 )
             ).scalar_one()
         )
+
+
+def _configuration_digest(run: BenchmarkRun) -> str | None:
+    """A digest of the buyer configuration this run was executed with, or None for a run
+    that recorded none.
+
+    Taken over the stored payload rather than over a rebuilt configuration object, so it
+    describes what this run actually ran with and not what this build would produce now. Two
+    runs whose digests differ were executed with different prompts, tool schemas, limits or
+    models, which is exactly the comparison this feeds.
+    """
+    configuration = run.agent_configuration
+    if not isinstance(configuration, dict):
+        return None
+    return digest(configuration)
 
 
 def _implementation_version(run: BenchmarkRun) -> int | None:

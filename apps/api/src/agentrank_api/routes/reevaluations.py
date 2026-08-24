@@ -21,11 +21,13 @@ from fastapi import APIRouter, Query, status
 
 from agentrank_api.benchmark.launch import MerchantReevaluationService
 from agentrank_api.benchmark.launch_schemas import (
+    ReevaluationDetailView,
     ReevaluationPreflightView,
     ReevaluationRequest,
     ReevaluationView,
 )
 from agentrank_api.dependencies import MerchantDep, SessionDep, SettingsDep
+from agentrank_api.diagnostics.service import DiagnosticsService
 
 router = APIRouter(prefix="/api/v1/benchmark/re-evaluations", tags=["benchmark"])
 
@@ -61,12 +63,16 @@ async def read_reevaluation(
     session: SessionDep,
     merchant: MerchantDep,
     settings: SettingsDep,
-) -> ReevaluationView:
-    """One launch. Another merchant's identifier is indistinguishable from an unknown one."""
+) -> ReevaluationDetailView:
+    """One launch and its comparison. A foreign identifier is indistinguishable from an unknown
+    one, and the comparison is null rather than empty while there is not yet one to give."""
     detail = await MerchantReevaluationService(session, settings).detail(
         merchant.merchant_id, reevaluation_id
     )
-    return ReevaluationView.from_domain(detail)
+    comparison = await DiagnosticsService(session).reevaluation_comparison(
+        reevaluation_id, merchant_id=merchant.merchant_id
+    )
+    return ReevaluationDetailView.with_comparison(detail, comparison)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
