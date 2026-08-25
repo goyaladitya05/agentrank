@@ -508,6 +508,7 @@ async def test_usage_separates_request_attempts_from_provider_responses(
 
     usage = await service.launch_usage(launch_id)
 
+    assert usage.max_provider_requests is not None
     assert usage.requests_charged == 5
     assert usage.requests_remaining == usage.max_provider_requests - 5
     assert usage.provider_responses == 0

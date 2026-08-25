@@ -1083,6 +1083,25 @@ def test_a_model_buyer_cannot_be_built_with_nowhere_to_reserve_its_requests(
         )
 
 
+async def test_a_settled_reservation_is_never_carried_into_the_next_mission(
+    endpoint: LocalCommerceEndpoint, served: RequestLedger
+) -> None:
+    """A mission is carried out on its own reservation or on none, never on the last one's.
+
+    The runner reserves before every mission, so this is a backstop rather than a path anybody
+    takes. It is worth having because the failure it prevents is invisible: a mission running on
+    a permit that was already charged and closed would spend against nothing.
+    """
+    permits = GrantedPermits(granted=6)
+    executor = _reference_executor_with(endpoint, served, permits)
+    await executor.admit("m-1")
+    assert executor.reserved() is not None
+
+    await executor._settle(consumed=1)
+
+    assert executor.reserved() is None
+
+
 def test_a_mission_that_spent_its_allowance_is_the_harness_and_never_the_buyer() -> None:
     """AgentRank declining to spend is not agent performance, so it must not be recorded as it.
 

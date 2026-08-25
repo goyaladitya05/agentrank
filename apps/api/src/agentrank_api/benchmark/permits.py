@@ -26,7 +26,9 @@ launch that is EXECUTING is a launch with a run against a merchant's world, its 
 sequential by construction, and its provider follows from the executor kind it froze. So "how
 many evaluations are calling this provider right now" is a count of rows that already exist,
 with an existing operator recovery path when a dispatcher dies holding one. Inventing a second
-lease table would have created a second answer to that question and a second thing to leak.
+lease table would have created a second answer to that question and a second thing to leak. A
+run an operator started directly has no launch row, so it is counted from its open permits
+instead, which sees it while a mission is in flight and not in the gap between two.
 
 Provider spending is its own table, because nothing else records it. A permit is charged before
 the call and settled after it, and the settlement can only ever move the charge down to a number

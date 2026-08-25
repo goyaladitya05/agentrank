@@ -466,11 +466,15 @@ class IsolatedMissionExecutor:
         Idempotent, so the `finally` that guarantees settlement cannot undo a settlement a
         branch already made. Releasing and reconciling are both narrower than the default and
         both are only reached where this side knows something specific.
+
+        The grant is dropped on the way out, so a mission that somehow reached this object
+        without a reservation of its own cannot be carried out on the last one's. It would be
+        refused for having no grant at all instead, which is the fail closed direction.
         """
         if self._permits is None or self._grant is None or self._settled:
             return
         self._settled = True
-        permit_id = self._grant.permit_id
+        permit_id, self._grant = self._grant.permit_id, None
         if release:
             await self._permits.release(permit_id)
         elif consumed is None:
@@ -491,6 +495,10 @@ class IsolatedMissionExecutor:
             await self._settle(consumed=self._grant.granted_requests)
         else:
             await self._settle()
+
+    def reserved(self) -> ProviderGrant | None:
+        """The reservation this mission is running under, or none because it has been settled."""
+        return self._grant
 
     async def _spawn(self, sandbox: str) -> asyncio.subprocess.Process:
         """Start the worker with an environment built by allowlist and a directory of its own.
