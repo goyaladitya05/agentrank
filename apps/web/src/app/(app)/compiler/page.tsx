@@ -68,8 +68,12 @@ function RunTable({ runs }: { runs: Awaited<ReturnType<typeof decodeCompilerOver
       <Panel>
         <EmptyState
           title="No compiler runs"
-          explanation="When a merchant source is compiled, its review state will appear here."
-        />
+          explanation="When a merchant source is compiled, its review state will appear here. Compiling one is a command on the snapshot it reads."
+        >
+          <Link className={styles.textLink} href="/sources">
+            Review your merchant source
+          </Link>
+        </EmptyState>
       </Panel>
     );
   return (

@@ -97,12 +97,7 @@ function Preflight({
                 term: "Representation under test",
                 value: preflight.representation_label ?? "None published",
               },
-          {
-            term: "Merchant information",
-            value:
-              preflight.source_snapshot_label ??
-              (initial ? "Not recorded yet" : "From the representation under test"),
-          },
+          { term: "Merchant information", value: informationSentence(preflight) },
           { term: "Benchmark suite", value: preflight.suite_label ?? "None published" },
           {
             term: "Missions",
@@ -123,6 +118,23 @@ function Preflight({
       )}
     </>
   );
+}
+
+/**
+ * Which of the merchant's own documents the buyer reads, in the vocabulary of the command.
+ *
+ * A first evaluation names the snapshot itself, because that snapshot is what is being measured.
+ * A re-evaluation names the artifact instead: its source is the provenance of the representation
+ * under test rather than the thing under test, and the representation's own label already
+ * identifies it.
+ */
+function informationSentence(preflight: EvaluationPreflight): string {
+  if (preflight.purpose === "INITIAL") {
+    return preflight.source_snapshot_label ?? "Not recorded yet";
+  }
+  return preflight.representation_id === null
+    ? "None published"
+    : "From the representation under test";
 }
 
 /**
