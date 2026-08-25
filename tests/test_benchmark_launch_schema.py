@@ -360,7 +360,41 @@ class TestLifecycle:
         with pytest.raises(DBAPIError) as refused:
             await session.execute(
                 text("UPDATE benchmark_evaluation_launch SET suite_id = :suite WHERE id = :id"),
-                {"suite": other.suite.id, "id": identifier},
+                {"suite": other.suite_id, "id": identifier},
+            )
+        assert "frozen at admission" in str(refused.value)
+        await session.rollback()
+
+    async def test_which_evaluation_this_is_cannot_be_edited(self, session: AsyncSession) -> None:
+        """The two columns Phase 4F added are frozen like every identity column before them.
+
+        Rewriting a settled re-evaluation into a first evaluation, or moving one to a different
+        source snapshot, would change what a run is evidence about after the run produced it.
+        """
+        world = await build_launch_world(session, "frozen-purpose-shop")
+        identifier = await insert_launch(session, world, request_key="frozen-purpose")
+
+        with pytest.raises(DBAPIError) as refused:
+            await session.execute(
+                text("UPDATE benchmark_evaluation_launch SET purpose = 'INITIAL' WHERE id = :id"),
+                {"id": identifier},
+            )
+        assert "frozen at admission" in str(refused.value)
+        await session.rollback()
+
+    async def test_the_measured_source_cannot_be_edited(self, session: AsyncSession) -> None:
+        world = await build_launch_world(session, "frozen-source-shop")
+        identifier = await insert_launch(
+            session, world, request_key="frozen-source-key", purpose="INITIAL"
+        )
+
+        with pytest.raises(DBAPIError) as refused:
+            await session.execute(
+                text(
+                    "UPDATE benchmark_evaluation_launch SET source_snapshot_id = NULL"
+                    " WHERE id = :id"
+                ),
+                {"id": identifier},
             )
         assert "frozen at admission" in str(refused.value)
         await session.rollback()
