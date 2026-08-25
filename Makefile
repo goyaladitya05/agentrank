@@ -11,7 +11,7 @@ API_APP := agentrank_api.main:create_app
 OPERATOR_CLI := agentrank_api.cli
 
 .PHONY: help install format lint format-check typecheck test test-backend test-frontend \
-	build-frontend test-browser check-text check-whitespace check \
+	build-frontend test-browser test-smoke check-text check-whitespace check \
 	db-up db-down db-reset db-verify migrate seed-dev seed-benchmark api web payments credentials \
 	benchmark
 
@@ -51,6 +51,9 @@ test: test-backend test-frontend test-browser ## Run all tests
 # The seeded keys reach the tests through the environment and never through an argument vector,
 # and the artifact scan runs whether the workflows passed or failed: a failing run is exactly when
 # a trace is retained, so it is exactly when a credential left in one would matter.
+test-smoke: ## Start the supported topology in a clean database and run one merchant evaluation
+	$(UV) run pytest tests/test_deployment_smoke.py
+
 test-browser: migrate build-frontend ## Run critical browser workflows against local services
 	@compiler_key="$$($(UV) run python scripts/seed_compiler_e2e.py)"; \
 		reevaluation="$$($(UV) run python scripts/seed_reevaluation_e2e.py)"; \

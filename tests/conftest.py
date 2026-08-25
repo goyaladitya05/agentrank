@@ -71,8 +71,13 @@ def alembic_config_factory() -> Callable[[Settings], Config]:
     return build
 
 
-def _administer(settings: Settings, statement: str) -> None:
-    """Run a statement against the maintenance database in autocommit."""
+def administer(settings: Settings, statement: str) -> None:
+    """Run a statement against the maintenance database in autocommit.
+
+    Public rather than underscored because the deployment smoke test creates and drops its own
+    database the same way the fixtures here do, and a second copy of this would be a second thing
+    that could point at the wrong server.
+    """
     engine = create_engine(
         settings.database_url.set(database="postgres"),
         isolation_level="AUTOCOMMIT",
@@ -100,12 +105,12 @@ def throwaway_database(settings: Settings) -> Iterator[Settings]:
     must never run against the developer's working database.
     """
     # The database names are constants defined above, never caller supplied.
-    _administer(settings, f'DROP DATABASE IF EXISTS "{THROWAWAY_DATABASE}" WITH (FORCE)')
-    _administer(settings, f'CREATE DATABASE "{THROWAWAY_DATABASE}"')
+    administer(settings, f'DROP DATABASE IF EXISTS "{THROWAWAY_DATABASE}" WITH (FORCE)')
+    administer(settings, f'CREATE DATABASE "{THROWAWAY_DATABASE}"')
     try:
         yield settings.model_copy(update={"postgres_db": THROWAWAY_DATABASE})
     finally:
-        _administer(settings, f'DROP DATABASE IF EXISTS "{THROWAWAY_DATABASE}" WITH (FORCE)')
+        administer(settings, f'DROP DATABASE IF EXISTS "{THROWAWAY_DATABASE}" WITH (FORCE)')
 
 
 @pytest.fixture(scope="session")
@@ -117,14 +122,14 @@ def catalog_settings(
     Built once per session and migrated with the real chain, so tests see exactly the
     schema a deployment would have rather than one created by metadata.create_all.
     """
-    _administer(settings, f'DROP DATABASE IF EXISTS "{CATALOG_DATABASE}" WITH (FORCE)')
-    _administer(settings, f'CREATE DATABASE "{CATALOG_DATABASE}"')
+    administer(settings, f'DROP DATABASE IF EXISTS "{CATALOG_DATABASE}" WITH (FORCE)')
+    administer(settings, f'CREATE DATABASE "{CATALOG_DATABASE}"')
     target = settings.model_copy(update={"postgres_db": CATALOG_DATABASE})
     try:
         command.upgrade(alembic_config_factory(target), "head")
         yield target
     finally:
-        _administer(settings, f'DROP DATABASE IF EXISTS "{CATALOG_DATABASE}" WITH (FORCE)')
+        administer(settings, f'DROP DATABASE IF EXISTS "{CATALOG_DATABASE}" WITH (FORCE)')
 
 
 # Every wait these tests can make is bounded by PostgreSQL rather than by a per test timeout.
