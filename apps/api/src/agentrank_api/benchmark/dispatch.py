@@ -159,6 +159,18 @@ async def execute_next_launch(
 
     try:
         plan = await _dispatch_plan(session, launch, environment=environment, settings=settings)
+
+        # The claim has done its work: this worker knows which launch it is executing and has
+        # verified it can. Releasing the lock here is what keeps the server start below out of a
+        # transaction, and it is safe because nothing this worker does next depends on the row
+        # staying locked. `bind_run` re-locks it and refuses a launch that moved.
+        #
+        # The rollback expires every instance loaded under the claim, so the plan carries
+        # identifiers and the documents are read again below. Reading an attribute off an
+        # expired row here would be a lazy load in the middle of an orchestration with no
+        # transaction open.
+        await session.rollback()
+        measured = await measured_documents(session, plan)
     except LaunchDispatchError as refused:
         await worker.settle_failed(launch_id, failure_code=refused.failure_code)
         log.warning(
@@ -173,16 +185,6 @@ async def execute_next_launch(
             detail=refused.detail,
         )
 
-    # The claim has done its work: this worker knows which launch it is executing and has
-    # verified it can. Releasing the lock here is what keeps the server start below out of a
-    # transaction, and it is safe because nothing this worker does next depends on the row
-    # staying locked. `bind_run` re-locks it and refuses a launch that moved.
-    #
-    # Everything the execution needs is a plain value by now. The rollback expires the loaded
-    # row, and reading an attribute off it afterwards would be a lazy load in the middle of an
-    # orchestration that has no transaction open.
-    await session.rollback()
-
     try:
         finished = await _execute(
             session,
@@ -190,6 +192,7 @@ async def execute_next_launch(
             launch_id=launch_id,
             merchant_id=merchant_id,
             plan=plan,
+            measured=measured,
             world=world,
             provider=provider,
             settings=settings,
@@ -403,11 +406,16 @@ async def _execute(
     launch_id: uuid.UUID,
     merchant_id: uuid.UUID,
     plan: _Plan,
+    measured: tuple[CommerceRepresentation | None, MerchantSourceSnapshot | None],
     world: AuthoredWorld,
     provider: PaymentProvider,
     settings: Settings,
 ) -> BenchmarkRun:
     """Start the frozen suite, bind the run to the launch, and execute it.
+
+    `measured` is the pair of documents this launch's buyer reads, already loaded and proved to
+    belong to this merchant. They arrive as values rather than being read here, because the one
+    place that can settle a launch that cannot be read is the caller.
 
     The run is bound before a single mission runs, so a process that dies mid execution leaves a
     launch naming the run an operator has to close rather than a launch nobody can connect to
@@ -420,9 +428,7 @@ async def _execute(
     runs = BenchmarkRunService(session)
     worker = EvaluationLaunchWorkerService(session)
     served = RequestLedger()
-    # Before the server starts, and after the claim's rollback, which is the only window where
-    # these are both live and cheap. Everything downstream reads them as plain attributes.
-    representation, source = await measured_documents(session, plan)
+    representation, source = measured
     async with LocalCommerceEndpoint(settings, provider=provider, observer=served) as endpoint:
         started = await runs.start_suite(
             suite_key=plan.suite_key,
