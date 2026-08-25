@@ -1,5 +1,5 @@
 import { RazorpayTestCheckout } from "@/components/RazorpayTestCheckout";
-import { requireConsoleApiKey } from "@/lib/auth/credential";
+import { requireConsoleCredential } from "@/lib/auth/credential";
 
 import styles from "./page.module.css";
 
@@ -8,7 +8,7 @@ import styles from "./page.module.css";
 export const dynamic = "force-dynamic";
 
 export default async function RazorpayCheckoutPage() {
-  await requireConsoleApiKey();
+  await requireConsoleCredential();
 
   return (
     <>

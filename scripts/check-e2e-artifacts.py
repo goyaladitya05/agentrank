@@ -7,15 +7,25 @@ action, the DOM around it and the network it caused, and `retain-on-failure` wri
 whenever anything breaks. The harness keeps the credential out of them by starting each trace
 after sign in, and this is what proves it actually did.
 
-Two kinds of match are refused, and both matter:
+Three kinds of match are refused, and each matters:
 
 - any string shaped like a merchant API key. `agentrank_api.auth.tokens` mints exactly one
   shape and says why it is recognisable, so a scanner can act on it without decoding anything.
   This catches a credential nobody told this script about, including one minted by a future
   test.
+- any string shaped like a console session verifier. That is the credential the console
+  presents to the API on a merchant's behalf, and it authenticates every merchant endpoint, so
+  it belongs in an artifact no more than a key does.
 - the exact credentials this run used, and their secret halves, passed through
   `AGENTRANK_E2E_SECRETS`. Exact strings rather than a pattern, so there is nothing to be
   clever about and no false positive to explain away.
+
+What is deliberately not refused is the console session cookie, `arc_<hex>`, which a trace of a
+signed in browser necessarily contains. It is not a credential: the console derives the verifier
+above from it by HMAC under a deployment secret, so a cookie without that secret authenticates
+nothing. The browser harness generates that secret per run and never writes it down, so a cookie
+in a retained trace names a credential nobody can derive again. The exception is exactly this
+one value and does not extend to anything the API would accept.
 
 A trace is a zip and its entries are compressed, so scanning the file bytes would find nothing
 and report success. Every zip is opened and every entry is read out before it is searched.
@@ -40,6 +50,10 @@ from pathlib import Path
 # The exact shape `agentrank_api.auth.tokens` mints, unanchored so it is found anywhere inside a
 # larger document. Kept in step with that module by `tests/test_e2e_artifact_scan.py`.
 TOKEN = re.compile(rb"ar_(?:live|dev)_[0-9a-f]{32}_[0-9a-f]{64}")
+
+# The shape `agentrank_api.auth.console` accepts as a browser session credential. Kept in step
+# with that module by `tests/test_e2e_artifact_scan.py`.
+CONSOLE_SESSION = re.compile(rb"ars_[0-9a-f]{64}")
 
 ZIP_MAGIC = b"PK\x03\x04"
 
@@ -94,6 +108,8 @@ def findings(name: str, blob: bytes, secrets: list[bytes]) -> list[str]:
     found = []
     if TOKEN.search(blob) is not None:
         found.append(f"{name}: contains a string shaped like a merchant API key")
+    if CONSOLE_SESSION.search(blob) is not None:
+        found.append(f"{name}: contains a string shaped like a console session credential")
     for index, secret in enumerate(secrets):
         if secret in blob:
             found.append(f"{name}: contains configured secret {index + 1}")
@@ -151,7 +167,7 @@ def main() -> int:
         return 1
     print(
         f"{len(scanned)} artifact(s), {entries} stream(s) scanned:"
-        " no credential material and no key shaped string"
+        " no credential material, no key shaped string and no session credential"
     )
     return 0
 

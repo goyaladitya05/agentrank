@@ -29,7 +29,7 @@
 
 import { revalidatePath } from "next/cache";
 
-import { requireConsoleApiKey } from "@/lib/auth/credential";
+import { requireConsoleCredential } from "@/lib/auth/credential";
 import { apiBaseUrl } from "@/lib/config";
 import { decodeEvaluationLaunch, type EvaluationPurpose } from "@/lib/evaluation";
 import type { LaunchState } from "@/lib/evaluation-mutation";
@@ -95,15 +95,15 @@ export async function requestEvaluation(
   planDigest: string,
   _: LaunchState,
 ): Promise<LaunchState> {
-  // Resolved before the try. `requireConsoleApiKey` redirects by throwing the framework's own
+  // Resolved before the try. `requireConsoleCredential` redirects by throwing the framework's own
   // control-flow error, and catching that here would turn an expired session into a message
   // about the network instead of a login page.
-  const apiKey = await requireConsoleApiKey();
+  const credential = await requireConsoleCredential();
   let response: Response;
   try {
     response = await fetch(`${apiBaseUrl().replace(/\/+$/, "")}/api/v1/benchmark/evaluations`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${credential}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         purpose,
         representation_id: representationId,

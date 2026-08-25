@@ -20,10 +20,14 @@ import { expect, type BrowserContext, type Page, type TestInfo } from "@playwrig
  * artifact a failure leaves behind is the same one it always was, minus the sign in.
  *
  * What a trace still contains is the console session cookie, because every request the signed in
- * browser makes carries it. That is a random token held in one Next.js server's memory for one
- * test run against a throwaway merchant, and it is not the merchant credential: the credential
- * never enters the browser at all. `scripts/check-e2e-artifacts.py` is what proves that, and it
- * runs over every artifact this harness leaves behind.
+ * browser makes carries it. That is not the merchant credential, which never enters the browser
+ * at all, and it is not the credential the API knows about either. The console derives that one
+ * from the cookie by HMAC under `AGENTRANK_CONSOLE_SESSION_SECRET`, which `playwright.config.ts`
+ * generates per run and never writes down, so a cookie recovered from a retained trace names a
+ * credential nobody can derive again once the run is over.
+ *
+ * `scripts/check-e2e-artifacts.py` is what proves the two credentials that would matter are
+ * absent, and it runs over every artifact this harness leaves behind.
  */
 
 /** What a workflow trace captures. The same three the `trace` config option turns on. */

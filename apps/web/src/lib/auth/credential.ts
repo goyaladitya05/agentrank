@@ -1,34 +1,40 @@
 /**
- * Resolving the merchant credential a server render should call the API with.
+ * Resolving the credential a server render should call the API with.
  *
- * An explicitly signed in session wins over the server environment credential, so an
- * operator can inspect another merchant without redeploying. Both stay on the server:
- * nothing here is importable from client code.
+ * One source, and it is the browser's own session cookie. There is no environment merchant
+ * credential and no fallback to one: a console process holding a merchant API key would be a
+ * process that could answer for a merchant nobody signed in as, and every request this console
+ * makes now carries a credential that belongs to one signed in browser.
+ *
+ * What is returned is a console session verifier, not a merchant API key. The key never reaches
+ * this module: it is typed into the sign in form once, exchanged for a session, and forgotten.
+ * Nothing here is importable from client code.
  */
 
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 
-import { resolveApiKeyForToken, SESSION_COOKIE } from "@/lib/auth/session";
+import { SESSION_COOKIE, sessionVerifier } from "@/lib/auth/session";
 
-export function environmentApiKey(): string | null {
-  const token = process.env.AGENTRANK_MERCHANT_API_KEY;
-  return token !== undefined && token.length > 0 ? token : null;
-}
-
-export async function consoleApiKey(): Promise<string | null> {
+export async function consoleCredential(): Promise<string | null> {
   const jar = await cookies();
-  return resolveApiKeyForToken(jar.get(SESSION_COOKIE)?.value);
+  return sessionVerifier(jar.get(SESSION_COOKIE)?.value);
 }
 
 /**
- * The credential every product page starts from. Without one there is nothing to show
- * except the sign in page, so the redirect is the behavior rather than an error state.
+ * The credential every product page starts from. Without one there is nothing to show except
+ * the sign in page, so the redirect is the behavior rather than an error state.
+ *
+ * A cookie that is present is not a session that is still open. Whether this credential still
+ * authenticates is the API's answer and not this console's, because the session record lives
+ * there; an expired or revoked one comes back as an unauthenticated failure the page renders as
+ * a prompt to sign in again. This checks only that a browser presented something worth asking
+ * about, which is what keeps a signed out visitor from generating an API call at all.
  */
-export async function requireConsoleApiKey(): Promise<string> {
-  const apiKey = await consoleApiKey();
-  if (apiKey === null) {
+export async function requireConsoleCredential(): Promise<string> {
+  const credential = await consoleCredential();
+  if (credential === null) {
     redirect("/login");
   }
-  return apiKey;
+  return credential;
 }

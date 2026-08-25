@@ -9,11 +9,11 @@
 import { NextResponse } from "next/server";
 
 import { callApi } from "@/lib/agentrank";
-import { mutationApiKey } from "@/lib/auth/request";
+import { mutationCredential } from "@/lib/auth/request";
 
 export async function POST(request: Request): Promise<NextResponse> {
-  const apiKey = await mutationApiKey(request);
-  if (apiKey === null) {
+  const credential = await mutationCredential(request);
+  if (credential === null) {
     return NextResponse.json(
       { error: "authenticated same-origin session required" },
       { status: 401 },
@@ -38,7 +38,7 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   try {
     const result = await callApi(
-      apiKey,
+      credential,
       `/api/v1/commerce/checkouts/${encodeURIComponent(checkoutId)}/razorpay-checkout`,
       {
         method: "POST",

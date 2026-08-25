@@ -181,8 +181,7 @@ export function RazorpayTestCheckout({ configured }: { readonly configured: bool
 
       {!configured && (
         <p className={styles.warning}>
-          This console has no merchant API key. Set AGENTRANK_MERCHANT_API_KEY in the Next.js server
-          environment and reload.
+          This console holds no merchant session. Sign in again and reload.
         </p>
       )}
 

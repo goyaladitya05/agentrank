@@ -1,5 +1,5 @@
 import { SystemStatusTable } from "@/components/SystemStatusTable";
-import { requireConsoleApiKey } from "@/lib/auth/credential";
+import { requireConsoleCredential } from "@/lib/auth/credential";
 import { apiBaseUrl } from "@/lib/config";
 import { fetchSystemStatus } from "@/lib/systemStatus";
 
@@ -9,7 +9,7 @@ import styles from "./page.module.css";
 export const dynamic = "force-dynamic";
 
 export default async function SystemStatusPage() {
-  await requireConsoleApiKey();
+  await requireConsoleCredential();
   const target = apiBaseUrl();
   const status = await fetchSystemStatus(target);
 

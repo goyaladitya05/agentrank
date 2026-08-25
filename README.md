@@ -157,20 +157,24 @@ make build-frontend
 
 `AGENTRANK_API_BASE_URL` selects the backend. It defaults to `http://localhost:8000`.
 
+`AGENTRANK_CONSOLE_SESSION_SECRET` is required and the console refuses to start without it. Every
+browser session credential is derived from it, so every console process serving one deployment
+needs the same value, and changing it signs every merchant out at once. Generate one with
+`openssl rand -hex 32`. On plain HTTP localhost, also set `AGENTRANK_COOKIE_SECURE=false`, which
+is the only thing that lets a session cookie be issued without HTTPS.
+
+The console holds no merchant API key. A merchant signs in with theirs, the console exchanges it
+for a durable session held by the API and forgets the key, and the browser holds only an opaque
+cookie. There is no environment credential that stands in for a signed in merchant.
+
 ### Razorpay test checkout
 
 `/razorpay` opens a Razorpay Standard Checkout against an AgentRank quote. It is integration UI
 rather than product UI: paste a checkout identifier, pay with a Razorpay test card, and the page
 reports the resulting AgentRank state.
 
-It needs two things in the environment the Next.js server sees:
-
-```bash
-export AGENTRANK_MERCHANT_API_KEY=ar_dev_...   # minted by make credentials
-make web
-```
-
-and a Razorpay Test Mode key pair in the API's `.env`:
+It needs a signed in merchant session in the browser, and a Razorpay Test Mode key pair in the
+API's `.env`:
 
 ```text
 RAZORPAY_KEY_ID=rzp_test_...
@@ -188,8 +192,10 @@ outside this codebase, so what is proven is that the application sends what Razo
 and handles every answer Razorpay documents. Whether Razorpay agrees is unproven until somebody
 completes one test payment.
 
-The console has no authentication of its own, so anyone who can reach it can transact as the
-configured merchant. Keep it bound to localhost.
+The console authenticates a merchant by their own API key and holds the resulting session in
+PostgreSQL, so a session survives a console restart and resolves on any console process. What it
+still has is no account model: one merchant API key is one identity, and two people sharing a key
+are indistinguishable.
 
 ## Migrations
 

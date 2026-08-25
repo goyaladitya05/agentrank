@@ -25,6 +25,7 @@ from types import ModuleType
 
 import pytest
 
+from agentrank_api.auth.console import CONSOLE_SESSION_SCHEME, is_console_session_verifier
 from agentrank_api.auth.tokens import SECRET_BYTES, TokenMarker
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
@@ -34,6 +35,12 @@ SCRIPT = REPOSITORY_ROOT / "scripts" / "check-e2e-artifacts.py"
 # authenticates, and a token that came from the real minter would be a real secret in a test.
 CREDENTIAL = f"ar_{TokenMarker.DEVELOPMENT.value}_{'0' * 32}_{'a' * (SECRET_BYTES * 2)}"
 SECRET_HALF = CREDENTIAL.rsplit("_", 1)[-1]
+
+# One well formed console session verifier and one well formed console session cookie. The
+# verifier authenticates every merchant endpoint and must never survive in an artifact; the cookie
+# is inert without the console's deployment secret and is expected to be in every signed in trace.
+SESSION_VERIFIER = f"{CONSOLE_SESSION_SCHEME}_{'b' * 64}"
+SESSION_COOKIE_VALUE = f"arc_{'c' * 64}"
 
 # Enough repetition that a compressor has something to do, so the deflated entry genuinely does
 # not contain the plain bytes.
@@ -78,6 +85,43 @@ def test_the_scanned_shape_is_the_one_this_application_mints() -> None:
     assert pattern.search(f"fill(value={CREDENTIAL}) then click") is not None
     # A digest is not a credential, and this repository is full of digests.
     assert pattern.search("sha256:" + "f" * 64) is None
+
+
+def test_the_scanned_session_shape_is_the_one_the_api_accepts() -> None:
+    """A console session credential authenticates as the merchant, so it is scanned for too."""
+    pattern = re.compile(scanner().CONSOLE_SESSION.pattern.decode())
+    assert is_console_session_verifier(SESSION_VERIFIER)
+    assert pattern.fullmatch(SESSION_VERIFIER) is not None
+    assert pattern.search(f"authorization: Bearer {SESSION_VERIFIER}") is not None
+    # A merchant API key is caught by the other rule, not by this one.
+    assert pattern.search(CREDENTIAL) is None
+
+
+def test_a_console_session_credential_in_an_artifact_is_refused(tmp_path: Path) -> None:
+    artifact = trace(tmp_path / "trace.zip", f"Bearer {SESSION_VERIFIER} {PADDING}")
+
+    result = run(str(artifact))
+
+    assert result.returncode == 1
+    assert "shaped like a console session credential" in result.stdout
+    assert SESSION_VERIFIER not in result.stdout + result.stderr
+
+
+def test_the_console_session_cookie_is_not_treated_as_a_credential(tmp_path: Path) -> None:
+    """The one documented exception, pinned so it cannot widen by accident.
+
+    A trace of a signed in browser necessarily carries the session cookie. It is not a credential
+    the API would accept: the console derives the verifier above from it under a deployment
+    secret the browser test generates per run and never writes down. What must stay true is that
+    the exception covers this value and nothing the API accepts, which the test above asserts
+    from the other side.
+    """
+    artifact = trace(tmp_path / "trace.zip", f"cookie: ar_console_session={SESSION_COOKIE_VALUE}")
+
+    result = run(str(artifact))
+
+    assert result.returncode == 0
+    assert not is_console_session_verifier(SESSION_COOKIE_VALUE)
 
 
 def test_a_compressed_credential_is_found_where_a_substring_search_would_miss_it(

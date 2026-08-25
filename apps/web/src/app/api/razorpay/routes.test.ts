@@ -3,17 +3,22 @@
  *
  * These are the only cookie authenticated write paths in the console that reach commerce, so
  * every property that keeps them safe is asserted here rather than assumed from reading them:
- * an explicit browser session is required, a write needs a same-origin request, one tenant's
- * cookie only ever produces that tenant's credential, a server environment credential never
- * stands in for a signed in merchant, and signing out ends it immediately.
+ * an explicit browser session is required, a write needs a same-origin request, one browser's
+ * cookie only ever produces that browser's credential, a server environment credential never
+ * stands in for a signed in merchant, and a cookie naming nothing is refused.
  *
- * The session vault is the real one. Only the cookie jar and the API transport are replaced, so
- * the code under test is the code that ships.
+ * The session derivation is the real one. Only the cookie jar and the API transport are
+ * replaced, so the code under test is the code that ships. Whether a derived credential still
+ * authenticates is now the API's answer rather than this console's, so what these assert is that
+ * the right credential is derived and forwarded, and that no request is forwarded without one.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createSession, destroySession, SESSION_COOKIE } from "@/lib/auth/session";
+import { SESSION_COOKIE, newCookieValue, sessionVerifier } from "@/lib/auth/session";
+
+const SESSION_SECRET = "a-console-session-secret-of-sufficient-length";
+process.env.AGENTRANK_CONSOLE_SESSION_SECRET = SESSION_SECRET;
 
 const cookie: { value: string | undefined } = { value: undefined };
 
@@ -28,15 +33,15 @@ vi.mock("next/headers", () => ({
 }));
 
 interface ForwardedCall {
-  readonly apiKey: string;
+  readonly credential: string;
   readonly path: string;
 }
 
 const forwarded: ForwardedCall[] = [];
 
 vi.mock("@/lib/agentrank", () => ({
-  callApi: (apiKey: string, path: string) => {
-    forwarded.push({ apiKey, path });
+  callApi: (credential: string, path: string) => {
+    forwarded.push({ credential, path });
     return Promise.resolve({ status: 200, body: { forwarded: true } });
   },
 }));
@@ -70,10 +75,12 @@ function read(query: string): Request {
   return new Request(`https://${HOST}/api/razorpay/state?${query}`, { headers: { host: HOST } });
 }
 
-function signIn(apiKey: string): string {
-  const token = createSession(apiKey);
-  cookie.value = token;
-  return token;
+/** One signed in browser: a fresh cookie, and the credential this console derives from it. */
+function signIn(): string {
+  cookie.value = newCookieValue();
+  const derived = sessionVerifier(cookie.value);
+  if (derived === null) throw new Error("the console must derive a credential from its cookie");
+  return derived;
 }
 
 beforeEach(() => {
@@ -111,15 +118,15 @@ describe("the Razorpay proxy requires an explicit browser session", () => {
     expect(forwarded).toHaveLength(0);
   });
 
-  it("stops answering the moment the session is destroyed", async () => {
-    const token = signIn("ar_dev_tenant_a");
+  it("stops answering the moment the cookie is cleared, which is what signing out does", async () => {
+    signIn();
     expect((await state(read(`checkout_id=${CHECKOUT}`))).status).toBe(200);
-    destroySession(token);
+    cookie.value = undefined;
     expect((await state(read(`checkout_id=${CHECKOUT}`))).status).toBe(401);
     expect(forwarded).toHaveLength(1);
   });
 
-  it("refuses a cookie that names no session at all", async () => {
+  it("refuses a cookie of the wrong shape without deriving anything from it", async () => {
     cookie.value = "0".repeat(64);
     expect((await prepare(write("/api/razorpay/prepare", { checkout_id: CHECKOUT }))).status).toBe(
       401,
@@ -130,7 +137,7 @@ describe("the Razorpay proxy requires an explicit browser session", () => {
 
 describe("the Razorpay proxy requires a same-origin write", () => {
   beforeEach(() => {
-    signIn("ar_dev_tenant_a");
+    signIn();
   });
 
   it("refuses a prepare from another origin even with a valid session", async () => {
@@ -173,14 +180,17 @@ describe("the Razorpay proxy requires a same-origin write", () => {
   });
 
   it("accepts a same-origin write and forwards the session's own credential", async () => {
+    const expected = sessionVerifier(cookie.value);
     const response = await prepare(write("/api/razorpay/prepare", { checkout_id: CHECKOUT }));
     expect(response.status).toBe(200);
     expect(forwarded).toEqual([
       {
-        apiKey: "ar_dev_tenant_a",
+        credential: expected,
         path: `/api/v1/commerce/checkouts/${CHECKOUT}/razorpay-checkout`,
       },
     ]);
+    // What travels to the API is the derived credential, never the browser's cookie.
+    expect(forwarded[0]?.credential).not.toBe(cookie.value);
   });
 
   it("validates the callback shape before any credential is used", async () => {
@@ -194,23 +204,23 @@ describe("the Razorpay proxy requires a same-origin write", () => {
 
 describe("the Razorpay proxy keeps tenants apart", () => {
   it("forwards only the credential belonging to the cookie that was presented", async () => {
-    signIn("ar_dev_tenant_a");
+    const first = signIn();
     await prepare(write("/api/razorpay/prepare", { checkout_id: CHECKOUT }));
-    const stolen = createSession("ar_dev_tenant_b");
-    cookie.value = stolen;
+    const second = signIn();
     await prepare(write("/api/razorpay/prepare", { checkout_id: CHECKOUT }));
-    expect(forwarded.map((call) => call.apiKey)).toEqual(["ar_dev_tenant_a", "ar_dev_tenant_b"]);
+    expect(first).not.toBe(second);
+    expect(forwarded.map((call) => call.credential)).toEqual([first, second]);
   });
 
   it("never lets a request body choose the merchant it acts as", async () => {
-    signIn("ar_dev_tenant_a");
+    const own = signIn();
     await prepare(
       write("/api/razorpay/prepare", {
         checkout_id: CHECKOUT,
         merchant_id: "01993333-3333-7333-8333-333333333333",
-        api_key: "ar_dev_tenant_b",
+        api_key: `ar_dev_${"a".repeat(32)}_${"b".repeat(64)}`,
       }),
     );
-    expect(forwarded.map((call) => call.apiKey)).toEqual(["ar_dev_tenant_a"]);
+    expect(forwarded.map((call) => call.credential)).toEqual([own]);
   });
 });

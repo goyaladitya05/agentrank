@@ -1,8 +1,9 @@
 /**
- * Calling the AgentRank API from the Next.js server, with the merchant credential.
+ * Calling the AgentRank API from the Next.js server, with the console session credential.
  *
- * The credential comes from the authenticated server-side browser session and is never sent to
- * browser JavaScript.  A route handler supplies it after it has checked the session and origin.
+ * The credential is derived from the browser's session cookie and is never sent to browser
+ * JavaScript. A route handler supplies it after it has checked the session and origin. It is not
+ * a merchant API key: this console holds none. See `@/lib/auth/session`.
  */
 
 import { apiBaseUrl } from "@/lib/config";
@@ -20,7 +21,7 @@ export interface ApiResult {
  * cooperate. A wrapper that threw on everything above 299 would flatten those into one message.
  */
 export async function callApi(
-  apiKey: string,
+  credential: string,
   path: string,
   init: { readonly method: string; readonly body?: unknown },
 ): Promise<ApiResult> {
@@ -29,7 +30,7 @@ export async function callApi(
   const request: RequestInit = {
     method: init.method,
     headers: {
-      Authorization: `Bearer ${apiKey}`,
+      Authorization: `Bearer ${credential}`,
       "Content-Type": "application/json",
     },
     cache: "no-store",

@@ -28,7 +28,7 @@
 
 import { revalidatePath } from "next/cache";
 
-import { requireConsoleApiKey } from "@/lib/auth/credential";
+import { requireConsoleCredential } from "@/lib/auth/credential";
 import { apiBaseUrl } from "@/lib/config";
 import { decodeCompilerRun } from "@/lib/compiler";
 import { decodeSourceSubmission } from "@/lib/source";
@@ -106,15 +106,15 @@ export async function submitSource(
     );
   }
 
-  // Resolved before the try. `requireConsoleApiKey` redirects to sign in by throwing the
+  // Resolved before the try. `requireConsoleCredential` redirects to sign in by throwing the
   // framework's own control-flow error, and catching that here would turn an expired session
   // into a message about the network instead of a login page.
-  const apiKey = await requireConsoleApiKey();
+  const credential = await requireConsoleCredential();
   let response: Response;
   try {
     response = await fetch(`${apiBaseUrl().replace(/\/+$/, "")}/api/v1/sources`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${credential}`, "Content-Type": "application/json" },
       body: encoded,
       cache: "no-store",
     });
@@ -168,12 +168,12 @@ export async function startCompilerRun(
   sourceSnapshotId: string,
   _: CompileState,
 ): Promise<CompileState> {
-  const apiKey = await requireConsoleApiKey();
+  const credential = await requireConsoleCredential();
   let response: Response;
   try {
     response = await fetch(`${apiBaseUrl().replace(/\/+$/, "")}/api/v1/compiler/runs`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${credential}`, "Content-Type": "application/json" },
       body: JSON.stringify({ source_snapshot_id: sourceSnapshotId }),
       cache: "no-store",
     });

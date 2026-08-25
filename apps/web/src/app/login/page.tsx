@@ -6,7 +6,6 @@
  * The key is never echoed back, never placed in a URL and never logged.
  */
 
-import { environmentApiKey } from "@/lib/auth/credential";
 import { signIn } from "@/lib/auth/actions";
 
 import styles from "./login.module.css";
@@ -19,7 +18,8 @@ const ERROR_MESSAGES: Record<string, string> = {
     "The AgentRank API did not accept that key. Check that it belongs to your merchant and has not been revoked.",
   unreachable: "The AgentRank API could not be reached. Confirm it is running and try again.",
   unusable:
-    "The AgentRank API answered in a form this console does not understand. Confirm you are pointing at an AgentRank API.",
+    "The AgentRank API answered in a form this console does not understand, or this console is not configured to hold sessions. Confirm you are pointing at an AgentRank API and that the deployment has a session secret.",
+  expired: "Your session has ended. Sign in again to continue.",
 };
 
 export default async function LoginPage({
@@ -29,15 +29,14 @@ export default async function LoginPage({
 }) {
   const params = await searchParams;
   const errorMessage = params.error !== undefined ? (ERROR_MESSAGES[params.error] ?? null) : null;
-  const environmentConfigured = environmentApiKey() !== null;
 
   return (
     <main className={styles.main}>
       <h1 className={styles.wordmark}>AgentRank</h1>
       <p className={styles.lede}>
         Sign in with a merchant API key to view your benchmark insights. Keys are issued by your
-        operator with the credentials command line and are verified against the AgentRank API before
-        a session is opened.
+        operator with the credentials command line. The key opens a session on the AgentRank API and
+        is not kept by this console afterwards; your browser holds only an opaque session cookie.
       </p>
       {errorMessage !== null ? (
         <p className={styles.error} role="alert">
@@ -61,12 +60,6 @@ export default async function LoginPage({
           Sign in
         </button>
       </form>
-      {environmentConfigured ? (
-        <p className={styles.note}>
-          A server merchant credential is configured for backend operations. Console access still
-          requires an explicit merchant sign-in.
-        </p>
-      ) : null}
     </main>
   );
 }

@@ -14,6 +14,7 @@ from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from agentrank_api.auth.console import ConsoleSessionService, is_console_session_verifier
 from agentrank_api.auth.principal import AuthenticatedMerchant
 from agentrank_api.auth.service import MerchantCredentialService
 from agentrank_api.benchmark.mutation import BenchmarkMutationGuard
@@ -116,9 +117,32 @@ _bearer = HTTPBearer(
     description=(
         "A merchant API key, presented as `Authorization: Bearer ar_dev_<credential>_<secret>`."
         " Keys are issued by the operator command line and are never returned by this API."
+        " A merchant console session verifier, `ars_<hex>`, is accepted in the same header for"
+        " everything except opening another session. The two grammars are disjoint, so which"
+        " kind arrived is decided by the value rather than by anything the caller says."
     ),
     auto_error=False,
 )
+
+
+async def _principal(
+    session: AsyncSession, presented: HTTPAuthorizationCredentials | None
+) -> AuthenticatedMerchant | None:
+    """Resolve whichever kind of credential arrived, or nothing.
+
+    Dispatched on the shape of the value. A console session verifier cannot parse as a merchant
+    API key and a merchant API key cannot parse as one of these, so there is no value that could
+    be tried as both and no ambiguity for a caller to exploit.
+
+    Both paths answer with a principal or with nothing and neither explains itself. Which of the
+    several ways a credential can fail happened is not a caller's business, and it is not this
+    layer's business either: a dependency that knew would eventually be a response that said.
+    """
+    if presented is None:
+        return None
+    if is_console_session_verifier(presented.credentials):
+        return await ConsoleSessionService(session).authenticate(presented.credentials)
+    return await MerchantCredentialService(session).authenticate(presented.credentials)
 
 
 async def require_merchant(
@@ -145,10 +169,7 @@ async def require_merchant(
     would be expired by this, and expired again by every deliberate rollback the services perform
     on a refusal.
     """
-    if presented is None:
-        raise AuthenticationError()
-
-    principal = await MerchantCredentialService(session).authenticate(presented.credentials)
+    principal = await _principal(session, presented)
     if principal is None:
         raise AuthenticationError()
 
@@ -157,6 +178,55 @@ async def require_merchant(
 
 
 MerchantDep = Annotated[AuthenticatedMerchant, Depends(require_merchant)]
+
+
+async def require_merchant_key(
+    session: SessionDep,
+    presented: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+) -> AuthenticatedMerchant:
+    """Establish a merchant identity from a merchant API key, and refuse a console session.
+
+    The narrower half of `require_merchant`, for the one operation a session must not be able to
+    perform: opening another session. A session that could mint a session would have no bound on
+    its own lifetime, and signing out or waiting out the clock would stop being remedies because
+    a stolen one could keep renewing itself.
+
+    Refused before the database is touched. A value shaped like a session verifier is not looked
+    up at all here, so this cannot become a way to test whether a session exists.
+    """
+    if presented is None or is_console_session_verifier(presented.credentials):
+        raise AuthenticationError()
+    principal = await MerchantCredentialService(session).authenticate(presented.credentials)
+    if principal is None:
+        raise AuthenticationError()
+
+    await session.rollback()
+    return principal
+
+
+async def presented_credential(
+    presented: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+    merchant: MerchantDep,
+) -> str:
+    """The exact credential this request authenticated with.
+
+    For the one endpoint whose subject is the credential itself rather than the merchant behind
+    it: signing out closes the session that made the request, and a principal says which merchant
+    is calling without saying which of their browsers did.
+
+    `merchant` is depended on rather than used, so this cannot hand an unauthenticated caller
+    their own string back. The value is returned to a route that passes it straight to a lookup
+    and never to one that records, logs or echoes it.
+    """
+    del merchant
+    # `require_merchant` has already refused a request with no credential, so this cannot be
+    # None by the time it runs. Stated rather than assumed, because the type says it can be.
+    if presented is None:  # pragma: no cover
+        raise AuthenticationError()
+    return presented.credentials
+
+
+PresentedCredentialDep = Annotated[str, Depends(presented_credential)]
 
 
 async def require_operator_merchant(merchant: MerchantDep) -> AuthenticatedMerchant:
@@ -180,6 +250,22 @@ async def require_operator_merchant(merchant: MerchantDep) -> AuthenticatedMerch
 
 
 OperatorDep = Annotated[AuthenticatedMerchant, Depends(require_operator_merchant)]
+
+
+async def require_operator_key(
+    merchant: Annotated[AuthenticatedMerchant, Depends(require_merchant_key)],
+) -> AuthenticatedMerchant:
+    """A merchant API key that is not a benchmark executor's, and not a console session.
+
+    Both refusals for the same reason they exist separately: a buyer credential must not command
+    the benchmark it runs inside, and a browser session must not be able to extend itself.
+    """
+    if merchant.benchmark_capability is not None:
+        raise AuthenticationError()
+    return merchant
+
+
+OperatorKeyDep = Annotated[AuthenticatedMerchant, Depends(require_operator_key)]
 
 
 async def require_mutation_permission(session: SessionDep, merchant: MerchantDep) -> None:

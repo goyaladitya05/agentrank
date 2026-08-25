@@ -18,7 +18,7 @@ function fetchReturning(response: Response): typeof fetch {
 }
 
 describe("fetchInsight", () => {
-  const options = { baseUrl: "http://api.test", apiKey: "ar_dev_key" };
+  const options = { baseUrl: "http://api.test", credential: "ar_dev_key" };
 
   it("attaches the credential as a bearer token and decodes a successful answer", async () => {
     let seenAuthorization: string | null = null;
@@ -45,7 +45,7 @@ describe("fetchInsight", () => {
     };
     const outcome = await fetchInsight("/api/v1/insights/overview", decode, {
       ...options,
-      apiKey: null,
+      credential: null,
       fetchImpl,
     });
     expect(called).toBe(false);
@@ -100,7 +100,7 @@ describe("fetchInsight", () => {
   it("classifies transport failures as network errors without leaking the credential", async () => {
     const outcome = await fetchInsight("/api/v1/insights/overview", decode, {
       baseUrl: "http://127.0.0.1:1",
-      apiKey: "ar_dev_secret_value",
+      credential: "ar_dev_secret_value",
       fetchImpl: (async () => {
         throw new Error("connection refused");
       }) as typeof fetch,

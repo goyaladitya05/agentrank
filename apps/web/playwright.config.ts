@@ -1,4 +1,21 @@
+import { randomBytes } from "node:crypto";
+
 import { defineConfig } from "@playwright/test";
+
+/**
+ * The console session secret this run's console is started with.
+ *
+ * Generated here rather than written down anywhere. Nothing outside this process tree has ever
+ * seen it, so a session cookie captured in a retained trace names a credential that cannot be
+ * derived again once the run is over.
+ *
+ * Placed on this process' own environment as well as the server's, because the durability spec
+ * starts a second console and has to start it with the same secret: two consoles with different
+ * secrets would derive different credentials from one cookie, which is a misconfiguration rather
+ * than the property under test. Test workers are children of this process and inherit it.
+ */
+process.env.AGENTRANK_CONSOLE_SESSION_SECRET ??= randomBytes(32).toString("hex");
+const SESSION_SECRET = process.env.AGENTRANK_CONSOLE_SESSION_SECRET;
 
 /**
  * The critical browser workflow runs against real servers and a real database.
@@ -38,7 +55,15 @@ export default defineConfig({
     {
       command: "next start --port 3001",
       cwd: ".",
-      env: { AGENTRANK_API_BASE_URL: "http://127.0.0.1:8001" },
+      // The session secret is generated per run and lives only in this process tree. A console
+      // session cookie left in a retained trace is therefore inert the moment the run ends:
+      // resolving one needs this value, and nothing writes it down. `AGENTRANK_COOKIE_SECURE`
+      // is the documented local HTTP exception, and these servers are plain HTTP on loopback.
+      env: {
+        AGENTRANK_API_BASE_URL: "http://127.0.0.1:8001",
+        AGENTRANK_CONSOLE_SESSION_SECRET: SESSION_SECRET,
+        AGENTRANK_COOKIE_SECURE: "false",
+      },
       url: "http://127.0.0.1:3001/login",
       reuseExistingServer: false,
     },

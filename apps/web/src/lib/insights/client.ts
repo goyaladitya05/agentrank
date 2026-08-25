@@ -26,8 +26,8 @@ export type InsightsOutcome<T> =
 export interface FetchOptions {
   /** Absolute base URL of the AgentRank API, from server configuration only. */
   readonly baseUrl: string;
-  /** The merchant credential, or null when the console holds no usable session. */
-  readonly apiKey: string | null;
+  /** The console session credential, or null when the browser holds no usable session. */
+  readonly credential: string | null;
   /** Injectable for tests; production always uses the platform fetch. */
   readonly fetchImpl?: typeof fetch;
 }
@@ -38,7 +38,7 @@ export async function fetchInsight<T>(
   options: FetchOptions,
 ): Promise<InsightsOutcome<T>> {
   const doFetch = options.fetchImpl ?? fetch;
-  if (options.apiKey === null) {
+  if (options.credential === null) {
     return {
       ok: false,
       failure: {
@@ -54,7 +54,7 @@ export async function fetchInsight<T>(
     response = await doFetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${options.apiKey}`,
+        Authorization: `Bearer ${options.credential}`,
         Accept: "application/json",
       },
       cache: "no-store",

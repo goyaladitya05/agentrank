@@ -21,7 +21,7 @@
 
 import { revalidatePath } from "next/cache";
 
-import { requireConsoleApiKey } from "@/lib/auth/credential";
+import { requireConsoleCredential } from "@/lib/auth/credential";
 import { apiBaseUrl } from "@/lib/config";
 import { decodeCompilerRun } from "@/lib/compiler";
 import type { CompilerMutationState, CorrectionValues } from "@/lib/compiler-mutation";
@@ -66,16 +66,16 @@ function refusal(status: number, payload: unknown): Refusal {
 }
 
 async function command(path: string, body?: unknown): Promise<Refusal | null> {
-  // Resolved before the try. `requireConsoleApiKey` redirects to sign in by throwing the
+  // Resolved before the try. `requireConsoleCredential` redirects to sign in by throwing the
   // framework's own control-flow error, and catching that here would turn an expired session
   // into a message about the network instead of a login page.
-  const apiKey = await requireConsoleApiKey();
+  const credential = await requireConsoleCredential();
   let response: Response;
   try {
     response = await fetch(`${apiBaseUrl().replace(/\/+$/, "")}${path}`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${credential}`,
         "Content-Type": "application/json",
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),

@@ -9,11 +9,11 @@
 import { NextResponse } from "next/server";
 
 import { callApi } from "@/lib/agentrank";
-import { requestApiKey } from "@/lib/auth/request";
+import { requestCredential } from "@/lib/auth/request";
 
 export async function GET(request: Request): Promise<NextResponse> {
-  const apiKey = await requestApiKey();
-  if (apiKey === null) {
+  const credential = await requestCredential();
+  if (credential === null) {
     return NextResponse.json({ error: "authenticated session required" }, { status: 401 });
   }
   const checkoutId = new URL(request.url).searchParams.get("checkout_id");
@@ -23,7 +23,7 @@ export async function GET(request: Request): Promise<NextResponse> {
 
   try {
     const result = await callApi(
-      apiKey,
+      credential,
       `/api/v1/commerce/checkouts/${encodeURIComponent(checkoutId)}`,
       {
         method: "GET",

@@ -33,6 +33,7 @@ from agentrank_api.routes import (
     checkouts,
     commerce,
     compiler,
+    console,
     constraints,
     evaluations,
     insights,
@@ -264,6 +265,7 @@ def create_app(
         )
 
     app.include_router(system.router)
+    app.include_router(console.router)
     app.include_router(commerce.router)
     app.include_router(mandates.router)
     app.include_router(checkouts.router)
