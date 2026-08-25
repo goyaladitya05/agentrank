@@ -29,11 +29,12 @@ from agentrank_api.errors import NotFoundError
 from agentrank_api.representation.definitions import (
     FactAuthority,
     FactConfidence,
+    RepresentationProducer,
     ReviewState,
     SemanticFact,
     SourceReference,
 )
-from agentrank_api.representation.models import MerchantSourceSnapshot
+from agentrank_api.representation.models import CommerceRepresentation, MerchantSourceSnapshot
 
 
 class MerchantCompilerReviewService:
@@ -42,6 +43,33 @@ class MerchantCompilerReviewService:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
         self._compiler = MerchantCompilerService(session)
+
+    async def _current_representation_id(self, merchant_id: uuid.UUID) -> uuid.UUID | None:
+        """Which compiler representation this merchant is publishing now.
+
+        The same read `MerchantEvaluationLaunchService` and the diagnostics overview make, and it
+        has to be the same read rather than a fourth answer. This used to take the newest compiler
+        run that had published anything, from the twenty most recent runs ordered by `created_at`,
+        which disagreed with the other two in three separate ways: publication order is not run
+        creation order, so a merchant who published an older run last was shown the wrong
+        artifact; a merchant whose twenty newest runs had all published nothing was told they had
+        published nothing at all; and `created_at` is `transaction_timestamp()` with no tiebreak,
+        so two runs created in one transaction ordered arbitrarily.
+
+        A console that showed one representation while a launch measured another is exactly the
+        failure the ordering work exists to remove, and this was the surface still doing it.
+        """
+        return (
+            await self._session.execute(
+                select(CommerceRepresentation.id)
+                .where(
+                    CommerceRepresentation.merchant_id == merchant_id,
+                    CommerceRepresentation.producer == RepresentationProducer.COMPILER,
+                )
+                .order_by(CommerceRepresentation.write_order.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
 
     async def overview(self, merchant_id: uuid.UUID, *, limit: int = 20) -> CompilerOverviewView:
         runs = list(
@@ -65,10 +93,7 @@ class MerchantCompilerReviewService:
             )
             for run in runs
         ]
-        current = next(
-            (run.published_representation_id for run in runs if run.published_representation_id),
-            None,
-        )
+        current = await self._current_representation_id(merchant_id)
         return CompilerOverviewView(
             current_representation_id=current,
             review_required_count=sum(

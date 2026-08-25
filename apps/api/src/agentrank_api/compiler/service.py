@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -132,6 +132,13 @@ class MerchantCompilerService:
             raise NotFoundError("compiler_run", str(run_id))
         return run
 
+    async def _claim_publication(self, merchant_id: uuid.UUID) -> None:
+        """Hold this merchant's publication line against every other publish, until commit."""
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"commerce_representation:{merchant_id}"},
+        )
+
     async def candidates(
         self, merchant_id: uuid.UUID, run_id: uuid.UUID
     ) -> list[CompilerCandidate]:
@@ -239,8 +246,25 @@ class MerchantCompilerService:
         return row
 
     async def publish(self, merchant_id: uuid.UUID, run_id: uuid.UUID) -> CommerceRepresentation:
-        # Publishing is also a one-way transition.  Serializing on the run prevents two
-        # concurrent requests from producing equivalent representations or losing the run link.
+        """Publish one completed compiler run's representation, once, for one merchant.
+
+        Two locks and they do different jobs. The per-merchant advisory lock serializes every
+        publication this merchant makes; the row lock on the run makes publishing that particular
+        run a one-way transition and prevents two requests producing equivalent representations
+        or losing the run link.
+
+        The advisory lock is what makes `write_order` mean what the reads that use it assume.
+        `write_order` is allocated at INSERT, so it equals commit order only while something
+        serializes the whole read-decide-insert-commit section. Two tabs publishing two different
+        runs lock two different rows and would otherwise interleave: the one that inserted first
+        can commit second, and every later re-evaluation would then measure the representation the
+        merchant published second-to-last. The source intake takes the same lock for the same
+        reason and says so.
+
+        Transaction scoped and taken before any row lock, which is the order
+        `agentrank_api.locking` writes down, so it cannot join a cycle with the commerce locks.
+        """
+        await self._claim_publication(merchant_id)
         run = await self._run_for_update(merchant_id, run_id)
         if run.status is not CompilerRunStatus.COMPLETED:
             raise ConflictError("compiler_run_not_completed", str(run_id))
