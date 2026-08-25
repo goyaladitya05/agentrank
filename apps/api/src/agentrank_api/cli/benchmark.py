@@ -18,6 +18,9 @@ show            reads one run and counts it                             nothing 
 diagnose        reads one run through the diagnostics engine            nothing moves
 abort           closes a run that stopped                               nothing moves
 settle          closes the launch behind a run that already finished    nothing moves
+provider        reads what may be spent at each model provider           nothing moves
+provider-set    changes one provider's capacity policy                   nothing moves
+usage           reads what one evaluation launch spent                   nothing moves
 ```
 
 The three that execute spend. A benchmark mission that completes creates a mandate, quotes a
@@ -61,6 +64,7 @@ from agentrank_api.auth.tokens import TokenMarker
 from agentrank_api.benchmark.authored import AuthoredWorld, publish_world, read_world
 from agentrank_api.benchmark.authorization import provision
 from agentrank_api.benchmark.buyer import MerchantBuyerSurface
+from agentrank_api.benchmark.capacity import frozen_budget
 from agentrank_api.benchmark.discovery import buyer_discovery_view, to_payload
 from agentrank_api.benchmark.dispatch import (
     UNSERVICEABLE,
@@ -73,7 +77,11 @@ from agentrank_api.benchmark.endpoint import (
     issued_benchmark_credential,
 )
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
-from agentrank_api.benchmark.evaluation_launch import PENDING_STATUSES, BenchmarkEvaluationLaunch
+from agentrank_api.benchmark.evaluation_launch import (
+    PENDING_STATUSES,
+    BenchmarkEvaluationLaunch,
+    EvaluationLaunchStatus,
+)
 from agentrank_api.benchmark.execution import BenchmarkRunCapability, ExecutorIdentity
 from agentrank_api.benchmark.experiment import (
     CompilerImpactExperimentService,
@@ -97,6 +105,12 @@ from agentrank_api.benchmark.models import (
     AgentTraceEvent,
     BenchmarkMissionRun,
     BenchmarkRun,
+)
+from agentrank_api.benchmark.permits import (
+    WAIT_SENTENCES,
+    ExecutionWaitReason,
+    ProviderExecutionService,
+    RunPermitBroker,
 )
 from agentrank_api.benchmark.reference_executor import ReferenceMissionExecutor
 from agentrank_api.benchmark.repository import BenchmarkSuiteRepository
@@ -338,6 +352,101 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
     _add_json(settling)
     settling.set_defaults(command=settle)
 
+    capacity = commands.add_parser(
+        "provider",
+        help="what may be spent at each model provider, and what is running against it now",
+        description=(
+            "Read every supported provider's capacity policy and what is currently executing"
+            " against it. A policy is an operator's own statement about this deployment and"
+            " never a claim about a vendor's account limits; a provider nobody has configured"
+            " runs under a conservative default and is reported as unconfigured. Nothing here"
+            " reads or prints a provider credential, and nothing here writes."
+        ),
+    )
+    _add_json(capacity)
+    capacity.set_defaults(command=provider_status)
+
+    configuring = commands.add_parser(
+        "provider-set",
+        help="change one provider's capacity policy, or pause and resume execution",
+        description=(
+            "Write one provider's capacity policy. Every write bumps the policy version, and a"
+            " launch freezes the version it was admitted under, so widening or narrowing this"
+            " never rewrites what a historical evaluation ran with. Pausing stops new provider"
+            " calls being admitted and destroys nothing: queued work stays queued and every"
+            " existing result stays exactly as it is."
+        ),
+    )
+    configuring.add_argument("provider", help="the provider key, from benchmark provider")
+    paused = configuring.add_mutually_exclusive_group()
+    paused.add_argument(
+        "--pause",
+        dest="enabled",
+        action="store_false",
+        default=None,
+        help="admit no new provider call for this provider",
+    )
+    paused.add_argument(
+        "--resume",
+        dest="enabled",
+        action="store_true",
+        default=None,
+        help="admit provider calls again",
+    )
+    configuring.add_argument(
+        "--max-concurrent-launches",
+        type=int,
+        default=None,
+        help="how many evaluations may run against this provider at once",
+    )
+    configuring.add_argument(
+        "--mission-request-multiplier",
+        type=int,
+        default=None,
+        help="a mission may make this many provider requests per model turn it is allowed",
+    )
+    configuring.add_argument(
+        "--retry-allowance-percent",
+        type=int,
+        default=None,
+        help="how much above one request per model turn an evaluation's whole allowance is",
+    )
+    window = configuring.add_mutually_exclusive_group()
+    window.add_argument(
+        "--window-requests",
+        type=int,
+        default=None,
+        help="a deployment ceiling on provider requests charged inside the accounting window",
+    )
+    window.add_argument(
+        "--no-window-cap",
+        action="store_true",
+        help="remove the deployment ceiling, leaving only per-evaluation allowances",
+    )
+    configuring.add_argument(
+        "--window-seconds",
+        type=int,
+        default=None,
+        help="the rolling accounting window the deployment ceiling is measured over",
+    )
+    _add_json(configuring)
+    configuring.set_defaults(command=provider_set)
+
+    spending = commands.add_parser(
+        "usage",
+        help="what one evaluation launch was allowed to spend, and what it actually spent",
+        description=(
+            "Read one launch's provider execution evidence. Request attempts and provider"
+            " reported tokens are shown separately and never added together: an attempt is"
+            " something AgentRank observed before the call, and a token count is something the"
+            " provider chose to report afterwards. A missing token count is reported as unknown"
+            " rather than as zero."
+        ),
+    )
+    spending.add_argument("launch_id", type=uuid.UUID, help="the launch identifier")
+    _add_json(spending)
+    spending.set_defaults(command=usage)
+
     diagnosing = commands.add_parser(
         "diagnose",
         help="one run's deterministic merchant diagnosis: findings, ownership, demand",
@@ -559,48 +668,25 @@ async def _llm_isolated_run(
     provider: PaymentProvider,
     settings: Settings,
 ) -> BenchmarkRun:
-    """Run one sequential LLM sample with trusted mandate provisioning outside the worker."""
-    configuration = AgentConfiguration(provider=arguments.provider, requested_model=arguments.model)
-    identity = ExecutorIdentity(
-        kind=executor_kind(configuration), version=1, revision=configuration.configuration_digest
+    """Refuse a model run this command cannot carry out, and say what does carry one out.
+
+    This path predates the discovery boundary and never gained it: a model buyer is given the
+    surface it reads, and this command has none to give, so every mission it started ended as a
+    harness error before a provider was ever reached. Refusing says that in one sentence instead
+    of producing a run of fourteen errored missions that looks like a measurement.
+
+    Refusing rather than repairing is the honest choice about what this command was for. What it
+    would have to resolve, which merchant information or which representation a buyer reads, is a
+    methodology decision, and this repository has two places that make it deliberately and freeze
+    what they decided: an evaluation launch and a controlled experiment. A third that guessed
+    would be a third answer.
+    """
+    del session, sessions, service, merchant_id, world, arguments, provider, settings
+    raise ValueError(
+        "this command cannot run a model buyer: it has no discovery surface to give one."
+        " Use `benchmark dispatch` for a merchant's evaluation, or `benchmark compare-run`"
+        " for one sample of a predeclared experiment"
     )
-    served = RequestLedger()
-    async with LocalCommerceEndpoint(settings, provider=provider, observer=served) as endpoint:
-        started = await service.start_suite(
-            suite_key=world.suite.key,
-            suite_version=world.suite.version,
-            fixture=world.fixture,
-            executor=identity,
-            representation_label=arguments.representation_label,
-            agent_configuration=configuration.payload(),
-        )
-        capability = BenchmarkRunCapability(merchant_id=merchant_id, run_id=started.id)
-        trusted = MerchantBuyerSurface(
-            sessions, merchant_id=merchant_id, provider=provider, benchmark_capability=capability
-        )
-        async with issued_benchmark_credential(
-            MerchantCredentialService(session),
-            capability=capability,
-            marker=TokenMarker.of(settings.environment),
-        ) as token:
-            worker_environment = provider_worker_environment(settings, configuration.provider)
-            executor = IsolatedMissionExecutor(
-                base_url=endpoint.base_url,
-                token=token,
-                served=served,
-                strategy=LLM_STRATEGY,
-                provision_mandate=lambda brief: provision(trusted, brief),
-                agent_configuration=configuration.payload(),
-                environment=worker_environment,
-            )
-            executor.identity = identity
-            return await service.execute_started_suite(
-                started.id,
-                executor,
-                merchant_id=merchant_id,
-                fixture=world.fixture,
-                witness=executor,
-            )
 
 
 async def dispatch(
@@ -724,6 +810,7 @@ async def queue(
             )
         ).all()
     )
+    waits = await _queue_wait_reasons(session, [launch for launch, _ in rows])
     launches = [
         {
             "launch_id": str(launch.id),
@@ -733,6 +820,10 @@ async def queue(
             "executor_kind": launch.executor_kind,
             "serviceable": launch.executor_kind in executors,
             "requested_at": launch.requested_at.isoformat(),
+            # Why this launch is not running, in one word, and only ever one of two kinds of
+            # answer: this worker cannot run it, or this deployment is not admitting provider
+            # work for it right now. An executing launch is not waiting for anything.
+            "wait_reason": _wait_reason(launch, executors, waits),
         }
         for launch, slug in rows
     ]
@@ -760,17 +851,275 @@ async def queue(
         return ExitCode.OK
     print(
         f"{'launch':<{LAUNCH_WIDTH}}  {'merchant':<{MERCHANT_WIDTH}}"
-        f"  {'status':<{STATUS_WIDTH}}  {'executor':<{EXECUTOR_WIDTH}}  serviceable",
+        f"  {'status':<{STATUS_WIDTH}}  {'executor':<{EXECUTOR_WIDTH}}  waiting on",
         file=out,
     )
     for entry in launches:
         print(
             f"{entry['launch_id']!s:<{LAUNCH_WIDTH}}  {entry['merchant_slug']!s:<{MERCHANT_WIDTH}}"
             f"  {entry['status']!s:<{STATUS_WIDTH}}  {entry['executor_kind']!s:<{EXECUTOR_WIDTH}}"
-            f"  {'yes' if entry['serviceable'] else 'no'}",
+            f"  {entry['wait_reason'] or MISSING}",
             file=out,
         )
     return ExitCode.OK
+
+
+# What the queue calls a launch nobody in this deployment is configured to execute. Its own
+# answer rather than a provider capacity one, because the fix is a credential and not patience.
+NO_CAPABLE_WORKER = "NO_CAPABLE_WORKER"
+
+
+async def _queue_wait_reasons(
+    session: AsyncSession, launches: list[BenchmarkEvaluationLaunch]
+) -> dict[str, ExecutionWaitReason | None]:
+    """Which providers are currently refusing new work, read once for the whole queue.
+
+    Per provider rather than per launch, because that is the granularity the answer actually has:
+    every queued launch frozen to the same provider is waiting on the same thing.
+    """
+    service = ProviderExecutionService(session)
+    providers = {_provider_of(launch) for launch in launches if _provider_of(launch) is not None}
+    return {
+        provider: (await service.status(provider)).wait_reason
+        for provider in sorted(provider for provider in providers if provider is not None)
+    }
+
+
+def _provider_of(launch: BenchmarkEvaluationLaunch) -> str | None:
+    """Which provider a launch froze, read off its frozen configuration and nowhere else."""
+    configuration = launch.buyer_configuration
+    if configuration is None:
+        return None
+    provider = configuration.get("provider")
+    return provider if isinstance(provider, str) else None
+
+
+def _wait_reason(
+    launch: BenchmarkEvaluationLaunch,
+    executors: frozenset[str],
+    waits: dict[str, ExecutionWaitReason | None],
+) -> str | None:
+    """The one thing this launch is waiting on, or nothing when it is simply next in line."""
+    if launch.status is not EvaluationLaunchStatus.QUEUED:
+        return None
+    if launch.executor_kind not in executors:
+        return NO_CAPABLE_WORKER
+    provider = _provider_of(launch)
+    reason = None if provider is None else waits.get(provider)
+    return None if reason is None else reason.value
+
+
+async def provider_status(
+    session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
+    provider: PaymentProvider,
+    arguments: argparse.Namespace,
+    out: TextIO,
+    settings: Settings,
+) -> int:
+    """Say what each provider is allowed to be spent on and what is running against it.
+
+    The command an operator runs when a queue is not moving and every launch in it is
+    serviceable. It reads the policy rows and the same launch and permit rows the reservation
+    reads, so there is no monitoring copy of capacity truth for this to disagree with.
+
+    Nothing here reads a credential. Whether one is configured is a different question, answered
+    by `benchmark queue`, and a command that printed a key to explain a wait would be the worst
+    possible way to explain one.
+    """
+    del sessions, provider, settings
+    service = ProviderExecutionService(session)
+    rows = [await service.status(policy.provider) for policy in await service.policies()]
+    payload: dict[str, Any] = {
+        "providers": [
+            {
+                "provider": row.provider,
+                "configured": row.policy.configured,
+                "policy_version": row.policy.version,
+                "enabled": row.policy.enabled,
+                "max_concurrent_launches": row.policy.max_concurrent_launches,
+                "mission_request_multiplier": row.policy.mission_request_multiplier,
+                "launch_retry_allowance_percent": row.policy.launch_retry_allowance_percent,
+                "max_requests_per_window": row.policy.max_requests_per_window,
+                "window_seconds": row.policy.window_seconds,
+                "executing_launches": row.executing_launches,
+                "open_permits": row.open_permits,
+                "requests_charged_in_window": row.requests_charged_in_window,
+                "window_remaining": row.window_remaining,
+                "admits_new_work": row.admits_new_work,
+                "wait_reason": None if row.wait_reason is None else row.wait_reason.value,
+            }
+            for row in rows
+        ]
+    }
+    if arguments.as_json:
+        write_json(out, payload)
+        return ExitCode.OK
+    for row in rows:
+        policy = row.policy
+        source = "configured" if policy.configured else "default"
+        print(f"provider    {row.provider}", file=out)
+        print(f"policy      v{policy.version} ({source})", file=out)
+        print(
+            f"execution   {'enabled' if policy.enabled else 'paused'}"
+            f"  running {row.executing_launches}/{policy.max_concurrent_launches}"
+            f"  open permits {row.open_permits}",
+            file=out,
+        )
+        window = (
+            "no deployment ceiling"
+            if policy.max_requests_per_window is None
+            else (
+                f"{row.requests_charged_in_window}/{policy.max_requests_per_window}"
+                f" requests in the last {policy.window_seconds}s"
+            )
+        )
+        print(f"window      {window}", file=out)
+        print(
+            f"allowance   {policy.mission_request_multiplier} requests per model turn per"
+            f" mission, {policy.launch_retry_allowance_percent}% retry allowance per evaluation",
+            file=out,
+        )
+        if row.wait_reason is not None:
+            print(f"waiting     {WAIT_SENTENCES[row.wait_reason]}", file=out)
+        print("", file=out)
+    return ExitCode.OK
+
+
+async def provider_set(
+    session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
+    provider: PaymentProvider,
+    arguments: argparse.Namespace,
+    out: TextIO,
+    settings: Settings,
+) -> int:
+    """Write one provider's capacity policy and print what it now is.
+
+    Every write bumps the version, including one that changes nothing, because the version is
+    what a launch freezes and an operator who ran this deliberately has made a statement worth
+    being able to point at.
+    """
+    del sessions, provider, settings
+    service = ProviderExecutionService(session)
+    policy = await service.set_policy(
+        arguments.provider,
+        enabled=arguments.enabled,
+        max_concurrent_launches=arguments.max_concurrent_launches,
+        mission_request_multiplier=arguments.mission_request_multiplier,
+        launch_retry_allowance_percent=arguments.retry_allowance_percent,
+        max_requests_per_window=arguments.window_requests,
+        clear_window_cap=arguments.no_window_cap,
+        window_seconds=arguments.window_seconds,
+    )
+    payload = {
+        "provider": policy.provider,
+        "policy_version": policy.version,
+        "enabled": policy.enabled,
+        "max_concurrent_launches": policy.max_concurrent_launches,
+        "mission_request_multiplier": policy.mission_request_multiplier,
+        "launch_retry_allowance_percent": policy.launch_retry_allowance_percent,
+        "max_requests_per_window": policy.max_requests_per_window,
+        "window_seconds": policy.window_seconds,
+    }
+    if arguments.as_json:
+        write_json(out, payload)
+        return ExitCode.OK
+    print(f"provider    {policy.provider}", file=out)
+    print(f"policy      v{policy.version}", file=out)
+    print(f"execution   {'enabled' if policy.enabled else 'paused'}", file=out)
+    print(f"concurrent  {policy.max_concurrent_launches}", file=out)
+    print(
+        f"allowance   x{policy.mission_request_multiplier} per model turn,"
+        f" +{policy.launch_retry_allowance_percent}% per evaluation",
+        file=out,
+    )
+    ceiling = (
+        MISSING if policy.max_requests_per_window is None else str(policy.max_requests_per_window)
+    )
+    print(f"window      {ceiling} requests per {policy.window_seconds}s", file=out)
+    return ExitCode.OK
+
+
+async def usage(
+    session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
+    provider: PaymentProvider,
+    arguments: argparse.Namespace,
+    out: TextIO,
+    settings: Settings,
+) -> int:
+    """Read one launch's provider spending, measured rather than estimated.
+
+    Attempts and tokens stay in separate lines because they are separate kinds of evidence. An
+    attempt is what AgentRank counted for itself before making a call, and every retry is one of
+    them; a token count is what the provider chose to report afterwards, and a provider that
+    reported none leaves an unknown here rather than a zero.
+    """
+    del sessions, provider, settings
+    spent = await ProviderExecutionService(session).launch_usage(arguments.launch_id)
+    payload = {
+        "launch_id": str(arguments.launch_id),
+        "provider": spent.provider,
+        "requested_model": spent.requested_model,
+        "max_provider_requests": spent.max_provider_requests,
+        "requests_charged": spent.requests_charged,
+        "requests_remaining": spent.requests_remaining,
+        "requests_reconciled": spent.requests_reconciled,
+        "requests_assumed_spent": spent.requests_assumed_spent,
+        "permits": spent.permits,
+        "permits_open": spent.permits_open,
+        "permits_reconciled": spent.permits_reconciled,
+        "permits_assumed_spent": spent.permits_assumed_spent,
+        "permits_released": spent.permits_released,
+        "provider_responses": spent.provider_responses,
+        "unknown_usage_invocations": spent.unknown_usage_invocations,
+        "input_tokens": spent.input_tokens,
+        "output_tokens": spent.output_tokens,
+        "total_tokens": spent.total_tokens,
+    }
+    if arguments.as_json:
+        write_json(out, payload)
+        return ExitCode.OK
+    print(f"launch      {arguments.launch_id}", file=out)
+    print(
+        f"provider    {spent.provider or MISSING}  model {spent.requested_model or MISSING}",
+        file=out,
+    )
+    ceiling = MISSING if spent.max_provider_requests is None else str(spent.max_provider_requests)
+    remaining = MISSING if spent.requests_remaining is None else str(spent.requests_remaining)
+    print(
+        f"requests    {spent.requests_charged} charged of {ceiling}, {remaining} remaining",
+        file=out,
+    )
+    print(
+        f"settlement  {spent.permits_reconciled} measured,"
+        f" {spent.permits_assumed_spent} assumed spent,"
+        f" {spent.permits_released} released, {spent.permits_open} still open",
+        file=out,
+    )
+    if spent.requests_assumed_spent:
+        print(
+            f"caution     {spent.requests_assumed_spent} of the charged requests are an"
+            " assumption rather than a measurement, because a worker's outcome was unknown",
+            file=out,
+        )
+    print(
+        f"responses   {spent.provider_responses} answered,"
+        f" {spent.unknown_usage_invocations} reported no token usage at all",
+        file=out,
+    )
+    print(
+        f"tokens      input {_unknown(spent.input_tokens)}"
+        f"  output {_unknown(spent.output_tokens)}  total {_unknown(spent.total_tokens)}",
+        file=out,
+    )
+    return ExitCode.OK
+
+
+def _unknown(value: int | None) -> str:
+    """A number, or the word for not knowing. Never a zero standing in for one."""
+    return "unknown" if value is None else str(value)
 
 
 async def cancel(
@@ -980,6 +1329,24 @@ async def compare_run(
                 merchant_information=treatment.projection,
                 discovery=_treatment_discovery(treatment),
                 environment=worker_environment,
+                # An operator sample spends the same provider quota a merchant's evaluation
+                # does, so it is admitted and charged through the same permits. Its budget comes
+                # from the capacity policy in force now rather than from a frozen column,
+                # because an experiment sample freezes its buyer rather than its allowance; the
+                # policy version each permit records is what says which one it ran under.
+                permits=RunPermitBroker(
+                    sessions,
+                    merchant_id=merchant_id,
+                    launch_id=None,
+                    run_id=started.id,
+                    provider=configuration.provider,
+                    requested_model=configuration.requested_model,
+                    budget=frozen_budget(
+                        await ProviderExecutionService(session).policy(configuration.provider),
+                        mission_count=len(world.suite.missions),
+                        max_model_turns=configuration.max_model_turns,
+                    ),
+                ),
             )
             executor.identity = identity
             finished = await service.execute_started_suite(

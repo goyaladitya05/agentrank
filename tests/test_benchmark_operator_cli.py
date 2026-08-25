@@ -87,7 +87,8 @@ async def cli(settings: Settings, provider: FakePaymentProvider, *arguments: str
     the command would have to accept and ignore.
     """
     named = list(arguments)
-    takes_world = named[:1] == ["benchmark"] and named[1:2] not in (["queue"], ["cancel"])
+    worldless = (["queue"], ["cancel"], ["provider"], ["provider-set"], ["usage"])
+    takes_world = named[:1] == ["benchmark"] and named[1:2] not in worldless
     if takes_world and "--world" not in named:
         named += ["--world", str(VOLTEDGE_DIRECTORY)]
     out, err = StringIO(), StringIO()
@@ -639,3 +640,213 @@ async def test_cancel_refuses_a_launch_that_does_not_exist(
     missing = await cli(catalog_settings, provider, "benchmark", "cancel", str(uuid.uuid7()))
 
     assert missing.code == ExitCode.NOT_FOUND
+
+
+# Provider execution governance, which an operator reads and writes without a database client.
+
+
+async def test_provider_reports_the_policy_a_deployment_that_configured_nothing_runs_under(
+    catalog_settings: Settings, provider: FakePaymentProvider
+) -> None:
+    """The answer to "what may be spent here", including that nobody has decided yet."""
+    result = await cli(catalog_settings, provider, "benchmark", "provider", "--json")
+
+    assert result.code == ExitCode.OK
+    providers = cast(list[dict[str, object]], result.json()["providers"])
+    assert {row["provider"] for row in providers} == {"openai-responses", "google-gemini"}
+    assert all(row["configured"] is False for row in providers)
+    assert all(row["enabled"] is True for row in providers)
+
+
+async def test_provider_output_carries_no_credential_and_no_connection_string(
+    catalog_settings: Settings, provider: FakePaymentProvider
+) -> None:
+    """A command that printed a key to explain a wait would be the worst way to explain one."""
+    configured = with_openai(catalog_settings)
+
+    result = await cli(configured, provider, "benchmark", "provider")
+
+    assert result.code == ExitCode.OK
+    assert "test-openai-key" not in result.out
+    assert "postgres" not in result.out.lower()
+    assert configured.postgres_password.get_secret_value() not in result.out
+
+
+async def test_pausing_a_provider_is_reported_and_survives_being_read_back(
+    catalog_settings: Settings, provider: FakePaymentProvider
+) -> None:
+    paused = await cli(
+        catalog_settings, provider, "benchmark", "provider-set", "openai-responses", "--pause"
+    )
+    assert paused.code == ExitCode.OK
+    assert "paused" in paused.out
+
+    status = await cli(catalog_settings, provider, "benchmark", "provider", "--json")
+    providers = cast(list[dict[str, object]], status.json()["providers"])
+    openai = next(row for row in providers if row["provider"] == "openai-responses")
+    assert openai["enabled"] is False
+    assert openai["wait_reason"] == "PROVIDER_PAUSED"
+
+
+async def test_resuming_a_paused_provider_admits_work_again(
+    catalog_settings: Settings, provider: FakePaymentProvider
+) -> None:
+    await cli(
+        catalog_settings, provider, "benchmark", "provider-set", "openai-responses", "--pause"
+    )
+
+    resumed = await cli(
+        catalog_settings,
+        provider,
+        "benchmark",
+        "provider-set",
+        "openai-responses",
+        "--resume",
+        "--json",
+    )
+
+    assert resumed.json()["enabled"] is True
+    assert resumed.json()["policy_version"] == 3
+
+
+async def test_every_policy_write_moves_the_version_a_launch_would_freeze(
+    catalog_settings: Settings, provider: FakePaymentProvider
+) -> None:
+    first = await cli(
+        catalog_settings,
+        provider,
+        "benchmark",
+        "provider-set",
+        "openai-responses",
+        "--max-concurrent-launches",
+        "2",
+        "--json",
+    )
+    second = await cli(
+        catalog_settings,
+        provider,
+        "benchmark",
+        "provider-set",
+        "openai-responses",
+        "--window-requests",
+        "500",
+        "--json",
+    )
+
+    assert first.json()["policy_version"] == 2
+    assert second.json()["policy_version"] == 3
+    assert second.json()["max_concurrent_launches"] == 2
+    assert second.json()["max_requests_per_window"] == 500
+
+
+async def test_a_deployment_ceiling_can_be_removed_without_pausing_the_provider(
+    catalog_settings: Settings, provider: FakePaymentProvider
+) -> None:
+    await cli(
+        catalog_settings,
+        provider,
+        "benchmark",
+        "provider-set",
+        "google-gemini",
+        "--window-requests",
+        "100",
+    )
+
+    cleared = await cli(
+        catalog_settings,
+        provider,
+        "benchmark",
+        "provider-set",
+        "google-gemini",
+        "--no-window-cap",
+        "--json",
+    )
+
+    assert cleared.json()["max_requests_per_window"] is None
+    assert cleared.json()["enabled"] is True
+
+
+async def test_the_queue_says_a_launch_is_waiting_on_a_paused_provider(
+    catalog_settings: Settings, provider: FakePaymentProvider, session: AsyncSession
+) -> None:
+    """The operator's answer when a merchant says nothing is happening and a worker is capable.
+
+    Two different waits, told apart: a launch nobody is configured to run names the worker it is
+    waiting for, and a launch nobody is currently paying for names the policy that stopped it.
+    """
+    configured = with_openai(catalog_settings)
+    await _queue_one(session, configured, provider)
+    await cli(
+        catalog_settings, provider, "benchmark", "provider-set", "openai-responses", "--pause"
+    )
+
+    result = await cli(configured, provider, "benchmark", "queue", "--json")
+
+    launches = cast(list[dict[str, object]], result.json()["launches"])
+    assert [row["wait_reason"] for row in launches] == ["PROVIDER_PAUSED"]
+
+
+async def test_the_queue_says_a_launch_is_waiting_on_a_worker_nobody_configured(
+    catalog_settings: Settings, provider: FakePaymentProvider, session: AsyncSession
+) -> None:
+    configured = with_openai(catalog_settings)
+    await _queue_one(session, configured, provider)
+
+    result = await cli(
+        without_providers(catalog_settings), provider, "benchmark", "queue", "--json"
+    )
+
+    launches = cast(list[dict[str, object]], result.json()["launches"])
+    assert [row["wait_reason"] for row in launches] == ["NO_CAPABLE_WORKER"]
+
+
+async def test_usage_reports_an_allowance_that_has_been_spent_on_nothing_yet(
+    catalog_settings: Settings, provider: FakePaymentProvider, session: AsyncSession
+) -> None:
+    """A queued launch has spent nothing, and the allowance it was admitted with is the whole
+    of what it may spend."""
+    configured = with_openai(catalog_settings)
+    launch_id = await _queue_one(session, configured, provider)
+
+    result = await cli(configured, provider, "benchmark", "usage", str(launch_id), "--json")
+
+    payload = result.json()
+    assert result.code == ExitCode.OK
+    assert payload["requests_charged"] == 0
+    assert payload["requests_remaining"] == payload["max_provider_requests"]
+    assert payload["provider"] == "openai-responses"
+
+
+async def test_usage_says_unknown_rather_than_zero_where_a_provider_reported_no_tokens(
+    catalog_settings: Settings, provider: FakePaymentProvider, session: AsyncSession
+) -> None:
+    """No provider has answered, so no token count exists, and none is invented."""
+    configured = with_openai(catalog_settings)
+    launch_id = await _queue_one(session, configured, provider)
+
+    result = await cli(configured, provider, "benchmark", "usage", str(launch_id))
+
+    assert "tokens      input unknown  output unknown  total unknown" in result.out
+    assert "0 tokens" not in result.out
+
+
+async def _queue_one(
+    session: AsyncSession, settings: Settings, provider: FakePaymentProvider
+) -> uuid.UUID:
+    """One queued evaluation for the seeded world, through the service the console calls."""
+    await cli(settings, provider, "benchmark", "seed", "--json")
+    merchant = await MerchantRepository(session).get_by_slug(MERCHANT_SLUG)
+    assert merchant is not None
+    await MerchantRepresentationService(session).publish_source(
+        read_source(VOLTEDGE_DIRECTORY / "source.json")
+    )
+    service = MerchantEvaluationLaunchService(session, settings)
+    plan = await service.plan(merchant.id)
+    launch = await service.request(
+        merchant.id,
+        purpose=plan.purpose,
+        representation_id=plan.representation_id,
+        request_key="operator-queue-key",
+        plan_digest=plan.digest,
+    )
+    return launch.id
