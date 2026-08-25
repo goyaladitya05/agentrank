@@ -4,8 +4,8 @@ import Link from "next/link";
 import { useActionState, useState } from "react";
 
 import styles from "@/components/console.module.css";
-import { IDLE_LAUNCH, type LaunchState } from "@/lib/reevaluation-mutation";
-import type { ReevaluationPreflight } from "@/lib/reevaluation";
+import { IDLE_LAUNCH, type LaunchState } from "@/lib/evaluation-mutation";
+import type { EvaluationPreflight } from "@/lib/evaluation";
 
 /**
  * Asking AgentRank to measure a published representation again.
@@ -26,11 +26,11 @@ import type { ReevaluationPreflight } from "@/lib/reevaluation";
 
 export type LaunchAction = (state: LaunchState) => LaunchState | Promise<LaunchState>;
 
-export function LaunchReevaluation({
+export function LaunchEvaluation({
   preflight,
   action,
 }: {
-  preflight: ReevaluationPreflight;
+  preflight: EvaluationPreflight;
   action: LaunchAction;
 }) {
   const [confirming, setConfirming] = useState(false);
@@ -67,11 +67,11 @@ export function LaunchAccepted({ state }: { state: LaunchState }) {
   return (
     <div role="status">
       <p>Re-evaluation requested. Nothing has been executed yet.</p>
-      {state.reevaluationId === null ? null : (
+      {state.launchId === null ? null : (
         <p className={styles.reviewMeta}>
           <Link
             className={styles.rowLink}
-            href={`/re-evaluations/${encodeURIComponent(state.reevaluationId)}`}
+            href={`/evaluations/${encodeURIComponent(state.launchId)}`}
           >
             Follow this re-evaluation
           </Link>
@@ -88,7 +88,7 @@ export function LaunchConfirmation({
   pending,
   onCancel,
 }: {
-  preflight: ReevaluationPreflight;
+  preflight: EvaluationPreflight;
   action: string | (() => void);
   state: LaunchState;
   pending: boolean;
@@ -168,7 +168,7 @@ export function LaunchConfirmation({
   );
 }
 
-function ExecutionBounds({ preflight }: { preflight: ReevaluationPreflight }) {
+function ExecutionBounds({ preflight }: { preflight: EvaluationPreflight }) {
   if (preflight.buyer_profile !== "AI_BUYER") {
     return null;
   }

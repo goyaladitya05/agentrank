@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from agentrank_api.benchmark.catalog import catalog_content_hash
+from agentrank_api.benchmark.evaluation_launch import BenchmarkEvaluationLaunch
 from agentrank_api.benchmark.experiment import (
     CompilerImpactExperiment,
     CompilerImpactSample,
@@ -45,7 +46,6 @@ from agentrank_api.benchmark.models import (
     BenchmarkRun,
     BenchmarkSuite,
 )
-from agentrank_api.benchmark.reevaluation import BenchmarkReevaluation
 from agentrank_api.benchmark.runner import BenchmarkRunService, outcomes_of
 from agentrank_api.commerce.models import Product, Variant
 from agentrank_api.compiler.models import CandidateState, CompilerCandidate, CompilerReview
@@ -367,8 +367,8 @@ class DiagnosticsService:
         candidate = await self._comparison_facts(candidate_run_id, merchant_id=merchant_id)
         return compare_runs(baseline, candidate, engine_identity=engine_identity())
 
-    async def reevaluation_comparison(
-        self, reevaluation_id: uuid.UUID, *, merchant_id: uuid.UUID
+    async def launch_comparison(
+        self, launch_id: uuid.UUID, *, merchant_id: uuid.UUID
     ) -> RunComparison | None:
         """The before and after for one launch, when there is one to give.
 
@@ -379,14 +379,14 @@ class DiagnosticsService:
         """
         launch = (
             await self._session.execute(
-                select(BenchmarkReevaluation).where(
-                    BenchmarkReevaluation.id == reevaluation_id,
-                    BenchmarkReevaluation.merchant_id == merchant_id,
+                select(BenchmarkEvaluationLaunch).where(
+                    BenchmarkEvaluationLaunch.id == launch_id,
+                    BenchmarkEvaluationLaunch.merchant_id == merchant_id,
                 )
             )
         ).scalar_one_or_none()
         if launch is None:
-            raise NotFoundError("benchmark_reevaluation", str(reevaluation_id))
+            raise NotFoundError("benchmark_evaluation_launch", str(launch_id))
         if launch.run_id is None or launch.baseline_run_id is None:
             return None
         candidate = await self._runs.load(launch.run_id, merchant_id=merchant_id)

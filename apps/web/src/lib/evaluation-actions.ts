@@ -26,8 +26,8 @@ import { revalidatePath } from "next/cache";
 
 import { requireConsoleApiKey } from "@/lib/auth/credential";
 import { apiBaseUrl } from "@/lib/config";
-import { decodeReevaluation } from "@/lib/reevaluation";
-import type { LaunchState } from "@/lib/reevaluation-mutation";
+import { decodeEvaluationLaunch } from "@/lib/evaluation";
+import type { LaunchState } from "@/lib/evaluation-mutation";
 
 const REFUSALS: Record<string, string> = {
   no_published_representation:
@@ -38,9 +38,9 @@ const REFUSALS: Record<string, string> = {
     "A newer agent-ready representation has been published since this page loaded. Reload to evaluate the current one.",
   preflight_superseded:
     "What this re-evaluation would run has changed since this page loaded. Reload to see what would be evaluated now.",
-  reevaluation_already_pending:
+  evaluation_already_pending:
     "A re-evaluation is already queued or running for your merchant. Wait for it to finish before starting another.",
-  reevaluation_request_key_reused:
+  evaluation_request_key_reused:
     "This form has already launched a re-evaluation of a different representation. Reload and try again.",
   run_already_active:
     "A benchmark run is already executing against your world. Only one run may own it at a time.",
@@ -63,21 +63,21 @@ function refusal(status: number, payload: unknown): LaunchState {
   const stale = status === 409 || status === 404;
   const known = code === null ? undefined : REFUSALS[code];
   if (known !== undefined) {
-    return { ok: false, message: known, stale, unknown: false, reevaluationId: null };
+    return { ok: false, message: known, stale, unknown: false, launchId: null };
   }
   if (typeof body.detail === "string") {
-    return { ok: false, message: body.detail, stale, unknown: false, reevaluationId: null };
+    return { ok: false, message: body.detail, stale, unknown: false, launchId: null };
   }
   return {
     ok: false,
     message: `AgentRank refused this request (HTTP ${String(status)}).`,
     stale,
     unknown: false,
-    reevaluationId: null,
+    launchId: null,
   };
 }
 
-export async function requestReevaluation(
+export async function requestEvaluation(
   representationId: string,
   requestKey: string,
   planDigest: string,
@@ -89,7 +89,7 @@ export async function requestReevaluation(
   const apiKey = await requireConsoleApiKey();
   let response: Response;
   try {
-    response = await fetch(`${apiBaseUrl().replace(/\/+$/, "")}/api/v1/benchmark/re-evaluations`, {
+    response = await fetch(`${apiBaseUrl().replace(/\/+$/, "")}/api/v1/benchmark/evaluations`, {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -106,7 +106,7 @@ export async function requestReevaluation(
         "The console could not reach AgentRank, so whether this launch was accepted is unknown. Reload this page to see the current state; submitting again cannot start a second run.",
       stale: false,
       unknown: true,
-      reevaluationId: null,
+      launchId: null,
     };
   }
 
@@ -119,7 +119,7 @@ export async function requestReevaluation(
 
   let launched;
   try {
-    launched = decodeReevaluation(payload);
+    launched = decodeEvaluationLaunch(payload);
   } catch {
     return {
       ok: false,
@@ -127,7 +127,7 @@ export async function requestReevaluation(
         "AgentRank answered with something this console cannot read. Reload to see the current state.",
       stale: true,
       unknown: true,
-      reevaluationId: null,
+      launchId: null,
     };
   }
   refreshed();
@@ -136,11 +136,11 @@ export async function requestReevaluation(
     message: null,
     stale: false,
     unknown: false,
-    reevaluationId: launched.reevaluation_id,
+    launchId: launched.launch_id,
   };
 }
 
 function refreshed(): void {
-  revalidatePath("/re-evaluations");
+  revalidatePath("/evaluations");
   revalidatePath("/overview");
 }

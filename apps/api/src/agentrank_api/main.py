@@ -34,11 +34,11 @@ from agentrank_api.routes import (
     commerce,
     compiler,
     constraints,
+    evaluations,
     insights,
     mandates,
     payments,
     razorpay,
-    reevaluations,
     sources,
     system,
 )
@@ -80,7 +80,7 @@ def create_app(
     `benchmark_commands` is the one router that is optional, and the reason is the loopback
     commerce endpoint an untrusted buyer is given. Publishing a suite, starting a run and reading
     a result have deliberately never been endpoints, so nothing an executor can reach over that
-    server touches a run, an oracle or a mission definition. The merchant re-evaluation command
+    server touches a run, an oracle or a mission definition. The merchant evaluation command
     is a benchmark write, and mounting it on the server a buyer holds a credential for would let
     a buyer queue a benchmark. The console's application mounts it; the buyer's does not.
 
@@ -274,7 +274,7 @@ def create_app(
     app.include_router(compiler.router)
     app.include_router(sources.router)
     if benchmark_commands:
-        app.include_router(reevaluations.router)
+        app.include_router(evaluations.router)
     # In front of routing rather than in a dependency, because FastAPI reads and parses a request
     # body before it solves dependencies: by the time a schema or a route could look at it, the
     # bytes have been received and the parser has already recursed through them. A merchant source

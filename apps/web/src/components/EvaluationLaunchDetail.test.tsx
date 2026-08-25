@@ -1,10 +1,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { LaunchAccepted, LaunchConfirmation } from "./LaunchReevaluation";
-import { ReevaluationDetailContent } from "./ReevaluationDetail";
-import { decodePreflight, decodeReevaluationDetail } from "@/lib/reevaluation";
-import { IDLE_LAUNCH, type LaunchState } from "@/lib/reevaluation-mutation";
+import { LaunchAccepted, LaunchConfirmation } from "./LaunchEvaluation";
+import { EvaluationLaunchDetailContent } from "./EvaluationLaunchDetail";
+import { decodePreflight, decodeEvaluationLaunchDetail } from "@/lib/evaluation";
+import { IDLE_LAUNCH, type LaunchState } from "@/lib/evaluation-mutation";
 import {
   COMPARISON_FIXTURE,
   COMPLETED_REEVALUATION_FIXTURE,
@@ -14,11 +14,11 @@ import {
   QUEUED_REEVALUATION_FIXTURE,
   REFERENCE_PREFLIGHT_FIXTURE,
   RUNNING_REEVALUATION_FIXTURE,
-} from "@/lib/reevaluation-fixtures";
+} from "@/lib/evaluation-fixtures";
 
 function render(fixture: Record<string, unknown>): string {
   return renderToStaticMarkup(
-    <ReevaluationDetailContent launch={decodeReevaluationDetail(fixture)} />,
+    <EvaluationLaunchDetailContent launch={decodeEvaluationLaunchDetail(fixture)} />,
   );
 }
 
@@ -77,7 +77,7 @@ describe("<LaunchConfirmation>", () => {
       message: "A re-evaluation is already queued or running for your merchant.",
       stale: true,
       unknown: false,
-      reevaluationId: null,
+      launchId: null,
     });
     expect(refused).toContain("already queued or running");
     expect(refused).toContain("The state shown here is current.");
@@ -88,7 +88,7 @@ describe("<LaunchConfirmation>", () => {
         "The console could not reach AgentRank, so whether this launch was accepted is unknown.",
       stale: false,
       unknown: true,
-      reevaluationId: null,
+      launchId: null,
     });
     expect(lost).toContain("is unknown");
     expect(lost).not.toContain("The state shown here is current.");
@@ -104,17 +104,17 @@ describe("<LaunchAccepted>", () => {
           message: null,
           stale: false,
           unknown: false,
-          reevaluationId: "01a0cccc-cccc-7ccc-8ccc-ccccccccccc1",
+          launchId: "01a0cccc-cccc-7ccc-8ccc-ccccccccccc1",
         }}
       />,
     );
     expect(html).toContain("Re-evaluation requested");
     expect(html).toContain("Nothing has been executed yet");
-    expect(html).toContain("/re-evaluations/01a0cccc-cccc-7ccc-8ccc-ccccccccccc1");
+    expect(html).toContain("/evaluations/01a0cccc-cccc-7ccc-8ccc-ccccccccccc1");
   });
 });
 
-describe("<ReevaluationDetailContent>", () => {
+describe("<EvaluationLaunchDetailContent>", () => {
   it("says a queued launch has executed nothing", () => {
     const html = render(QUEUED_REEVALUATION_FIXTURE);
     expect(html).toContain("Nothing has been executed yet");
@@ -183,7 +183,7 @@ describe("<ReevaluationDetailContent>", () => {
       },
     };
     const html = renderToStaticMarkup(
-      <ReevaluationDetailContent launch={decodeReevaluationDetail(oneSided)} />,
+      <EvaluationLaunchDetailContent launch={decodeEvaluationLaunchDetail(oneSided)} />,
     );
     expect(html).toContain("Only the later run recorded a model trace");
     expect(html).not.toContain("Neither run recorded a model trace");

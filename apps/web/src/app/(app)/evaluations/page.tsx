@@ -3,31 +3,31 @@ import { randomUUID } from "node:crypto";
 import Link from "next/link";
 
 import { InsightFailure } from "@/components/InsightFailure";
-import { LaunchReevaluation } from "@/components/LaunchReevaluation";
+import { LaunchEvaluation } from "@/components/LaunchEvaluation";
 import { EmptyState, KeyValueList, Panel, Section, StatusMark } from "@/components/Primitives";
 import styles from "@/components/console.module.css";
 import { formatTimestamp } from "@/lib/format";
 import { launchStatusLabel } from "@/lib/labels";
 import { loadInsight } from "@/lib/insights/load";
-import { requestReevaluation } from "@/lib/reevaluation-actions";
+import { requestEvaluation } from "@/lib/evaluation-actions";
 import {
   decodePreflight,
-  decodeReevaluationList,
-  type Reevaluation,
-  type ReevaluationPreflight,
-} from "@/lib/reevaluation";
+  decodeEvaluationLaunchList,
+  type EvaluationLaunch,
+  type EvaluationPreflight,
+} from "@/lib/evaluation";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Re-evaluation | AgentRank" };
 
-export default async function ReevaluationsPage() {
+export default async function EvaluationsPage() {
   const preflight = await loadInsight(
-    "/api/v1/benchmark/re-evaluations/preflight",
+    "/api/v1/benchmark/evaluations/preflight",
     decodePreflight,
   );
   if (!preflight.ok) return <InsightFailure failure={preflight.failure} />;
-  const history = await loadInsight("/api/v1/benchmark/re-evaluations?limit=20", (value) =>
-    decodeReevaluationList(value),
+  const history = await loadInsight("/api/v1/benchmark/evaluations?limit=20", (value) =>
+    decodeEvaluationLaunchList(value),
   );
   if (!history.ok) return <InsightFailure failure={history.failure} />;
 
@@ -47,7 +47,7 @@ export default async function ReevaluationsPage() {
         <Panel>
           <Preflight
             preflight={preflight.data}
-            action={requestReevaluation.bind(
+            action={requestEvaluation.bind(
               null,
               preflight.data.representation_id ?? "",
               requestKey,
@@ -67,8 +67,8 @@ function Preflight({
   preflight,
   action,
 }: {
-  preflight: ReevaluationPreflight;
-  action: Parameters<typeof LaunchReevaluation>[0]["action"];
+  preflight: EvaluationPreflight;
+  action: Parameters<typeof LaunchEvaluation>[0]["action"];
 }) {
   return (
     <>
@@ -95,7 +95,7 @@ function Preflight({
         ]}
       />
       {preflight.launchable && preflight.representation_id !== null ? (
-        <LaunchReevaluation preflight={preflight} action={action} />
+        <LaunchEvaluation preflight={preflight} action={action} />
       ) : (
         <Blockers preflight={preflight} />
       )}
@@ -103,7 +103,7 @@ function Preflight({
   );
 }
 
-function Blockers({ preflight }: { preflight: ReevaluationPreflight }) {
+function Blockers({ preflight }: { preflight: EvaluationPreflight }) {
   return (
     <>
       <p>A re-evaluation cannot be requested right now.</p>
@@ -112,11 +112,11 @@ function Blockers({ preflight }: { preflight: ReevaluationPreflight }) {
           <li key={blocker.code}>{blocker.message}</li>
         ))}
       </ul>
-      {preflight.pending_reevaluation_id === null ? null : (
+      {preflight.pending_launch_id === null ? null : (
         <p className={styles.reviewMeta}>
           <Link
             className={styles.rowLink}
-            href={`/re-evaluations/${encodeURIComponent(preflight.pending_reevaluation_id)}`}
+            href={`/evaluations/${encodeURIComponent(preflight.pending_launch_id)}`}
           >
             Open the re-evaluation already in progress
           </Link>
@@ -126,14 +126,14 @@ function Blockers({ preflight }: { preflight: ReevaluationPreflight }) {
   );
 }
 
-function buyerSentence(preflight: ReevaluationPreflight): string {
+function buyerSentence(preflight: EvaluationPreflight): string {
   if (preflight.buyer_profile === "AI_BUYER") {
     return `${preflight.provider ?? "model provider"}, requested model ${preflight.requested_model ?? "unrecorded"}`;
   }
   return "AgentRank's deterministic reference buyer, which is not an AI agent";
 }
 
-function History({ launches }: { launches: readonly Reevaluation[] }) {
+function History({ launches }: { launches: readonly EvaluationLaunch[] }) {
   if (launches.length === 0) {
     return (
       <Panel>
@@ -160,11 +160,11 @@ function History({ launches }: { launches: readonly Reevaluation[] }) {
           {launches.map((launch) => {
             const status = launchStatusLabel(launch.status);
             return (
-              <tr key={launch.reevaluation_id}>
+              <tr key={launch.launch_id}>
                 <td>
                   <Link
                     className={styles.rowLinkStrong}
-                    href={`/re-evaluations/${encodeURIComponent(launch.reevaluation_id)}`}
+                    href={`/evaluations/${encodeURIComponent(launch.launch_id)}`}
                   >
                     {formatTimestamp(launch.requested_at)}
                   </Link>

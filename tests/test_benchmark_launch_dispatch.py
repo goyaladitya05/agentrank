@@ -16,18 +16,24 @@ import uuid
 from dataclasses import replace
 
 import pytest
-from reevaluation_support import build_launch_world, queue_launch, with_openai, without_providers
+from launch_support import build_launch_world, queue_launch, with_openai, without_providers
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.benchmark.authored import AuthoredWorld
-from agentrank_api.benchmark.dispatch import FAILURE_NO_PROVIDER, execute_next_reevaluation
+from agentrank_api.benchmark.dispatch import FAILURE_NO_PROVIDER, execute_next_launch
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
+from agentrank_api.benchmark.evaluation_launch import (
+    BenchmarkEvaluationLaunch,
+    EvaluationLaunchStatus,
+)
 from agentrank_api.benchmark.execution import REFERENCE_ISOLATED_KIND
-from agentrank_api.benchmark.launch import MerchantReevaluationService, ReevaluationWorkerService
+from agentrank_api.benchmark.launch import (
+    EvaluationLaunchWorkerService,
+    MerchantEvaluationLaunchService,
+)
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus
 from agentrank_api.benchmark.models import BenchmarkRun
-from agentrank_api.benchmark.reevaluation import BenchmarkReevaluation, ReevaluationStatus
 from agentrank_api.benchmark.report import ExecutorReport
 from agentrank_api.benchmark.runner import BenchmarkRunService
 from agentrank_api.config import Settings
@@ -40,10 +46,10 @@ from agentrank_api.payments.models import PaymentAttempt
 pytestmark = pytest.mark.anyio
 
 
-async def reload(session: AsyncSession, launch_id: uuid.UUID) -> BenchmarkReevaluation:
+async def reload(session: AsyncSession, launch_id: uuid.UUID) -> BenchmarkEvaluationLaunch:
     """The launch as it now stands. Sessions here do not expire on commit, so a row loaded
     before the dispatcher ran would otherwise answer with what it said then."""
-    row = await session.get(BenchmarkReevaluation, launch_id)
+    row = await session.get(BenchmarkEvaluationLaunch, launch_id)
     assert row is not None
     await session.refresh(row)
     return row
@@ -58,7 +64,7 @@ class TestNothingToDo:
     ) -> None:
         world = await build_launch_world(session, "idle-shop")
 
-        outcome = await execute_next_reevaluation(
+        outcome = await execute_next_launch(
             session,
             factory,
             world=world.authored,
@@ -80,7 +86,7 @@ class TestExecution:
         world = await build_launch_world(session, "dispatch-shop")
         launch_id = await queue_launch(session, settings, world, request_key="dispatch-request")
 
-        outcome = await execute_next_reevaluation(
+        outcome = await execute_next_launch(
             session,
             factory,
             world=world.authored,
@@ -94,7 +100,7 @@ class TestExecution:
         assert outcome.run_id is not None
 
         settled = await reload(session, launch_id)
-        assert settled.status is ReevaluationStatus.COMPLETED
+        assert settled.status is EvaluationLaunchStatus.COMPLETED
         assert settled.run_id == outcome.run_id
         assert settled.started_at is not None
         assert settled.settled_at is not None
@@ -117,7 +123,7 @@ class TestExecution:
         settings = without_providers(catalog_settings)
         world = await build_launch_world(session, "once-shop")
         await queue_launch(session, settings, world, request_key="once-request")
-        first = await execute_next_reevaluation(
+        first = await execute_next_launch(
             session,
             factory,
             world=world.authored,
@@ -126,7 +132,7 @@ class TestExecution:
         )
         assert first is not None
 
-        second = await execute_next_reevaluation(
+        second = await execute_next_launch(
             session,
             factory,
             world=world.authored,
@@ -151,7 +157,7 @@ class TestExecution:
         settings = without_providers(catalog_settings)
         world = await build_launch_world(session, "history-shop")
         await queue_launch(session, settings, world, request_key="history-one")
-        first = await execute_next_reevaluation(
+        first = await execute_next_launch(
             session,
             factory,
             world=world.authored,
@@ -163,7 +169,7 @@ class TestExecution:
         before = await diagnostics.run_diagnostics(first.run_id, merchant_id=world.merchant_id)
 
         await queue_launch(session, settings, world, request_key="history-two")
-        second = await execute_next_reevaluation(
+        second = await execute_next_launch(
             session,
             factory,
             world=world.authored,
@@ -212,7 +218,7 @@ class TestExecution:
             return len(list(mandates)), len(list(payments))
 
         before = await counts(bystander.merchant_id)
-        outcome = await execute_next_reevaluation(
+        outcome = await execute_next_launch(
             session,
             factory,
             world=world.authored,
@@ -238,7 +244,7 @@ class TestRefusals:
             session, with_openai(catalog_settings), world, request_key="model-request"
         )
 
-        outcome = await execute_next_reevaluation(
+        outcome = await execute_next_launch(
             session,
             factory,
             world=world.authored,
@@ -251,7 +257,7 @@ class TestRefusals:
         assert outcome.failure_code == FAILURE_NO_PROVIDER
         assert outcome.run_id is None
         settled = await reload(session, launch_id)
-        assert settled.status is ReevaluationStatus.FAILED
+        assert settled.status is EvaluationLaunchStatus.FAILED
         assert settled.failure_code == FAILURE_NO_PROVIDER
         runs = (
             await session.execute(
@@ -279,7 +285,7 @@ class TestRefusals:
         other = replace(world.authored.fixture, version=world.authored.fixture.version + 1)
         await BenchmarkEnvironmentService(session).register(other)
 
-        outcome = await execute_next_reevaluation(
+        outcome = await execute_next_launch(
             session,
             factory,
             world=AuthoredWorld(fixture=other, suite=world.authored.suite),
@@ -289,11 +295,11 @@ class TestRefusals:
 
         assert outcome is None
         untouched = await reload(session, launch_id)
-        assert untouched.status is ReevaluationStatus.QUEUED
+        assert untouched.status is EvaluationLaunchStatus.QUEUED
         assert untouched.run_id is None
 
         # And the worker that does hold the frozen world still runs it.
-        served = await execute_next_reevaluation(
+        served = await execute_next_launch(
             session,
             factory,
             world=world.authored,
@@ -322,7 +328,7 @@ class TestWorldContention:
             merchant_slug=world.merchant_slug,
         )
 
-        outcome = await execute_next_reevaluation(
+        outcome = await execute_next_launch(
             session,
             factory,
             world=world.authored,
@@ -334,7 +340,7 @@ class TestWorldContention:
         assert outcome.status == "QUEUED"
         assert outcome.failure_code is None
         settled = await reload(session, launch_id)
-        assert settled.status is ReevaluationStatus.QUEUED
+        assert settled.status is EvaluationLaunchStatus.QUEUED
         assert settled.run_id is None
 
     async def test_a_conflict_from_inside_execution_is_not_reported_as_queued(
@@ -365,7 +371,7 @@ class TestWorldContention:
         monkeypatch.setattr(BenchmarkRunService, "execute_started_suite", unaccounted)
 
         with pytest.raises(ConflictError) as refused:
-            await execute_next_reevaluation(
+            await execute_next_launch(
                 session,
                 factory,
                 world=world.authored,
@@ -376,7 +382,7 @@ class TestWorldContention:
         assert refused.value.reason == "payment_unaccounted"
         # The launch names the run an operator now has to close, rather than looking untouched.
         settled = await reload(session, launch_id)
-        assert settled.status is ReevaluationStatus.EXECUTING
+        assert settled.status is EvaluationLaunchStatus.EXECUTING
         assert settled.run_id is not None
 
 
@@ -397,17 +403,17 @@ class TestOperatorRecovery:
             merchant_slug=world.merchant_slug,
         )
         run_id, merchant_id = started.id, world.merchant_id
-        await ReevaluationWorkerService(session).bind_run(launch_id, run_id)
+        await EvaluationLaunchWorkerService(session).bind_run(launch_id, run_id)
         await runs.abort_run(run_id, merchant_id=merchant_id)
 
-        settled = await ReevaluationWorkerService(session).settle_for_terminal_run(run_id)
+        settled = await EvaluationLaunchWorkerService(session).settle_for_terminal_run(run_id)
 
         assert settled is not None
-        assert settled.status is ReevaluationStatus.FAILED
+        assert settled.status is EvaluationLaunchStatus.FAILED
         assert settled.failure_code == "run_aborted"
         # The merchant's one pending slot is free again.
-        plan = await MerchantReevaluationService(session, settings).plan(merchant_id)
-        assert plan.pending_reevaluation_id is None
+        plan = await MerchantEvaluationLaunchService(session, settings).plan(merchant_id)
+        assert plan.pending_launch_id is None
 
     async def test_a_launch_stranded_by_a_dead_worker_can_still_be_settled(
         self,
@@ -431,7 +437,7 @@ class TestOperatorRecovery:
             merchant_slug=world.merchant_slug,
         )
         run_id, merchant_id = started.id, world.merchant_id
-        worker = ReevaluationWorkerService(session)
+        worker = EvaluationLaunchWorkerService(session)
         await worker.bind_run(launch_id, run_id)
         for key in ("buy-a-charger",):
             await runs.start_mission(run_id, key, merchant_id=merchant_id)
@@ -447,14 +453,14 @@ class TestOperatorRecovery:
         settled = await worker.settle_for_terminal_run(run_id)
 
         assert settled is not None
-        assert settled.status is ReevaluationStatus.COMPLETED
+        assert settled.status is EvaluationLaunchStatus.COMPLETED
         assert settled.failure_code is None
         # Running the recovery twice is running it once.
         again = await worker.settle_for_terminal_run(run_id)
         assert again is not None
-        assert again.status is ReevaluationStatus.COMPLETED
-        plan = await MerchantReevaluationService(session, settings).plan(merchant_id)
-        assert plan.pending_reevaluation_id is None
+        assert again.status is EvaluationLaunchStatus.COMPLETED
+        plan = await MerchantEvaluationLaunchService(session, settings).plan(merchant_id)
+        assert plan.pending_launch_id is None
 
     async def test_a_launch_that_loses_the_bind_race_closes_the_run_it_created(
         self,
@@ -474,12 +480,12 @@ class TestOperatorRecovery:
         await queue_launch(session, settings, world, request_key="bind-race-request")
 
         async def taken(*arguments: object, **keywords: object) -> None:
-            raise ConflictError("reevaluation_not_queued", "another worker got there first")
+            raise ConflictError("launch_not_queued", "another worker got there first")
 
-        monkeypatch.setattr(ReevaluationWorkerService, "bind_run", taken)
+        monkeypatch.setattr(EvaluationLaunchWorkerService, "bind_run", taken)
 
         with pytest.raises(ConflictError):
-            await execute_next_reevaluation(
+            await execute_next_launch(
                 session,
                 factory,
                 world=world.authored,
@@ -497,5 +503,5 @@ class TestOperatorRecovery:
         assert statuses == [BenchmarkRunStatus.ABORTED]
         # And the merchant's world is free again, so the launch can still be executed.
         assert (
-            await MerchantReevaluationService(session, settings).plan(world.merchant_id)
-        ).pending_reevaluation_id is not None
+            await MerchantEvaluationLaunchService(session, settings).plan(world.merchant_id)
+        ).pending_launch_id is not None

@@ -9,7 +9,7 @@
 
 import { DecodeError } from "@/lib/insights/decode";
 
-export type ReevaluationStatus = "QUEUED" | "EXECUTING" | "COMPLETED" | "FAILED";
+export type LaunchStatus = "QUEUED" | "EXECUTING" | "COMPLETED" | "FAILED";
 export type BuyerProfile = "AI_BUYER" | "REFERENCE_BUYER";
 
 export interface LaunchBlocker {
@@ -17,7 +17,7 @@ export interface LaunchBlocker {
   readonly message: string;
 }
 
-export interface ReevaluationPreflight {
+export interface EvaluationPreflight {
   readonly launchable: boolean;
   /** Covers every identity field below. The launch carries it back so a plan that moved since
    * this page rendered is refused rather than frozen silently. */
@@ -41,13 +41,13 @@ export interface ReevaluationPreflight {
   readonly mission_deadline_seconds: number | null;
   readonly baseline_run_id: string | null;
   readonly baseline_run_completed_at: string | null;
-  readonly pending_reevaluation_id: string | null;
+  readonly pending_launch_id: string | null;
   readonly blockers: readonly LaunchBlocker[];
 }
 
-export interface Reevaluation {
-  readonly reevaluation_id: string;
-  readonly status: ReevaluationStatus;
+export interface EvaluationLaunch {
+  readonly launch_id: string;
+  readonly status: LaunchStatus;
   readonly failure_code: string | null;
   readonly requested_at: string;
   readonly started_at: string | null;
@@ -126,7 +126,7 @@ export interface RunComparison {
   readonly conclusion: { readonly kind: string; readonly statement: string };
 }
 
-export interface ReevaluationDetail extends Reevaluation {
+export interface EvaluationLaunchDetail extends EvaluationLaunch {
   readonly comparison: RunComparison | null;
 }
 
@@ -179,7 +179,7 @@ function nullableBoolean(value: unknown, where: string): boolean | null {
   return value === null ? null : bool(value, where);
 }
 
-function status(value: unknown): ReevaluationStatus {
+function status(value: unknown): LaunchStatus {
   const decoded = string(value, "status");
   if (
     decoded !== "QUEUED" &&
@@ -200,7 +200,7 @@ function profile(value: unknown): BuyerProfile {
   return decoded;
 }
 
-export function decodePreflight(value: unknown): ReevaluationPreflight {
+export function decodePreflight(value: unknown): EvaluationPreflight {
   const source = object(value, "re-evaluation preflight");
   return {
     launchable: bool(source.launchable, "launchable"),
@@ -230,9 +230,9 @@ export function decodePreflight(value: unknown): ReevaluationPreflight {
       source.baseline_run_completed_at,
       "baseline_run_completed_at",
     ),
-    pending_reevaluation_id: nullableString(
-      source.pending_reevaluation_id,
-      "pending_reevaluation_id",
+    pending_launch_id: nullableString(
+      source.pending_launch_id,
+      "pending_launch_id",
     ),
     blockers: array(source.blockers, "blockers").map((item) => {
       const blocker = object(item, "blocker");
@@ -244,9 +244,9 @@ export function decodePreflight(value: unknown): ReevaluationPreflight {
   };
 }
 
-function reevaluationFields(source: Record<string, unknown>): Reevaluation {
+function launchFields(source: Record<string, unknown>): EvaluationLaunch {
   return {
-    reevaluation_id: string(source.reevaluation_id, "reevaluation_id"),
+    launch_id: string(source.launch_id, "launch_id"),
     status: status(source.status),
     failure_code: nullableString(source.failure_code, "failure_code"),
     requested_at: string(source.requested_at, "requested_at"),
@@ -274,12 +274,12 @@ function reevaluationFields(source: Record<string, unknown>): Reevaluation {
   };
 }
 
-export function decodeReevaluation(value: unknown): Reevaluation {
-  return reevaluationFields(object(value, "re-evaluation"));
+export function decodeEvaluationLaunch(value: unknown): EvaluationLaunch {
+  return launchFields(object(value, "re-evaluation"));
 }
 
-export function decodeReevaluationList(value: unknown): readonly Reevaluation[] {
-  return array(value, "re-evaluations").map(decodeReevaluation);
+export function decodeEvaluationLaunchList(value: unknown): readonly EvaluationLaunch[] {
+  return array(value, "re-evaluations").map(decodeEvaluationLaunch);
 }
 
 function countChange(value: unknown): CountChange {
@@ -382,10 +382,10 @@ function decodeComparison(value: unknown): RunComparison {
   };
 }
 
-export function decodeReevaluationDetail(value: unknown): ReevaluationDetail {
+export function decodeEvaluationLaunchDetail(value: unknown): EvaluationLaunchDetail {
   const source = object(value, "re-evaluation detail");
   return {
-    ...reevaluationFields(source),
+    ...launchFields(source),
     comparison: source.comparison === null ? null : decodeComparison(source.comparison),
   };
 }

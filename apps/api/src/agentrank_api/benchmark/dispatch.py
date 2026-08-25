@@ -1,4 +1,4 @@
-"""Executing one admitted re-evaluation, in a process the browser has no part in.
+"""Executing one admitted evaluation launch, in a process the browser has no part in.
 
 A benchmark run takes as long as a suite takes. Holding a browser request open across one would
 be operationally fragile and would make the merchant's network the thing that decides whether a
@@ -44,12 +44,13 @@ from agentrank_api.benchmark.endpoint import (
     issued_benchmark_credential,
 )
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
+from agentrank_api.benchmark.evaluation_launch import BenchmarkEvaluationLaunch, BuyerProfile
 from agentrank_api.benchmark.execution import BenchmarkRunCapability, ExecutorIdentity
 from agentrank_api.benchmark.isolation import (
     IsolatedMissionExecutor,
     provider_worker_environment,
 )
-from agentrank_api.benchmark.launch import ReevaluationWorkerService
+from agentrank_api.benchmark.launch import EvaluationLaunchWorkerService
 from agentrank_api.benchmark.llm import (
     GEMINI_PROVIDER,
     OPENAI_PROVIDER,
@@ -57,7 +58,6 @@ from agentrank_api.benchmark.llm import (
     executor_kind,
 )
 from agentrank_api.benchmark.models import BenchmarkEnvironment, BenchmarkRun
-from agentrank_api.benchmark.reevaluation import BenchmarkReevaluation, BuyerProfile
 from agentrank_api.benchmark.repository import BenchmarkSuiteRepository
 from agentrank_api.benchmark.runner import BenchmarkRunService
 from agentrank_api.benchmark.wire import LLM_STRATEGY
@@ -87,14 +87,14 @@ RUN_ALREADY_ACTIVE = "run_already_active"
 class DispatchOutcome:
     """What one dispatch did, for an operator reading the command's output."""
 
-    reevaluation_id: uuid.UUID
+    launch_id: uuid.UUID
     run_id: uuid.UUID | None
     status: str
     failure_code: str | None
     detail: str | None = None
 
 
-class ReevaluationDispatchError(Exception):
+class LaunchDispatchError(Exception):
     """A launch this process refuses to execute, with the code it is settled under."""
 
     def __init__(self, failure_code: str, detail: str) -> None:
@@ -103,7 +103,7 @@ class ReevaluationDispatchError(Exception):
         self.detail = detail
 
 
-async def execute_next_reevaluation(
+async def execute_next_launch(
     session: AsyncSession,
     sessions: async_sessionmaker[AsyncSession],
     *,
@@ -131,24 +131,24 @@ async def execute_next_reevaluation(
     if merchant is None:
         raise NotFoundError("merchant", world.merchant_slug)
     environment = await BenchmarkEnvironmentService(session).require_registered(world.fixture)
-    worker = ReevaluationWorkerService(session)
+    worker = EvaluationLaunchWorkerService(session)
     launch = await worker.claim_next(merchant.id, environment_id=environment.id)
     if launch is None:
         await session.rollback()
         return None
-    reevaluation_id = launch.id
+    launch_id = launch.id
     merchant_id = launch.merchant_id
 
     try:
         plan = await _dispatch_plan(session, launch, environment=environment, settings=settings)
-    except ReevaluationDispatchError as refused:
-        await worker.settle_failed(reevaluation_id, failure_code=refused.failure_code)
+    except LaunchDispatchError as refused:
+        await worker.settle_failed(launch_id, failure_code=refused.failure_code)
         log.warning(
-            "benchmark re-evaluation refused",
-            extra={"reevaluation_id": str(reevaluation_id), "failure": refused.failure_code},
+            "benchmark evaluation launch refused",
+            extra={"launch_id": str(launch_id), "failure": refused.failure_code},
         )
         return DispatchOutcome(
-            reevaluation_id=reevaluation_id,
+            launch_id=launch_id,
             run_id=None,
             status="FAILED",
             failure_code=refused.failure_code,
@@ -169,7 +169,7 @@ async def execute_next_reevaluation(
         finished = await _execute(
             session,
             sessions,
-            reevaluation_id=reevaluation_id,
+            launch_id=launch_id,
             merchant_id=merchant_id,
             plan=plan,
             world=world,
@@ -190,7 +190,7 @@ async def execute_next_reevaluation(
             raise
         await session.rollback()
         return DispatchOutcome(
-            reevaluation_id=reevaluation_id,
+            launch_id=launch_id,
             run_id=None,
             status="QUEUED",
             failure_code=None,
@@ -200,9 +200,9 @@ async def execute_next_reevaluation(
     # `execute_started_suite` either completes the run or raises. There is no third answer to
     # report here, and inventing a branch for one would be describing a state this path cannot
     # produce.
-    await worker.settle_completed(reevaluation_id)
+    await worker.settle_completed(launch_id)
     return DispatchOutcome(
-        reevaluation_id=reevaluation_id,
+        launch_id=launch_id,
         run_id=finished.id,
         status="COMPLETED",
         failure_code=None,
@@ -222,7 +222,7 @@ class _Plan:
 
 async def _dispatch_plan(
     session: AsyncSession,
-    launch: BenchmarkReevaluation,
+    launch: BenchmarkEvaluationLaunch,
     *,
     environment: BenchmarkEnvironment,
     settings: Settings,
@@ -233,13 +233,13 @@ async def _dispatch_plan(
     rather than the thing that prevents a cross-world dispatch.
     """
     if environment.id != launch.environment_id:
-        raise ReevaluationDispatchError(
+        raise LaunchDispatchError(
             FAILURE_WORLD_MISMATCH,
             f"this worker holds {environment.label}, which is not the world this launch froze",
         )
     suite = await BenchmarkSuiteRepository(session).get_by_id(launch.suite_id)
     if suite is None:
-        raise ReevaluationDispatchError(
+        raise LaunchDispatchError(
             FAILURE_SUITE_UNAVAILABLE, "the benchmark suite this launch froze is not published"
         )
 
@@ -257,22 +257,22 @@ async def _dispatch_plan(
     try:
         configuration = AgentConfiguration.from_payload(launch.buyer_configuration)
     except (TypeError, ValueError) as malformed:
-        raise ReevaluationDispatchError(
+        raise LaunchDispatchError(
             FAILURE_BUYER_CONFIGURATION,
             "the frozen buyer configuration is not one this build can reproduce",
         ) from malformed
     if configuration.configuration_digest != launch.buyer_configuration_digest:
-        raise ReevaluationDispatchError(
+        raise LaunchDispatchError(
             FAILURE_BUYER_CONFIGURATION, "the frozen buyer configuration digest does not verify"
         )
     if not _provider_credential(settings, configuration.provider):
-        raise ReevaluationDispatchError(
+        raise LaunchDispatchError(
             FAILURE_NO_PROVIDER,
             f"this worker has no {configuration.provider} credential to run the frozen buyer",
         )
     representation = await session.get(CommerceRepresentation, launch.representation_id)
     if representation is None or representation.merchant_id != launch.merchant_id:
-        raise ReevaluationDispatchError(
+        raise LaunchDispatchError(
             FAILURE_REPRESENTATION_MISSING, "the representation this launch froze is unreadable"
         )
     kind = executor_kind(configuration)
@@ -288,7 +288,7 @@ async def _dispatch_plan(
     )
 
 
-def _require_frozen_kind(launch: BenchmarkReevaluation, kind: str) -> None:
+def _require_frozen_kind(launch: BenchmarkEvaluationLaunch, kind: str) -> None:
     """Refuse to run a buyer whose recorded kind is not the one the launch froze.
 
     The configuration digest covers the buyer's semantic configuration and not the mapping from
@@ -297,7 +297,7 @@ def _require_frozen_kind(launch: BenchmarkReevaluation, kind: str) -> None:
     other frozen value is verified; this makes the last one no different.
     """
     if kind != launch.executor_kind:
-        raise ReevaluationDispatchError(
+        raise LaunchDispatchError(
             FAILURE_BUYER_CONFIGURATION,
             f"this build runs {kind} where the launch froze {launch.executor_kind}",
         )
@@ -316,7 +316,7 @@ async def _execute(
     session: AsyncSession,
     sessions: async_sessionmaker[AsyncSession],
     *,
-    reevaluation_id: uuid.UUID,
+    launch_id: uuid.UUID,
     merchant_id: uuid.UUID,
     plan: _Plan,
     world: AuthoredWorld,
@@ -334,7 +334,7 @@ async def _execute(
     and the world a run puts the merchant back to is trusted operator side input.
     """
     runs = BenchmarkRunService(session)
-    worker = ReevaluationWorkerService(session)
+    worker = EvaluationLaunchWorkerService(session)
     served = RequestLedger()
     async with LocalCommerceEndpoint(settings, provider=provider, observer=served) as endpoint:
         started = await runs.start_suite(
@@ -348,7 +348,7 @@ async def _execute(
             representation=plan.representation,
         )
         try:
-            await worker.bind_run(reevaluation_id, started.id)
+            await worker.bind_run(launch_id, started.id)
         except ConflictError:
             # Another worker reached this launch first. The run this process just created is
             # therefore a run no launch names, so it is closed honestly here rather than left

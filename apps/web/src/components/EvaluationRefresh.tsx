@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 
-import { REFRESH_SECONDS } from "@/lib/reevaluation-refresh";
+import { REFRESH_SECONDS } from "@/lib/evaluation-refresh";
 
 /**
  * Re-reading a launch that has not settled yet.
@@ -13,7 +13,7 @@ import { REFRESH_SECONDS } from "@/lib/reevaluation-refresh";
  * when it last answered, and this only asks again. It stops as soon as the launch settles, so a
  * finished page makes no further requests.
  */
-export function ReevaluationRefresh({ active }: { active: boolean }) {
+export function EvaluationRefresh({ active }: { active: boolean }) {
   const router = useRouter();
   useEffect(() => {
     if (!active) {

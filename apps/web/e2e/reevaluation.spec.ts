@@ -12,7 +12,7 @@ import { record, retainOnFailure, signIn as establishSession } from "./session";
  * has run, and then reads the completed run and its comparison after an operator process has
  * executed it.
  *
- * Nothing here is mocked. The dispatcher is the real `benchmark reevaluate` command in its own
+ * Nothing here is mocked. The dispatcher is the real `benchmark dispatch` command in its own
  * process, which is also the point: the API never executes a benchmark, so a browser test that
  * reached a completed run without running that command would be testing something this system
  * does not do.
@@ -47,7 +47,7 @@ function dispatch(): string {
   if (world === undefined) throw new Error("AGENTRANK_E2E_REEVALUATION_WORLD is required");
   return execFileSync(
     "uv",
-    ["run", "python", "-m", "agentrank_api.cli", "benchmark", "reevaluate", "--world", world],
+    ["run", "python", "-m", "agentrank_api.cli", "benchmark", "dispatch", "--world", world],
     {
       cwd: "../..",
       encoding: "utf-8",
@@ -72,7 +72,7 @@ function captureLaunch(page: Page, captured: CapturedAction[]): void {
   page.on("request", (request) => {
     const headers = request.headers();
     if (request.method() !== "POST" || headers["next-action"] === undefined) return;
-    if (!request.url().includes("/re-evaluations")) return;
+    if (!request.url().includes("/evaluations")) return;
     if (captured.length > 0) return;
     const replay: Record<string, string> = {};
     for (const [name, value] of Object.entries(headers)) {
@@ -97,7 +97,7 @@ function newestLaunch(page: Page) {
 async function signIn(page: Page, context: BrowserContext): Promise<void> {
   if (key === undefined) throw new Error("AGENTRANK_E2E_REEVALUATION_KEY is required");
   await establishSession(page, context, key);
-  await expect(nav(page, "Re-evaluation")).toBeVisible();
+  await expect(nav(page, "Evaluation")).toBeVisible();
 }
 
 async function publishRepresentation(page: Page): Promise<void> {
@@ -110,8 +110,8 @@ async function publishRepresentation(page: Page): Promise<void> {
   await expect(page.getByText("Agent-ready representation published:")).toBeVisible();
 }
 
-async function requestReevaluation(page: Page): Promise<void> {
-  await nav(page, "Re-evaluation").click();
+async function requestEvaluation(page: Page): Promise<void> {
+  await nav(page, "Evaluation").click();
   await page.getByRole("button", { name: "Review re-evaluation" }).click();
   const form = page.getByRole("form", { name: "Confirm re-evaluation" });
   await expect(form).toContainText("2 missions are executed");
@@ -130,10 +130,10 @@ test("a merchant publishes, launches a re-evaluation and reads the result agains
 
   // Publishing said so itself, and the launch history proves it: nothing was started.
   await expect(page.getByText("Publishing did not run a benchmark")).toBeVisible();
-  await nav(page, "Re-evaluation").click();
+  await nav(page, "Evaluation").click();
   await expect(page.getByText("No re-evaluations yet")).toBeVisible();
 
-  await requestReevaluation(page);
+  await requestEvaluation(page);
 
   // Queued is an honest state and says exactly what has and has not happened. A second launch
   // is refused while it is pending, which the preflight says in place.
@@ -157,7 +157,7 @@ test("a merchant publishes, launches a re-evaluation and reads the result agains
   await expect(page.getByText("Task completion")).toBeVisible();
 
   // A second re-evaluation is compared with the first, with its caveats attached.
-  await requestReevaluation(page);
+  await requestEvaluation(page);
   expect(dispatch()).toContain("COMPLETED");
   await newestLaunch(page).click();
   await expect(page.getByText("2 of 2 missions finished")).toBeVisible();
@@ -184,7 +184,7 @@ test("a merchant publishes, launches a re-evaluation and reads the result agains
   });
   expect(crossOrigin.status()).not.toBe(200);
 
-  await nav(page, "Re-evaluation").click();
+  await nav(page, "Evaluation").click();
   await expect(page.locator('[aria-label="Re-evaluations"] tbody tr')).toHaveCount(2);
 });
 
@@ -195,7 +195,7 @@ test("the console shows nothing about a re-evaluation without a signed in sessio
   // Nothing here holds a credential, so this one records from the top.
   await record(context);
   await context.clearCookies();
-  await page.goto("/re-evaluations");
+  await page.goto("/evaluations");
   await expect(page).toHaveURL(/\/login/);
   await expect(page.getByLabel("Merchant API key")).toBeVisible();
 });

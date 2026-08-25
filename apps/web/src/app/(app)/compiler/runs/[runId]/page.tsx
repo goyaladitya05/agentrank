@@ -108,7 +108,7 @@ function Publication({ run }: { run: CompilerRun }) {
         </p>
         <p className={styles.reviewMeta}>
           Publishing did not run a benchmark. Measuring this representation is a separate command:{" "}
-          <Link className={styles.rowLink} href="/re-evaluations">
+          <Link className={styles.rowLink} href="/evaluations">
             request a re-evaluation
           </Link>
           .

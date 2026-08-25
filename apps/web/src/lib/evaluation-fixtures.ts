@@ -28,7 +28,7 @@ export const PREFLIGHT_FIXTURE = {
   mission_deadline_seconds: 120.0,
   baseline_run_id: "01992222-2222-7222-8222-222222222222",
   baseline_run_completed_at: "2026-08-23T10:04:30Z",
-  pending_reevaluation_id: null,
+  pending_launch_id: null,
   blockers: [],
 };
 
@@ -48,10 +48,10 @@ export const REFERENCE_PREFLIGHT_FIXTURE = {
 export const BLOCKED_PREFLIGHT_FIXTURE = {
   ...PREFLIGHT_FIXTURE,
   launchable: false,
-  pending_reevaluation_id: "01a0cccc-cccc-7ccc-8ccc-ccccccccccc1",
+  pending_launch_id: "01a0cccc-cccc-7ccc-8ccc-ccccccccccc1",
   blockers: [
     {
-      code: "reevaluation_already_pending",
+      code: "evaluation_already_pending",
       message:
         "A re-evaluation is already queued or running for this merchant. Wait for it to finish before starting another.",
     },
@@ -59,7 +59,7 @@ export const BLOCKED_PREFLIGHT_FIXTURE = {
 };
 
 export const QUEUED_REEVALUATION_FIXTURE = {
-  reevaluation_id: "01a0cccc-cccc-7ccc-8ccc-ccccccccccc1",
+  launch_id: "01a0cccc-cccc-7ccc-8ccc-ccccccccccc1",
   status: "QUEUED",
   failure_code: null,
   requested_at: "2026-08-25T09:00:00Z",

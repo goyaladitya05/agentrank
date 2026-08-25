@@ -177,6 +177,6 @@ describe("<OverviewContent> product behavior", () => {
   it("points a published representation at the command that measures it", () => {
     const html = render(overviewWith(() => undefined));
     expect(html).toContain("Publishing a representation never runs a benchmark");
-    expect(html).toContain('href="/re-evaluations"');
+    expect(html).toContain('href="/evaluations"');
   });
 });

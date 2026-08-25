@@ -165,7 +165,7 @@ async def require_operator_merchant(merchant: MerchantDep) -> AuthenticatedMerch
     A credential the benchmark runner issued carries the run it was minted for, and it exists so
     one buyer process can shop one merchant for the length of one run. It is still a merchant
     credential, so it authenticates; what it must not do is command the benchmark it is running
-    inside. A buyer that could queue a re-evaluation could touch the lifecycle of its own run.
+    inside. A buyer that could queue an evaluation could touch the lifecycle of its own run.
 
     The loopback endpoint an isolated buyer is given already has no benchmark command surface on
     it at all, which is the layer that holds even if this one were removed. This is the second

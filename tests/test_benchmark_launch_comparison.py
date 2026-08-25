@@ -12,17 +12,17 @@ import uuid
 import pytest
 from conftest import CredentialIssuer, bearer
 from fastapi.testclient import TestClient
-from reevaluation_support import LaunchWorld, build_launch_world, queue_launch, without_providers
+from launch_support import LaunchWorld, build_launch_world, queue_launch, without_providers
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from agentrank_api.benchmark.dispatch import execute_next_reevaluation
+from agentrank_api.benchmark.dispatch import execute_next_launch
 from agentrank_api.config import Settings
 from agentrank_api.main import create_app
 from agentrank_api.payments.fake import FakePaymentProvider
 
 pytestmark = pytest.mark.anyio
 
-LAUNCH = "/api/v1/benchmark/re-evaluations"
+LAUNCH = "/api/v1/benchmark/evaluations"
 
 
 def client(settings: Settings, sessions: async_sessionmaker[AsyncSession]) -> TestClient:
@@ -41,7 +41,7 @@ async def launch_and_execute(
 ) -> uuid.UUID:
     """One admitted launch carried all the way to a completed run."""
     launch_id = await queue_launch(session, settings, world, request_key=request_key)
-    outcome = await execute_next_reevaluation(
+    outcome = await execute_next_launch(
         session,
         factory,
         world=world.authored,

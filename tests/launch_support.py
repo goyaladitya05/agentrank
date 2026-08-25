@@ -23,7 +23,7 @@ from agentrank_api.benchmark.authored import AuthoredWorld
 from agentrank_api.benchmark.definitions import BenchmarkMissionDefinition
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
 from agentrank_api.benchmark.fixtures import BenchmarkFixture
-from agentrank_api.benchmark.launch import MerchantReevaluationService
+from agentrank_api.benchmark.launch import MerchantEvaluationLaunchService
 from agentrank_api.benchmark.models import BenchmarkEnvironment, BenchmarkSuite
 from agentrank_api.benchmark.suites import BenchmarkSuiteService
 from agentrank_api.commerce.catalog_fixture import SeedProduct, SeedVariant
@@ -224,7 +224,7 @@ async def queue_launch(
     console does and what admission checks. A test that skipped it would be admitting a plan
     nobody was shown.
     """
-    service = MerchantReevaluationService(session, settings)
+    service = MerchantEvaluationLaunchService(session, settings)
     plan = await service.plan(world.merchant_id)
     launch = await service.request(
         world.merchant_id,

@@ -9,14 +9,14 @@ the merchant's behalf without being asked.
 
 Two halves live here and they run in different processes.
 
-The merchant half is `MerchantReevaluationService`. It answers what a launch would evaluate,
+The merchant half is `MerchantEvaluationLaunchService`. It answers what a launch would evaluate,
 and it admits one. Admission resolves every methodology-critical identity server side from the
 merchant its credential authenticated, checks it against the digest of the plan the merchant was
 actually shown, freezes it on the row, and commits before answering. Nothing is executed: the
 answer is a queued launch, which is exactly what an honest response can promise when the work has
 not started.
 
-The worker half is `ReevaluationWorkerService`. It claims a queued launch, binds the benchmark
+The worker half is `EvaluationLaunchWorkerService`. It claims a queued launch, binds the benchmark
 run it produced, and settles the launch when the run finishes. It never reads a browser session
 and never takes a merchant identity from anything but the persisted row, because by the time it
 runs there is no request and no session left to trust.
@@ -39,6 +39,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
+from agentrank_api.benchmark.evaluation_launch import (
+    BenchmarkEvaluationLaunch,
+    BuyerProfile,
+    EvaluationLaunchStatus,
+    EvaluationPurpose,
+)
 from agentrank_api.benchmark.execution import REFERENCE_ISOLATED_KIND
 from agentrank_api.benchmark.identity import canonical_json
 from agentrank_api.benchmark.lifecycle import TERMINAL_MISSION_STATUSES, BenchmarkRunStatus
@@ -55,11 +61,6 @@ from agentrank_api.benchmark.models import (
     BenchmarkRun,
     BenchmarkSuite,
 )
-from agentrank_api.benchmark.reevaluation import (
-    BenchmarkReevaluation,
-    BuyerProfile,
-    ReevaluationStatus,
-)
 from agentrank_api.benchmark.repository import BenchmarkRunRepository, BenchmarkSuiteRepository
 from agentrank_api.commerce.models import Merchant
 from agentrank_api.compiler.models import CompilerRun
@@ -69,7 +70,7 @@ from agentrank_api.errors import ConflictError, NotFoundError
 from agentrank_api.representation.definitions import RepresentationProducer
 from agentrank_api.representation.models import CommerceRepresentation
 
-RESOURCE = "benchmark_reevaluation"
+RESOURCE = "benchmark_evaluation_launch"
 
 # The exact models a launch requests when a provider credential is configured. Constants rather
 # than settings, because a run records the model it requested and a value nobody can see in the
@@ -134,7 +135,7 @@ class LaunchBlocker:
 
 
 @dataclass(frozen=True, slots=True)
-class ReevaluationPlan:
+class EvaluationPlan:
     """Everything a merchant should know before spending a benchmark run.
 
     Deliberately without a currency figure. AgentRank has no trustworthy provider pricing data,
@@ -143,6 +144,7 @@ class ReevaluationPlan:
     checkable.
     """
 
+    purpose: EvaluationPurpose
     representation_id: uuid.UUID | None
     representation_label: str | None
     compiler_run_id: uuid.UUID | None
@@ -163,7 +165,7 @@ class ReevaluationPlan:
     baseline_run_id: uuid.UUID | None
     baseline_run_completed_at: datetime | None
     blockers: tuple[LaunchBlocker, ...]
-    pending_reevaluation_id: uuid.UUID | None
+    pending_launch_id: uuid.UUID | None
 
     @property
     def launchable(self) -> bool:
@@ -190,6 +192,7 @@ class ReevaluationPlan:
     def _identity(self) -> dict[str, Any]:
         """Exactly the fields a merchant reads off the preflight before committing."""
         return {
+            "purpose": self.purpose.value,
             "representation_id": _text(self.representation_id),
             "compiler_run_id": _text(self.compiler_run_id),
             "source_snapshot_id": _text(self.source_snapshot_id),
@@ -227,7 +230,7 @@ class _Labels:
 
 
 @dataclass(frozen=True, slots=True)
-class ReevaluationDetail:
+class EvaluationLaunchDetail:
     """One launch as a merchant reads it: what was frozen, and where execution has got to.
 
     Progress is counts of missions this run has actually finished, never a percentage and never
@@ -235,15 +238,17 @@ class ReevaluationDetail:
     them reached a terminal state, and a bar moving on a timer would be inventing the rest.
     """
 
-    reevaluation_id: uuid.UUID
-    status: ReevaluationStatus
+    launch_id: uuid.UUID
+    status: EvaluationLaunchStatus
     failure_code: str | None
     requested_at: datetime
     started_at: datetime | None
     settled_at: datetime | None
-    representation_id: uuid.UUID
-    representation_label: str
-    compiler_run_id: uuid.UUID
+    purpose: EvaluationPurpose
+    representation_id: uuid.UUID | None
+    representation_label: str | None
+    compiler_run_id: uuid.UUID | None
+    source_snapshot_id: uuid.UUID | None
     suite_id: uuid.UUID
     suite_label: str
     mission_count: int
@@ -259,7 +264,7 @@ class ReevaluationDetail:
     baseline_run_id: uuid.UUID | None
 
 
-class MerchantReevaluationService:
+class MerchantEvaluationLaunchService:
     """The merchant-facing half: what a launch would do, and admitting one."""
 
     def __init__(self, session: AsyncSession, settings: Settings) -> None:
@@ -269,7 +274,7 @@ class MerchantReevaluationService:
         self._runs = BenchmarkRunRepository(session)
         self._environments = BenchmarkEnvironmentService(session)
 
-    async def plan(self, merchant_id: uuid.UUID) -> ReevaluationPlan:
+    async def plan(self, merchant_id: uuid.UUID) -> EvaluationPlan:
         """What a launch would evaluate now, and what stops it if anything does."""
         buyer = resolve_buyer(self._settings)
         blockers: list[LaunchBlocker] = []
@@ -322,7 +327,7 @@ class MerchantReevaluationService:
         if pending is not None:
             blockers.append(
                 LaunchBlocker(
-                    "reevaluation_already_pending",
+                    "evaluation_already_pending",
                     "A re-evaluation is already queued or running for this merchant. Wait for it"
                     " to finish before starting another.",
                 )
@@ -339,7 +344,8 @@ class MerchantReevaluationService:
 
         baseline = None if suite is None else await self._baseline(merchant_id, suite.id)
         configuration = buyer.configuration
-        return ReevaluationPlan(
+        return EvaluationPlan(
+            purpose=EvaluationPurpose.REEVALUATION,
             representation_id=None if representation is None else representation.id,
             representation_label=None if representation is None else representation.label,
             compiler_run_id=None if compiler_run is None else compiler_run.id,
@@ -364,7 +370,7 @@ class MerchantReevaluationService:
             baseline_run_id=None if baseline is None else baseline.id,
             baseline_run_completed_at=None if baseline is None else baseline.completed_at,
             blockers=tuple(blockers),
-            pending_reevaluation_id=None if pending is None else pending.id,
+            pending_launch_id=None if pending is None else pending.id,
         )
 
     async def request(
@@ -374,7 +380,7 @@ class MerchantReevaluationService:
         representation_id: uuid.UUID,
         request_key: str,
         plan_digest: str,
-    ) -> BenchmarkReevaluation:
+    ) -> BenchmarkEvaluationLaunch:
         """Admit one launch, or answer with the one this request key already produced.
 
         The advisory lock on this merchant's benchmark world is taken first, which is what makes
@@ -408,9 +414,10 @@ class MerchantReevaluationService:
         assert plan.compiler_run_id is not None
         assert plan.suite_id is not None
         assert plan.environment_id is not None
-        launch = BenchmarkReevaluation(
+        launch = BenchmarkEvaluationLaunch(
             merchant_id=merchant.id,
             request_key=request_key,
+            purpose=plan.purpose,
             representation_id=plan.representation_id,
             compiler_run_id=plan.compiler_run_id,
             suite_id=plan.suite_id,
@@ -423,7 +430,7 @@ class MerchantReevaluationService:
                 None if buyer.configuration is None else buyer.configuration.configuration_digest
             ),
             executor_kind=buyer.executor_kind,
-            status=ReevaluationStatus.QUEUED,
+            status=EvaluationLaunchStatus.QUEUED,
             baseline_run_id=plan.baseline_run_id,
         )
         self._session.add(launch)
@@ -443,7 +450,7 @@ class MerchantReevaluationService:
 
     def _require_launchable(
         self,
-        plan: ReevaluationPlan,
+        plan: EvaluationPlan,
         merchant: Merchant,
         representation_id: uuid.UUID,
         plan_digest: str,
@@ -483,19 +490,19 @@ class MerchantReevaluationService:
                 identifier=str(merchant.id),
             )
 
-    async def detail(
-        self, merchant_id: uuid.UUID, reevaluation_id: uuid.UUID
-    ) -> ReevaluationDetail:
+    async def detail(self, merchant_id: uuid.UUID, launch_id: uuid.UUID) -> EvaluationLaunchDetail:
         """One launch with its frozen identity resolved to labels and its honest progress."""
-        launch = await self.get(merchant_id, reevaluation_id)
+        launch = await self.get(merchant_id, launch_id)
         return self._detail(launch, await self._resolve([launch]))
 
-    async def details(self, merchant_id: uuid.UUID, *, limit: int = 10) -> list[ReevaluationDetail]:
+    async def details(
+        self, merchant_id: uuid.UUID, *, limit: int = 10
+    ) -> list[EvaluationLaunchDetail]:
         launches = await self.recent(merchant_id, limit=limit)
         resolved = await self._resolve(launches)
         return [self._detail(launch, resolved) for launch in launches]
 
-    async def _resolve(self, launches: Sequence[BenchmarkReevaluation]) -> _Labels:
+    async def _resolve(self, launches: Sequence[BenchmarkEvaluationLaunch]) -> _Labels:
         """Everything a page of launches needs to be described, in a fixed number of statements.
 
         Batched rather than per launch. The launch list is a merchant's history and the launch
@@ -511,7 +518,9 @@ class MerchantReevaluationService:
         merchant_ids = {launch.merchant_id for launch in launches}
         suite_ids = {launch.suite_id for launch in launches}
         environment_ids = {launch.environment_id for launch in launches}
-        representation_ids = {launch.representation_id for launch in launches}
+        representation_ids = {
+            launch.representation_id for launch in launches if launch.representation_id is not None
+        }
         run_ids = {launch.run_id for launch in launches if launch.run_id is not None}
 
         suites = await self._session.execute(
@@ -564,22 +573,28 @@ class MerchantReevaluationService:
             missions_finished=finished,
         )
 
-    def _detail(self, launch: BenchmarkReevaluation, labels: _Labels) -> ReevaluationDetail:
+    def _detail(self, launch: BenchmarkEvaluationLaunch, labels: _Labels) -> EvaluationLaunchDetail:
         configuration = (
             None
             if launch.buyer_configuration is None
             else AgentConfiguration.from_payload(launch.buyer_configuration)
         )
-        return ReevaluationDetail(
-            reevaluation_id=launch.id,
+        return EvaluationLaunchDetail(
+            launch_id=launch.id,
+            purpose=launch.purpose,
             status=launch.status,
             failure_code=launch.failure_code,
             requested_at=launch.requested_at,
             started_at=launch.started_at,
             settled_at=launch.settled_at,
             representation_id=launch.representation_id,
-            representation_label=labels.representation_labels.get(launch.representation_id, ""),
+            representation_label=(
+                None
+                if launch.representation_id is None
+                else labels.representation_labels.get(launch.representation_id, "")
+            ),
             compiler_run_id=launch.compiler_run_id,
+            source_snapshot_id=launch.source_snapshot_id,
             suite_id=launch.suite_id,
             suite_label=labels.suite_labels.get(launch.suite_id, ""),
             mission_count=labels.mission_counts.get(launch.suite_id, 0),
@@ -599,35 +614,35 @@ class MerchantReevaluationService:
             baseline_run_id=launch.baseline_run_id,
         )
 
-    async def get(
-        self, merchant_id: uuid.UUID, reevaluation_id: uuid.UUID
-    ) -> BenchmarkReevaluation:
+    async def get(self, merchant_id: uuid.UUID, launch_id: uuid.UUID) -> BenchmarkEvaluationLaunch:
         launch = (
             await self._session.execute(
-                select(BenchmarkReevaluation).where(
-                    BenchmarkReevaluation.id == reevaluation_id,
-                    BenchmarkReevaluation.merchant_id == merchant_id,
+                select(BenchmarkEvaluationLaunch).where(
+                    BenchmarkEvaluationLaunch.id == launch_id,
+                    BenchmarkEvaluationLaunch.merchant_id == merchant_id,
                 )
             )
         ).scalar_one_or_none()
         if launch is None:
-            raise NotFoundError(RESOURCE, str(reevaluation_id))
+            raise NotFoundError(RESOURCE, str(launch_id))
         return launch
 
     async def recent(
         self, merchant_id: uuid.UUID, *, limit: int = 10
-    ) -> list[BenchmarkReevaluation]:
+    ) -> list[BenchmarkEvaluationLaunch]:
         rows = await self._session.execute(
-            select(BenchmarkReevaluation)
-            .where(BenchmarkReevaluation.merchant_id == merchant_id)
-            .order_by(BenchmarkReevaluation.requested_at.desc(), BenchmarkReevaluation.id.desc())
+            select(BenchmarkEvaluationLaunch)
+            .where(BenchmarkEvaluationLaunch.merchant_id == merchant_id)
+            .order_by(
+                BenchmarkEvaluationLaunch.requested_at.desc(), BenchmarkEvaluationLaunch.id.desc()
+            )
             .limit(limit)
         )
         return list(rows.scalars())
 
     def _same_request(
-        self, existing: BenchmarkReevaluation, representation_id: uuid.UUID
-    ) -> BenchmarkReevaluation:
+        self, existing: BenchmarkEvaluationLaunch, representation_id: uuid.UUID
+    ) -> BenchmarkEvaluationLaunch:
         """The launch this request key already produced, or a refusal that it asked for another.
 
         A retry after a lost response repeats the key and the representation and gets its own
@@ -637,7 +652,7 @@ class MerchantReevaluationService:
         """
         if existing.representation_id != representation_id:
             raise ConflictError(
-                "reevaluation_request_key_reused",
+                "evaluation_request_key_reused",
                 "This request has already launched a re-evaluation of a different representation.",
                 resource=RESOURCE,
                 identifier=str(existing.id),
@@ -716,13 +731,13 @@ class MerchantReevaluationService:
             )
         ).scalar_one_or_none()
 
-    async def _pending(self, merchant_id: uuid.UUID) -> BenchmarkReevaluation | None:
+    async def _pending(self, merchant_id: uuid.UUID) -> BenchmarkEvaluationLaunch | None:
         return (
             await self._session.execute(
-                select(BenchmarkReevaluation).where(
-                    BenchmarkReevaluation.merchant_id == merchant_id,
-                    BenchmarkReevaluation.status.in_(
-                        [ReevaluationStatus.QUEUED, ReevaluationStatus.EXECUTING]
+                select(BenchmarkEvaluationLaunch).where(
+                    BenchmarkEvaluationLaunch.merchant_id == merchant_id,
+                    BenchmarkEvaluationLaunch.status.in_(
+                        [EvaluationLaunchStatus.QUEUED, EvaluationLaunchStatus.EXECUTING]
                     ),
                 )
             )
@@ -751,18 +766,18 @@ class MerchantReevaluationService:
 
     async def _by_request_key(
         self, merchant_id: uuid.UUID, request_key: str
-    ) -> BenchmarkReevaluation | None:
+    ) -> BenchmarkEvaluationLaunch | None:
         return (
             await self._session.execute(
-                select(BenchmarkReevaluation).where(
-                    BenchmarkReevaluation.merchant_id == merchant_id,
-                    BenchmarkReevaluation.request_key == request_key,
+                select(BenchmarkEvaluationLaunch).where(
+                    BenchmarkEvaluationLaunch.merchant_id == merchant_id,
+                    BenchmarkEvaluationLaunch.request_key == request_key,
                 )
             )
         ).scalar_one_or_none()
 
 
-class ReevaluationWorkerService:
+class EvaluationLaunchWorkerService:
     """The execution half: claim a queued launch, bind its run, and settle it.
 
     Nothing here reads a browser session or accepts a merchant identity from a caller who is not
@@ -775,7 +790,7 @@ class ReevaluationWorkerService:
 
     async def claim_next(
         self, merchant_id: uuid.UUID, *, environment_id: uuid.UUID
-    ) -> BenchmarkReevaluation | None:
+    ) -> BenchmarkEvaluationLaunch | None:
         """The oldest queued launch for one merchant's world, locked for this transaction.
 
         Scoped to the world the claiming worker holds, and that scope is load bearing rather
@@ -791,61 +806,61 @@ class ReevaluationWorkerService:
         """
         return (
             await self._session.execute(
-                select(BenchmarkReevaluation)
+                select(BenchmarkEvaluationLaunch)
                 .where(
-                    BenchmarkReevaluation.merchant_id == merchant_id,
-                    BenchmarkReevaluation.environment_id == environment_id,
-                    BenchmarkReevaluation.status == ReevaluationStatus.QUEUED,
+                    BenchmarkEvaluationLaunch.merchant_id == merchant_id,
+                    BenchmarkEvaluationLaunch.environment_id == environment_id,
+                    BenchmarkEvaluationLaunch.status == EvaluationLaunchStatus.QUEUED,
                 )
-                .order_by(BenchmarkReevaluation.requested_at, BenchmarkReevaluation.id)
+                .order_by(BenchmarkEvaluationLaunch.requested_at, BenchmarkEvaluationLaunch.id)
                 .limit(1)
                 .with_for_update(skip_locked=True)
             )
         ).scalar_one_or_none()
 
-    async def bind_run(self, reevaluation_id: uuid.UUID, run_id: uuid.UUID) -> None:
+    async def bind_run(self, launch_id: uuid.UUID, run_id: uuid.UUID) -> None:
         """Record that this launch produced exactly one benchmark run."""
-        launch = await self._locked(reevaluation_id)
-        if launch.status is not ReevaluationStatus.QUEUED:
+        launch = await self._locked(launch_id)
+        if launch.status is not EvaluationLaunchStatus.QUEUED:
             raise ConflictError(
-                "reevaluation_not_queued",
-                f"benchmark re-evaluation {launch.id} is {launch.status.value}",
+                "launch_not_queued",
+                f"benchmark evaluation launch {launch.id} is {launch.status.value}",
                 resource=RESOURCE,
                 identifier=str(launch.id),
             )
         launch.run_id = run_id
         launch.started_at = await self._clock()
-        launch.status = ReevaluationStatus.EXECUTING
+        launch.status = EvaluationLaunchStatus.EXECUTING
         await self._session.commit()
 
-    async def settle_completed(self, reevaluation_id: uuid.UUID) -> None:
+    async def settle_completed(self, launch_id: uuid.UUID) -> None:
         """Settle a launch whose bound run reached COMPLETED.
 
         The database checks the run agrees before this is allowed to land, so this status can
         never say a run finished that did not.
         """
-        launch = await self._locked(reevaluation_id)
-        if launch.status is not ReevaluationStatus.EXECUTING:
+        launch = await self._locked(launch_id)
+        if launch.status is not EvaluationLaunchStatus.EXECUTING:
             return
-        launch.status = ReevaluationStatus.COMPLETED
+        launch.status = EvaluationLaunchStatus.COMPLETED
         launch.settled_at = await self._clock()
         await self._session.commit()
 
-    async def settle_failed(self, reevaluation_id: uuid.UUID, *, failure_code: str) -> None:
+    async def settle_failed(self, launch_id: uuid.UUID, *, failure_code: str) -> None:
         """Settle a launch that cannot produce a finished run, in our own vocabulary.
 
         The code is one of this repository's, never a provider's words and never an exception's
         text. A merchant reading it is reading a fact about the launch rather than a stack.
         """
-        launch = await self._locked(reevaluation_id)
-        if launch.status not in {ReevaluationStatus.QUEUED, ReevaluationStatus.EXECUTING}:
+        launch = await self._locked(launch_id)
+        if launch.status not in {EvaluationLaunchStatus.QUEUED, EvaluationLaunchStatus.EXECUTING}:
             return
-        launch.status = ReevaluationStatus.FAILED
+        launch.status = EvaluationLaunchStatus.FAILED
         launch.failure_code = failure_code
         launch.settled_at = await self._clock()
         await self._session.commit()
 
-    async def settle_for_terminal_run(self, run_id: uuid.UUID) -> BenchmarkReevaluation | None:
+    async def settle_for_terminal_run(self, run_id: uuid.UUID) -> BenchmarkEvaluationLaunch | None:
         """Close the launch a finished run belonged to, if it belonged to one.
 
         This is the operator's recovery as well as the ordinary abort path. A worker settles its
@@ -860,12 +875,12 @@ class ReevaluationWorkerService:
         """
         launch = (
             await self._session.execute(
-                select(BenchmarkReevaluation)
-                .where(BenchmarkReevaluation.run_id == run_id)
+                select(BenchmarkEvaluationLaunch)
+                .where(BenchmarkEvaluationLaunch.run_id == run_id)
                 .with_for_update()
             )
         ).scalar_one_or_none()
-        if launch is None or launch.status is not ReevaluationStatus.EXECUTING:
+        if launch is None or launch.status is not EvaluationLaunchStatus.EXECUTING:
             return launch
         run = (
             await self._session.execute(
@@ -878,9 +893,9 @@ class ReevaluationWorkerService:
             return launch
         settled = await self._clock()
         if run.status is BenchmarkRunStatus.COMPLETED:
-            launch.status = ReevaluationStatus.COMPLETED
+            launch.status = EvaluationLaunchStatus.COMPLETED
         else:
-            launch.status = ReevaluationStatus.FAILED
+            launch.status = EvaluationLaunchStatus.FAILED
             launch.failure_code = "run_aborted"
         launch.settled_at = settled
         await self._session.commit()
@@ -897,14 +912,14 @@ class ReevaluationWorkerService:
         assert now is not None  # `now()` always answers
         return now
 
-    async def _locked(self, reevaluation_id: uuid.UUID) -> BenchmarkReevaluation:
+    async def _locked(self, launch_id: uuid.UUID) -> BenchmarkEvaluationLaunch:
         launch = (
             await self._session.execute(
-                select(BenchmarkReevaluation)
-                .where(BenchmarkReevaluation.id == reevaluation_id)
+                select(BenchmarkEvaluationLaunch)
+                .where(BenchmarkEvaluationLaunch.id == launch_id)
                 .with_for_update()
             )
         ).scalar_one_or_none()
         if launch is None:
-            raise NotFoundError(RESOURCE, str(reevaluation_id))
+            raise NotFoundError(RESOURCE, str(launch_id))
         return launch

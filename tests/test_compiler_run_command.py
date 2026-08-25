@@ -14,7 +14,7 @@ import uuid
 import pytest
 from conftest import CredentialIssuer, bearer
 from fastapi.testclient import TestClient
-from reevaluation_support import build_launch_world
+from launch_support import build_launch_world
 from source_support import (
     FIRST_KEY,
     contradicted_document,

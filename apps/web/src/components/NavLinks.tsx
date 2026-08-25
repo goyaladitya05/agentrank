@@ -10,7 +10,7 @@ const LINKS = [
   { href: "/runs", label: "Runs" },
   { href: "/sources", label: "Source" },
   { href: "/compiler", label: "Compiler" },
-  { href: "/re-evaluations", label: "Re-evaluation" },
+  { href: "/evaluations", label: "Evaluation" },
   { href: "/status", label: "System status" },
 ];
 

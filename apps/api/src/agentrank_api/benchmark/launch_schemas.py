@@ -1,4 +1,4 @@
-"""Product-facing read and write models for the merchant re-evaluation command.
+"""Product-facing read and write models for the merchant evaluation launch command.
 
 Written out field by field from the launch service's frozen dataclasses, per this repository's
 rule that adding a field to a domain type must never silently change an API response.
@@ -16,13 +16,14 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agentrank_api.benchmark.identity import HASH_PATTERN
-from agentrank_api.benchmark.launch import ReevaluationDetail, ReevaluationPlan
-from agentrank_api.benchmark.reevaluation import (
+from agentrank_api.benchmark.evaluation_launch import (
     REQUEST_KEY_PATTERN,
     BuyerProfile,
-    ReevaluationStatus,
+    EvaluationLaunchStatus,
+    EvaluationPurpose,
 )
+from agentrank_api.benchmark.identity import HASH_PATTERN
+from agentrank_api.benchmark.launch import EvaluationLaunchDetail, EvaluationPlan
 from agentrank_api.diagnostics.comparison import RunComparison
 
 
@@ -33,8 +34,8 @@ class LaunchBlockerView(BaseModel):
     message: str
 
 
-class ReevaluationPreflightView(BaseModel):
-    """What a re-evaluation would evaluate, before the merchant commits to spending one.
+class EvaluationPreflightView(BaseModel):
+    """What an evaluation would measure, before the merchant commits to spending one.
 
     `plan_digest` covers every identity field below. A launch carries it back, and admission
     refuses one whose plan has moved since this was read, so what a merchant committed to is
@@ -43,6 +44,7 @@ class ReevaluationPreflightView(BaseModel):
 
     launchable: bool
     plan_digest: str
+    purpose: EvaluationPurpose
     representation_id: uuid.UUID | None
     representation_label: str | None
     compiler_run_id: uuid.UUID | None
@@ -62,14 +64,15 @@ class ReevaluationPreflightView(BaseModel):
     mission_deadline_seconds: float | None
     baseline_run_id: uuid.UUID | None
     baseline_run_completed_at: datetime | None
-    pending_reevaluation_id: uuid.UUID | None
+    pending_launch_id: uuid.UUID | None
     blockers: list[LaunchBlockerView]
 
     @classmethod
-    def from_domain(cls, plan: ReevaluationPlan) -> Self:
+    def from_domain(cls, plan: EvaluationPlan) -> Self:
         return cls(
             launchable=plan.launchable,
             plan_digest=plan.digest,
+            purpose=plan.purpose,
             representation_id=plan.representation_id,
             representation_label=plan.representation_label,
             compiler_run_id=plan.compiler_run_id,
@@ -89,7 +92,7 @@ class ReevaluationPreflightView(BaseModel):
             mission_deadline_seconds=plan.mission_deadline_seconds,
             baseline_run_id=plan.baseline_run_id,
             baseline_run_completed_at=plan.baseline_run_completed_at,
-            pending_reevaluation_id=plan.pending_reevaluation_id,
+            pending_launch_id=plan.pending_launch_id,
             blockers=[
                 LaunchBlockerView(code=blocker.code, message=blocker.message)
                 for blocker in plan.blockers
@@ -97,7 +100,7 @@ class ReevaluationPreflightView(BaseModel):
         )
 
 
-class ReevaluationRequest(BaseModel):
+class EvaluationLaunchRequest(BaseModel):
     """The whole of what a browser may say about a launch.
 
     A representation identifier, so a page rendered against an artifact that has since been
@@ -123,18 +126,20 @@ class ReevaluationRequest(BaseModel):
     plan_digest: str = Field(pattern=HASH_PATTERN)
 
 
-class ReevaluationView(BaseModel):
+class EvaluationLaunchView(BaseModel):
     """One launch: what it froze, where it has got to, and what it will be compared with."""
 
-    reevaluation_id: uuid.UUID
-    status: ReevaluationStatus
+    launch_id: uuid.UUID
+    purpose: EvaluationPurpose
+    status: EvaluationLaunchStatus
     failure_code: str | None
     requested_at: datetime
     started_at: datetime | None
     settled_at: datetime | None
-    representation_id: uuid.UUID
-    representation_label: str
-    compiler_run_id: uuid.UUID
+    representation_id: uuid.UUID | None
+    representation_label: str | None
+    compiler_run_id: uuid.UUID | None
+    source_snapshot_id: uuid.UUID | None
     suite_id: uuid.UUID
     suite_label: str
     mission_count: int
@@ -150,9 +155,10 @@ class ReevaluationView(BaseModel):
     baseline_run_id: uuid.UUID | None
 
     @classmethod
-    def from_domain(cls, detail: ReevaluationDetail) -> Self:
+    def from_domain(cls, detail: EvaluationLaunchDetail) -> Self:
         return cls(
-            reevaluation_id=detail.reevaluation_id,
+            launch_id=detail.launch_id,
+            purpose=detail.purpose,
             status=detail.status,
             failure_code=detail.failure_code,
             requested_at=detail.requested_at,
@@ -161,6 +167,7 @@ class ReevaluationView(BaseModel):
             representation_id=detail.representation_id,
             representation_label=detail.representation_label,
             compiler_run_id=detail.compiler_run_id,
+            source_snapshot_id=detail.source_snapshot_id,
             suite_id=detail.suite_id,
             suite_label=detail.suite_label,
             mission_count=detail.mission_count,
@@ -346,7 +353,7 @@ class RunComparisonView(BaseModel):
         )
 
 
-class ReevaluationDetailView(ReevaluationView):
+class EvaluationLaunchDetailView(EvaluationLaunchView):
     """One launch with its comparison, when there is one to give.
 
     `comparison` is null while nothing has been measured against a prior run yet: no run, no
@@ -358,9 +365,9 @@ class ReevaluationDetailView(ReevaluationView):
 
     @classmethod
     def with_comparison(
-        cls, detail: ReevaluationDetail, comparison: RunComparison | None
-    ) -> ReevaluationDetailView:
+        cls, detail: EvaluationLaunchDetail, comparison: RunComparison | None
+    ) -> EvaluationLaunchDetailView:
         return cls(
-            **ReevaluationView.from_domain(detail).model_dump(),
+            **EvaluationLaunchView.from_domain(detail).model_dump(),
             comparison=None if comparison is None else RunComparisonView.from_domain(comparison),
         )

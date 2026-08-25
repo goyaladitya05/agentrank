@@ -14,7 +14,7 @@ from dataclasses import replace
 import pytest
 from conftest import CredentialIssuer, bearer
 from fastapi.testclient import TestClient
-from reevaluation_support import (
+from launch_support import (
     build_launch_world,
     queue_launch,
     with_openai,
@@ -27,13 +27,13 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from agentrank_api.auth.service import MerchantCredentialService
 from agentrank_api.auth.tokens import TokenMarker
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
+from agentrank_api.benchmark.evaluation_launch import BenchmarkEvaluationLaunch
 from agentrank_api.benchmark.execution import BenchmarkRunCapability
 from agentrank_api.benchmark.launch import (
-    MerchantReevaluationService,
-    ReevaluationWorkerService,
+    EvaluationLaunchWorkerService,
+    MerchantEvaluationLaunchService,
 )
 from agentrank_api.benchmark.llm import OPENAI_PROVIDER
-from agentrank_api.benchmark.reevaluation import BenchmarkReevaluation
 from agentrank_api.benchmark.runner import BenchmarkRunService
 from agentrank_api.compiler.service import MerchantCompilerService
 from agentrank_api.config import Settings
@@ -43,8 +43,8 @@ from agentrank_api.representation.service import MerchantRepresentationService
 
 pytestmark = pytest.mark.anyio
 
-PREFLIGHT = "/api/v1/benchmark/re-evaluations/preflight"
-LAUNCH = "/api/v1/benchmark/re-evaluations"
+PREFLIGHT = "/api/v1/benchmark/evaluations/preflight"
+LAUNCH = "/api/v1/benchmark/evaluations"
 
 
 def launch_body(
@@ -183,7 +183,9 @@ class TestAuthorization:
         assert refused.json()["error"] == "representation_superseded"
         assert (
             await session.scalar(
-                BenchmarkReevaluation.__table__.select().with_only_columns(BenchmarkReevaluation.id)
+                BenchmarkEvaluationLaunch.__table__.select().with_only_columns(
+                    BenchmarkEvaluationLaunch.id
+                )
             )
         ) is None
 
@@ -370,7 +372,7 @@ class TestAdmission:
 
         assert first.status_code == 201
         assert second.status_code == 201
-        assert first.json()["reevaluation_id"] == second.json()["reevaluation_id"]
+        assert first.json()["launch_id"] == second.json()["launch_id"]
         listed = http.get(LAUNCH, headers=bearer(token)).json()
         assert len(listed) == 1
 
@@ -406,7 +408,7 @@ class TestAdmission:
         )
 
         assert refused.status_code == 409
-        assert refused.json()["error"] == "reevaluation_request_key_reused"
+        assert refused.json()["error"] == "evaluation_request_key_reused"
 
     async def test_a_second_pending_launch_is_refused_by_name(
         self,
@@ -440,7 +442,7 @@ class TestAdmission:
         )
 
         assert refused.status_code == 409
-        assert refused.json()["error"] == "reevaluation_already_pending"
+        assert refused.json()["error"] == "evaluation_already_pending"
         assert http.get(PREFLIGHT, headers=bearer(token)).json()["launchable"] is False
 
     async def test_a_plan_that_moved_since_the_page_rendered_is_refused(
@@ -602,8 +604,8 @@ class TestReadCost:
         """
         pinned = without_providers(settings)
         world = await build_launch_world(session, "cost-shop")
-        service = MerchantReevaluationService(session, pinned)
-        worker = ReevaluationWorkerService(session)
+        service = MerchantEvaluationLaunchService(session, pinned)
+        worker = EvaluationLaunchWorkerService(session)
         for index in range(3):
             launch_id = await queue_launch(
                 session, pinned, world, request_key=f"cost-request-{index}"

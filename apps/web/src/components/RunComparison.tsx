@@ -12,7 +12,7 @@ import {
   transitionDirectionLabel,
   warningLabel,
 } from "@/lib/labels";
-import type { CountChange, RunComparison } from "@/lib/reevaluation";
+import type { CountChange, RunComparison } from "@/lib/evaluation";
 
 /**
  * One run read against the run before it.

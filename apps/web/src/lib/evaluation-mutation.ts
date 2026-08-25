@@ -18,7 +18,7 @@ export interface LaunchState {
    */
   readonly unknown: boolean;
   /** The launch this submission produced or found, when the API answered with one. */
-  readonly reevaluationId: string | null;
+  readonly launchId: string | null;
 }
 
 export const IDLE_LAUNCH: LaunchState = {
@@ -26,5 +26,5 @@ export const IDLE_LAUNCH: LaunchState = {
   message: null,
   stale: false,
   unknown: false,
-  reevaluationId: null,
+  launchId: null,
 };

@@ -423,7 +423,7 @@ async def test_settle_reports_a_run_that_belongs_to_no_launch(
     assert result.code == ExitCode.OK
     payload = result.json()
     assert payload["status"] == BenchmarkRunStatus.COMPLETED.value
-    assert payload["reevaluation_id"] is None
+    assert payload["launch_id"] is None
 
 
 async def test_settle_refuses_a_run_that_has_not_finished(

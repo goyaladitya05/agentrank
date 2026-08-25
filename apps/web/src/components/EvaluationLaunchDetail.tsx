@@ -6,8 +6,8 @@ import { TechnicalDetails, IdRow } from "@/components/TechnicalDetails";
 import styles from "@/components/console.module.css";
 import { formatTimestamp } from "@/lib/format";
 import { launchFailureLabel, launchStatusLabel, statusLabel } from "@/lib/labels";
-import { REFRESH_SECONDS } from "@/lib/reevaluation-refresh";
-import type { ReevaluationDetail } from "@/lib/reevaluation";
+import { REFRESH_SECONDS } from "@/lib/evaluation-refresh";
+import type { EvaluationLaunchDetail } from "@/lib/evaluation";
 
 /**
  * One re-evaluation: what it froze, where it has got to, and what it can be read against.
@@ -17,7 +17,7 @@ import type { ReevaluationDetail } from "@/lib/reevaluation";
  * neither invents a percentage or a finish time. A launch that did not complete says why in
  * words rather than showing a code.
  */
-export function ReevaluationDetailContent({ launch }: { launch: ReevaluationDetail }) {
+export function EvaluationLaunchDetailContent({ launch }: { launch: EvaluationLaunchDetail }) {
   const status = launchStatusLabel(launch.status);
   const pending = launch.status === "QUEUED" || launch.status === "EXECUTING";
   return (
@@ -53,7 +53,7 @@ export function ReevaluationDetailContent({ launch }: { launch: ReevaluationDeta
             ]}
           />
           <TechnicalDetails summary="Frozen identifiers">
-            <IdRow label="Re-evaluation id" value={launch.reevaluation_id} />
+            <IdRow label="Re-evaluation id" value={launch.launch_id} />
             <IdRow label="Representation id" value={launch.representation_id} />
             <IdRow label="Compiler run id" value={launch.compiler_run_id} />
             <IdRow label="Suite id" value={launch.suite_id} />
@@ -89,7 +89,7 @@ export function ReevaluationDetailContent({ launch }: { launch: ReevaluationDeta
   );
 }
 
-function ExecutionState({ launch }: { launch: ReevaluationDetail }) {
+function ExecutionState({ launch }: { launch: EvaluationLaunchDetail }) {
   if (launch.status === "QUEUED") {
     return (
       <>
@@ -133,7 +133,7 @@ function ExecutionState({ launch }: { launch: ReevaluationDetail }) {
   );
 }
 
-function RunLink({ launch }: { launch: ReevaluationDetail }) {
+function RunLink({ launch }: { launch: EvaluationLaunchDetail }) {
   if (launch.run_id === null) {
     return null;
   }
@@ -148,14 +148,14 @@ function RunLink({ launch }: { launch: ReevaluationDetail }) {
   );
 }
 
-function buyerSentence(launch: ReevaluationDetail): string {
+function buyerSentence(launch: EvaluationLaunchDetail): string {
   if (launch.buyer_profile === "AI_BUYER") {
     return `${launch.provider ?? "model provider"}, requested model ${launch.requested_model ?? "unrecorded"}`;
   }
   return "AgentRank's deterministic reference buyer, which is not an AI agent and did not read the representation";
 }
 
-function comparisonAbsence(launch: ReevaluationDetail): string {
+function comparisonAbsence(launch: EvaluationLaunchDetail): string {
   if (launch.baseline_run_id === null) {
     return "You have no earlier completed run of this suite, so there is nothing to read this against. Your next re-evaluation will be compared with this one.";
   }

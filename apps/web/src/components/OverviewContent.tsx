@@ -327,7 +327,7 @@ function RepresentationPanel({ state }: { state: RepresentationState }) {
       {state.compiled_representation_id === null ? null : (
         <p className={styles.finePrintTight}>
           Publishing a representation never runs a benchmark.{" "}
-          <Link className={styles.textLink} href="/re-evaluations">
+          <Link className={styles.textLink} href="/evaluations">
             Request a re-evaluation
           </Link>{" "}
           to measure this one.

@@ -70,13 +70,13 @@ CONFLICTS: dict[str, InvariantConflict] = {
         detail="another benchmark run is already executing against this merchant",
         resource="benchmark_run",
     ),
-    # One pending re-evaluation launch per merchant. The launch service takes the merchant's
+    # One pending evaluation launch per merchant. The launch service takes the merchant's
     # benchmark world lock and reads the pending launch first, so this is reached only by a
     # caller that somehow did not, and it is the layer that holds across processes.
-    "uq_benchmark_reevaluation_pending_merchant": InvariantConflict(
-        reason="reevaluation_already_pending",
-        detail="a re-evaluation is already queued or running for this merchant",
-        resource="benchmark_reevaluation",
+    "uq_benchmark_evaluation_launch_pending_merchant": InvariantConflict(
+        reason="evaluation_already_pending",
+        detail="an evaluation is already queued or running for this merchant",
+        resource="benchmark_evaluation_launch",
     ),
     # A mandate is qualified once. The service refuses a second constraint set after reading
     # that one exists, and two creations racing can both read that none does.

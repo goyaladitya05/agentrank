@@ -16,12 +16,12 @@ import asyncio
 import uuid
 
 import pytest
-from reevaluation_support import LaunchWorld, build_launch_world, queue_launch, without_providers
+from launch_support import LaunchWorld, build_launch_world, queue_launch, without_providers
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
-from agentrank_api.benchmark.reevaluation import BenchmarkReevaluation
+from agentrank_api.benchmark.evaluation_launch import BenchmarkEvaluationLaunch
 from agentrank_api.config import Settings
 from agentrank_api.errors import ConflictError
 
@@ -59,7 +59,9 @@ async def still_waiting(*attempts: asyncio.Task[object]) -> bool:
 
 
 async def launch_count(session: AsyncSession) -> int:
-    return int(await session.scalar(select(func.count()).select_from(BenchmarkReevaluation)) or 0)
+    return int(
+        await session.scalar(select(func.count()).select_from(BenchmarkEvaluationLaunch)) or 0
+    )
 
 
 async def test_two_different_requests_admit_one_launch(
@@ -89,7 +91,7 @@ async def test_two_different_requests_admit_one_launch(
     refused = [outcome for outcome in outcomes if isinstance(outcome, ConflictError)]
     assert len(admitted) == 1
     assert len(refused) == 1
-    assert refused[0].reason == "reevaluation_already_pending"
+    assert refused[0].reason == "evaluation_already_pending"
     assert await launch_count(session) == 1
 
 

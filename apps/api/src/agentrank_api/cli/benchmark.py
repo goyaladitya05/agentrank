@@ -10,7 +10,7 @@ The names say what moves:
 ```text
 seed            registers the world, puts it back, publishes the suite  catalog is overwritten
 run             executes the suite                                      money moves, stock goes
-reevaluate      executes one launch a merchant queued from the console  money moves, stock goes
+dispatch        executes one launch a merchant queued from the console  money moves, stock goes
 compare-create  predeclares a controlled paired experiment              nothing moves
 compare-run     executes one predeclared sample                         money moves, stock goes
 compare-show    reads one experiment and every sample in it             nothing moves
@@ -62,7 +62,7 @@ from agentrank_api.benchmark.authored import AuthoredWorld, publish_world, read_
 from agentrank_api.benchmark.authorization import provision
 from agentrank_api.benchmark.buyer import MerchantBuyerSurface
 from agentrank_api.benchmark.discovery import buyer_discovery_view, to_payload
-from agentrank_api.benchmark.dispatch import execute_next_reevaluation
+from agentrank_api.benchmark.dispatch import execute_next_launch
 from agentrank_api.benchmark.endpoint import (
     LocalCommerceEndpoint,
     RequestLedger,
@@ -78,7 +78,7 @@ from agentrank_api.benchmark.isolation import (
     IsolatedMissionExecutor,
     provider_worker_environment,
 )
-from agentrank_api.benchmark.launch import ReevaluationWorkerService
+from agentrank_api.benchmark.launch import EvaluationLaunchWorkerService
 from agentrank_api.benchmark.lifecycle import MissionRunStatus
 from agentrank_api.benchmark.llm import (
     GEMINI_PROVIDER,
@@ -252,30 +252,31 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
     _add_json(comparison_show)
     comparison_show.set_defaults(command=compare_show)
 
-    reevaluating = commands.add_parser(
-        "reevaluate",
-        help="execute the next re-evaluation a merchant queued from the console",
+    dispatching = commands.add_parser(
+        "dispatch",
+        help="execute the next evaluation a merchant queued from the console",
         description=(
-            "Claim the oldest queued re-evaluation for this world's merchant and carry it out."
-            " Everything it executes was frozen when the merchant asked for it: the"
-            " representation, the suite, the world and the buyer. Nothing here reads a browser"
+            "Claim the oldest queued evaluation launch for this world's merchant and carry it"
+            " out. Everything it executes was frozen when the merchant asked for it: what is"
+            " being measured, the suite, the world and the buyer. Nothing here reads a browser"
             " session, and a launch this process cannot execute exactly is failed by name rather"
             " than run with something close."
         ),
     )
-    _add_world(reevaluating)
-    _add_json(reevaluating)
-    reevaluating.set_defaults(command=reevaluate)
+    _add_world(dispatching)
+    _add_json(dispatching)
+    dispatching.set_defaults(command=dispatch)
 
     settling = commands.add_parser(
         "settle",
         help="close the merchant launch behind a run that has already finished",
         description=(
-            "Settle the re-evaluation a finished run belonged to. The worker that executes a"
-            " launch settles it when the run ends, so this is only needed when that process died"
-            " in between: the launch is then left executing against a run nobody can reach, and"
-            " it holds this merchant's one pending launch slot until it is closed. The launch is"
-            " settled to agree with the run, which is the only settlement the database accepts."
+            "Settle the evaluation launch a finished run belonged to. The worker that executes"
+            " a launch settles it when the run ends, so this is only needed when that process"
+            " died in between: the launch is then left executing against a run nobody can reach,"
+            " and it holds this merchant's one pending launch slot until it is closed. The launch"
+            " is settled to agree with the run, which is the only settlement the database"
+            " accepts."
         ),
     )
     settling.add_argument("run_id", type=uuid.UUID, help="the benchmark run identifier")
@@ -532,7 +533,7 @@ async def _llm_isolated_run(
             )
 
 
-async def reevaluate(
+async def dispatch(
     session: AsyncSession,
     sessions: async_sessionmaker[AsyncSession],
     provider: PaymentProvider,
@@ -540,18 +541,18 @@ async def reevaluate(
     out: TextIO,
     settings: Settings,
 ) -> int:
-    """Execute at most one queued merchant re-evaluation, and say what became of it.
+    """Execute at most one queued merchant evaluation launch, and say what became of it.
 
     One launch per invocation rather than a loop, because a benchmark run is the largest thing
     this system does and an operator should decide how many happen. Nothing queued is an
     ordinary answer and exits OK: there is no work, which is not a failure.
     """
     world = read_world(arguments.world)
-    outcome = await execute_next_reevaluation(
+    outcome = await execute_next_launch(
         session, sessions, world=world, provider=provider, settings=settings
     )
     if outcome is None:
-        payload: dict[str, Any] = {"reevaluation_id": None, "status": "NONE_QUEUED"}
+        payload: dict[str, Any] = {"launch_id": None, "status": "NONE_QUEUED"}
         if arguments.as_json:
             write_json(out, payload)
         else:
@@ -559,7 +560,7 @@ async def reevaluate(
         return ExitCode.OK
 
     payload = {
-        "reevaluation_id": str(outcome.reevaluation_id),
+        "launch_id": str(outcome.launch_id),
         "status": outcome.status,
         "run_id": None if outcome.run_id is None else str(outcome.run_id),
         "failure_code": outcome.failure_code,
@@ -568,7 +569,7 @@ async def reevaluate(
     if arguments.as_json:
         write_json(out, payload)
     else:
-        print(f"launch      {payload['reevaluation_id']}", file=out)
+        print(f"launch      {payload['launch_id']}", file=out)
         print(f"status      {payload['status']}", file=out)
         print(f"run         {payload['run_id'] or MISSING}", file=out)
         if outcome.failure_code is not None:
@@ -601,12 +602,12 @@ async def settle(
             file=out,
         )
         return ExitCode.REFUSED
-    settled = await ReevaluationWorkerService(session).settle_for_terminal_run(run.id)
+    settled = await EvaluationLaunchWorkerService(session).settle_for_terminal_run(run.id)
     payload = {
         "run_id": str(run.id),
         "status": run.status.value,
-        "reevaluation_id": None if settled is None else str(settled.id),
-        "reevaluation_status": None if settled is None else settled.status.value,
+        "launch_id": None if settled is None else str(settled.id),
+        "launch_status": None if settled is None else settled.status.value,
     }
     if arguments.as_json:
         write_json(out, payload)
@@ -614,11 +615,10 @@ async def settle(
 
     print(f"run         {payload['run_id']}  {payload['status']}", file=out)
     if settled is None:
-        print("launch      this run belongs to no merchant re-evaluation", file=out)
+        print("launch      this run belongs to no merchant evaluation launch", file=out)
     else:
         print(
-            f"launch      {payload['reevaluation_id']} is"
-            f" {str(payload['reevaluation_status']).lower()}",
+            f"launch      {payload['launch_id']} is {str(payload['launch_status']).lower()}",
             file=out,
         )
     return ExitCode.OK
@@ -1204,12 +1204,12 @@ async def abort(
     closed = await service.abort_run(arguments.run_id, merchant_id=merchant_id)
     # A run an operator has closed is not coming back, so the merchant launch behind it is over
     # too. Leaving it executing would hold this merchant's one pending slot against nothing.
-    settled = await ReevaluationWorkerService(session).settle_for_terminal_run(closed.id)
+    settled = await EvaluationLaunchWorkerService(session).settle_for_terminal_run(closed.id)
 
     payload = {
         "run_id": str(closed.id),
-        "reevaluation_id": None if settled is None else str(settled.id),
-        "reevaluation_status": None if settled is None else settled.status.value,
+        "launch_id": None if settled is None else str(settled.id),
+        "launch_status": None if settled is None else settled.status.value,
         "status": closed.status.value,
         "missions_unfinished": len(unfinished),
         "missions_started_and_unfinished": sum(
@@ -1222,10 +1222,9 @@ async def abort(
 
     print(f"run         {payload['run_id']}", file=out)
     print(f"status      {payload['status']}", file=out)
-    if payload["reevaluation_id"] is not None:
+    if payload["launch_id"] is not None:
         print(
-            f"launch      {payload['reevaluation_id']} is"
-            f" {str(payload['reevaluation_status']).lower()}",
+            f"launch      {payload['launch_id']} is {str(payload['launch_status']).lower()}",
             file=out,
         )
     print(

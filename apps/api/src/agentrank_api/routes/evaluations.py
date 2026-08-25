@@ -23,17 +23,17 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query, status
 
-from agentrank_api.benchmark.launch import MerchantReevaluationService
+from agentrank_api.benchmark.launch import MerchantEvaluationLaunchService
 from agentrank_api.benchmark.launch_schemas import (
-    ReevaluationDetailView,
-    ReevaluationPreflightView,
-    ReevaluationRequest,
-    ReevaluationView,
+    EvaluationLaunchDetailView,
+    EvaluationLaunchRequest,
+    EvaluationLaunchView,
+    EvaluationPreflightView,
 )
 from agentrank_api.dependencies import OperatorDep, SessionDep, SettingsDep
 from agentrank_api.diagnostics.service import DiagnosticsService
 
-router = APIRouter(prefix="/api/v1/benchmark/re-evaluations", tags=["benchmark"])
+router = APIRouter(prefix="/api/v1/benchmark/evaluations", tags=["benchmark"])
 
 
 @router.get("/preflight")
@@ -41,51 +41,51 @@ async def preflight(
     session: SessionDep,
     merchant: OperatorDep,
     settings: SettingsDep,
-) -> ReevaluationPreflightView:
+) -> EvaluationPreflightView:
     """What a re-evaluation would evaluate now, and what stops it if anything does."""
-    plan = await MerchantReevaluationService(session, settings).plan(merchant.merchant_id)
-    return ReevaluationPreflightView.from_domain(plan)
+    plan = await MerchantEvaluationLaunchService(session, settings).plan(merchant.merchant_id)
+    return EvaluationPreflightView.from_domain(plan)
 
 
 @router.get("")
-async def list_reevaluations(
+async def list_launches(
     session: SessionDep,
     merchant: OperatorDep,
     settings: SettingsDep,
     limit: Annotated[int, Query(ge=1, le=50)] = 10,
-) -> list[ReevaluationView]:
+) -> list[EvaluationLaunchView]:
     """This merchant's launches, newest first."""
-    details = await MerchantReevaluationService(session, settings).details(
+    details = await MerchantEvaluationLaunchService(session, settings).details(
         merchant.merchant_id, limit=limit
     )
-    return [ReevaluationView.from_domain(detail) for detail in details]
+    return [EvaluationLaunchView.from_domain(detail) for detail in details]
 
 
-@router.get("/{reevaluation_id}")
-async def read_reevaluation(
-    reevaluation_id: uuid.UUID,
+@router.get("/{launch_id}")
+async def read_launch(
+    launch_id: uuid.UUID,
     session: SessionDep,
     merchant: OperatorDep,
     settings: SettingsDep,
-) -> ReevaluationDetailView:
+) -> EvaluationLaunchDetailView:
     """One launch and its comparison. A foreign identifier is indistinguishable from an unknown
     one, and the comparison is null rather than empty while there is not yet one to give."""
-    detail = await MerchantReevaluationService(session, settings).detail(
-        merchant.merchant_id, reevaluation_id
+    detail = await MerchantEvaluationLaunchService(session, settings).detail(
+        merchant.merchant_id, launch_id
     )
-    comparison = await DiagnosticsService(session).reevaluation_comparison(
-        reevaluation_id, merchant_id=merchant.merchant_id
+    comparison = await DiagnosticsService(session).launch_comparison(
+        launch_id, merchant_id=merchant.merchant_id
     )
-    return ReevaluationDetailView.with_comparison(detail, comparison)
+    return EvaluationLaunchDetailView.with_comparison(detail, comparison)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-async def request_reevaluation(
-    request: ReevaluationRequest,
+async def request_launch(
+    request: EvaluationLaunchRequest,
     session: SessionDep,
     merchant: OperatorDep,
     settings: SettingsDep,
-) -> ReevaluationView:
+) -> EvaluationLaunchView:
     """Admit one launch, or answer with the one this request key already produced.
 
     201 for both, and that is deliberate rather than sloppy: a retry after a lost response has
@@ -93,11 +93,11 @@ async def request_reevaluation(
     would tell it something went wrong when nothing did. A repeated key naming a different
     representation is a different command and is refused with a code.
     """
-    service = MerchantReevaluationService(session, settings)
+    service = MerchantEvaluationLaunchService(session, settings)
     launch = await service.request(
         merchant.merchant_id,
         representation_id=request.representation_id,
         request_key=request.request_key,
         plan_digest=request.plan_digest,
     )
-    return ReevaluationView.from_domain(await service.detail(merchant.merchant_id, launch.id))
+    return EvaluationLaunchView.from_domain(await service.detail(merchant.merchant_id, launch.id))
