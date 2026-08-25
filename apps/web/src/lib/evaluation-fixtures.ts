@@ -28,6 +28,9 @@ export const PREFLIGHT_FIXTURE = {
   max_model_turns: 12,
   max_tool_calls: 24,
   mission_deadline_seconds: 120.0,
+  max_provider_requests: 252,
+  max_requests_per_mission: 24,
+  execution_budget_version: 1,
   baseline_run_id: "01992222-2222-7222-8222-222222222222",
   baseline_run_completed_at: "2026-08-23T10:04:30Z",
   baseline_surface_matches: true,
@@ -44,6 +47,9 @@ export const REFERENCE_PREFLIGHT_FIXTURE = {
   max_model_turns: null,
   max_tool_calls: null,
   mission_deadline_seconds: null,
+  max_provider_requests: null,
+  max_requests_per_mission: null,
+  execution_budget_version: null,
   baseline_run_id: null,
   baseline_run_completed_at: null,
   baseline_surface_matches: null,
@@ -122,6 +128,12 @@ export const QUEUED_REEVALUATION_FIXTURE = {
   run_status: null,
   missions_completed: null,
   baseline_run_id: "01992222-2222-7222-8222-222222222222",
+  max_provider_requests: 252,
+  provider_requests_charged: 0,
+  provider_requests_remaining: 252,
+  provider_requests_assumed_spent: 0,
+  provider_responses: 0,
+  unknown_usage_invocations: 0,
   comparison: null,
 };
 
@@ -132,6 +144,41 @@ export const RUNNING_REEVALUATION_FIXTURE = {
   run_id: "01a0dddd-dddd-7ddd-8ddd-ddddddddddd1",
   run_status: "RUNNING",
   missions_completed: 7,
+  provider_requests_charged: 96,
+  provider_requests_remaining: 156,
+  provider_responses: 88,
+  unknown_usage_invocations: 88,
+  comparison: null,
+};
+
+/**
+ * An evaluation AgentRank stopped because it had spent the model request allowance it was
+ * launched with. Not a provider outage and not a catalog problem: the run is incomplete
+ * because this deployment declined to buy more requests.
+ */
+export const BUDGET_EXHAUSTED_FIXTURE = {
+  ...QUEUED_REEVALUATION_FIXTURE,
+  status: "FAILED",
+  failure_code: "provider_budget_exhausted",
+  started_at: "2026-08-25T09:00:20Z",
+  settled_at: "2026-08-25T09:12:40Z",
+  run_id: "01a0dddd-dddd-7ddd-8ddd-ddddddddddd3",
+  run_status: "ABORTED",
+  missions_completed: 5,
+  provider_requests_charged: 252,
+  provider_requests_remaining: 0,
+  provider_requests_assumed_spent: 24,
+  provider_responses: 201,
+  unknown_usage_invocations: 201,
+  comparison: null,
+};
+
+/** An evaluation waiting because an operator paused model execution for its provider. */
+export const PROVIDER_PAUSED_FIXTURE = {
+  ...QUEUED_REEVALUATION_FIXTURE,
+  status: "FAILED",
+  failure_code: "provider_execution_paused",
+  settled_at: "2026-08-25T09:01:00Z",
   comparison: null,
 };
 

@@ -17,6 +17,12 @@ import type { EvaluationLaunchDetail } from "@/lib/evaluation";
  * neither invents a percentage or a finish time. A launch that did not complete says why in
  * words rather than showing a code.
  *
+ * Model spending is shown the same way: requests AgentRank counted for itself, against the
+ * allowance this evaluation was launched with. Not a currency figure, because AgentRank holds no
+ * provider pricing and a number invented from none would be the most confident thing on the
+ * page. Not a token total either, unless the provider actually reported one: a missing count is
+ * shown as unknown rather than added in as zero.
+ *
  * A first evaluation renders the same page with the comparison section absent rather than
  * empty. There is no prior run and no field standing in for one, so nothing here has a zero to
  * put in its place.
@@ -35,6 +41,7 @@ export function EvaluationLaunchDetailContent({ launch }: { launch: EvaluationLa
       <Section title="Execution">
         <Panel>
           <ExecutionState launch={launch} />
+          <ModelSpending launch={launch} />
           {pending ? (
             <p className={styles.reviewMeta} role="status">
               This page re-reads the launch every {REFRESH_SECONDS} seconds until it finishes.
@@ -175,6 +182,51 @@ function ExecutionState({ launch }: { launch: EvaluationLaunchDetail }) {
       </p>
       <RunLink launch={launch} />
     </>
+  );
+}
+
+/**
+ * What this evaluation was allowed to spend at its model provider, and what it has spent.
+ *
+ * Absent entirely for the reference buyer, which calls no provider: a row of zeros beside it
+ * would read as a model buyer that happened to make no requests, and those are different
+ * statements about what was measured.
+ *
+ * Requests rather than tokens, because a request is the thing AgentRank observes for itself
+ * before making it and a token count is whatever the provider chose to report afterwards. The
+ * two are shown on separate lines and never added together, and a provider that reported no
+ * token usage leaves that said out loud.
+ */
+function ModelSpending({ launch }: { launch: EvaluationLaunchDetail }) {
+  if (launch.max_provider_requests === null || launch.provider_requests_charged === null) {
+    return null;
+  }
+  const charged = launch.provider_requests_charged;
+  const assumed = launch.provider_requests_assumed_spent ?? 0;
+  const unknownUsage = launch.unknown_usage_invocations ?? 0;
+  const responses = launch.provider_responses ?? 0;
+  return (
+    <div className={styles.reviewMeta}>
+      <p>
+        Model requests: {String(charged)} of {String(launch.max_provider_requests)} used. Retries
+        count against that allowance.
+      </p>
+      {assumed === 0 ? null : (
+        <p>
+          {String(assumed)} of those are counted as used because a worker&apos;s outcome was
+          unknown. AgentRank counts a request it cannot account for rather than assuming it was
+          free.
+        </p>
+      )}
+      {responses === 0 ? null : (
+        <p>
+          {String(responses)} model responses were received
+          {unknownUsage === 0
+            ? "."
+            : `, of which ${String(unknownUsage)} reported no token usage at all. AgentRank reports that as unknown rather than as zero.`}
+        </p>
+      )}
+    </div>
   );
 }
 

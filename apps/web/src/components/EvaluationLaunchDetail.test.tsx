@@ -6,6 +6,7 @@ import { EvaluationLaunchDetailContent } from "./EvaluationLaunchDetail";
 import { decodePreflight, decodeEvaluationLaunchDetail } from "@/lib/evaluation";
 import { IDLE_LAUNCH, type LaunchState } from "@/lib/evaluation-mutation";
 import {
+  BUDGET_EXHAUSTED_FIXTURE,
   COMPARISON_FIXTURE,
   COMPLETED_INITIAL_FIXTURE,
   COMPLETED_REEVALUATION_FIXTURE,
@@ -18,6 +19,7 @@ import {
   QUEUED_REEVALUATION_FIXTURE,
   REFERENCE_PREFLIGHT_FIXTURE,
   RUNNING_REEVALUATION_FIXTURE,
+  PROVIDER_PAUSED_FIXTURE,
   SURFACE_CHANGE_PREFLIGHT_FIXTURE,
 } from "@/lib/evaluation-fixtures";
 
@@ -51,6 +53,20 @@ describe("<LaunchConfirmation>", () => {
     expect(html).toContain("can consume quota or incur cost");
     expect(html).toContain("12 model turns per mission");
     expect(html).toContain("24 tool calls per mission");
+  });
+
+  it("states the model request ceiling and that retries count against it", () => {
+    const html = confirmation(PREFLIGHT_FIXTURE);
+    expect(html).toContain("at most 252 model requests");
+    expect(html).toMatch(/Retries count against that/);
+    expect(html).toMatch(/rate limited and is tried again is another request/);
+    expect(html).toMatch(/the evaluation stops rather than making more/);
+  });
+
+  it("publishes no request ceiling for a buyer that calls no provider", () => {
+    const html = confirmation(REFERENCE_PREFLIGHT_FIXTURE);
+    expect(html).not.toMatch(/model requests/);
+    expect(html).not.toMatch(/Retries count/);
   });
 
   it("never states a currency amount for the run itself", () => {
@@ -293,5 +309,61 @@ describe("a merchant's first evaluation", () => {
     const html = render(COMPLETED_INITIAL_FIXTURE);
     expect(html).toContain("Open the benchmark run and its findings");
     expect(html).toContain("/runs/01a0dddd-dddd-7ddd-8ddd-ddddddddddd2");
+  });
+
+  it("reports model requests used against the allowance while a run is executing", () => {
+    const html = render(RUNNING_REEVALUATION_FIXTURE);
+    expect(html).toContain("Model requests: 96 of 252 used");
+    expect(html).toContain("Retries count against that allowance");
+  });
+
+  it("says a provider reported no token usage rather than reporting zero tokens", () => {
+    const html = render(RUNNING_REEVALUATION_FIXTURE);
+    expect(html).toContain("88 reported no token usage at all");
+    expect(html).toContain("unknown rather than as zero");
+    expect(html).not.toMatch(/0 tokens/);
+  });
+
+  it("shows no model spending at all for a buyer that calls no provider", () => {
+    const html = render({
+      ...QUEUED_INITIAL_FIXTURE,
+      max_provider_requests: null,
+      provider_requests_charged: null,
+      provider_requests_remaining: null,
+      provider_requests_assumed_spent: null,
+      provider_responses: null,
+      unknown_usage_invocations: null,
+    });
+    expect(html).not.toMatch(/Model requests/);
+  });
+
+  it("blames an exhausted allowance on AgentRank and never on the merchant or the provider", () => {
+    const html = render(BUDGET_EXHAUSTED_FIXTURE);
+    expect(html).toContain("used the whole model request allowance");
+    expect(html).toContain("AgentRank stopped rather than making more");
+    expect(html).not.toMatch(/429/);
+    expect(html).not.toMatch(/provider (failed|outage|unavailable)/i);
+    expect(html).not.toMatch(/your catalog/i);
+  });
+
+  it("does not present a stopped evaluation's five missions as a finished evaluation", () => {
+    const html = render(BUDGET_EXHAUSTED_FIXTURE);
+    expect(html).not.toContain("5 of 14 missions finished");
+    expect(html).toContain("No comparison yet");
+    expect(html).toContain("a partial run&#x27;s counts describe part of a workload");
+  });
+
+  it("says an assumed charge is an assumption rather than a measurement", () => {
+    const html = render(BUDGET_EXHAUSTED_FIXTURE);
+    expect(html).toContain("24 of those are counted as used because");
+    expect(html).toContain("rather than assuming it was free");
+  });
+
+  it("does not call a paused provider a provider failure", () => {
+    const html = render(PROVIDER_PAUSED_FIXTURE);
+    expect(html).toContain("AgentRank paused model execution");
+    expect(html).toContain("no model request was made");
+    expect(html).toContain("nothing failed");
+    expect(html).not.toMatch(/provider (failed|outage)/i);
   });
 });

@@ -209,6 +209,21 @@ export function launchFailureLabel(code: string): string {
       return "The buyer configuration this launch froze is not one the current AgentRank build can reproduce exactly.";
     case "representation_unavailable":
       return "The representation this launch froze could not be read.";
+    case "merchant_source_unavailable":
+      return "The merchant information this launch froze could not be read.";
+    case "execution_budget_unavailable":
+      return "This launch was admitted before AgentRank bounded model spending, so there is no allowance to run it under.";
+    // The four below are AgentRank's own execution governance and never a provider fault or a
+    // catalog problem. Each says whose decision it was, because a merchant reading "the model
+    // provider failed" when nothing was even asked would be reading something untrue.
+    case "provider_budget_exhausted":
+      return "This evaluation used the whole model request allowance it was launched with, including the requests that were retried, so AgentRank stopped rather than making more. What ran is recorded; what did not run was not measured.";
+    case "provider_execution_paused":
+      return "AgentRank paused model execution for this provider, so no model request was made. Nothing about your catalog was measured and nothing failed.";
+    case "provider_capacity_unavailable":
+      return "AgentRank runs a limited number of evaluations against this model provider at once, and it could not start another.";
+    case "provider_window_cap_reached":
+      return "AgentRank reached its own deployment ceiling for model requests, so it stopped rather than making more.";
     case "run_aborted":
       return "The benchmark run this launch started was stopped and closed by an operator. Nothing was replayed.";
     default:

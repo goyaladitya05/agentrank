@@ -49,6 +49,16 @@ export interface EvaluationPreflight {
   readonly max_model_turns: number | null;
   readonly max_tool_calls: number | null;
   readonly mission_deadline_seconds: number | null;
+  /**
+   * The ceiling on model requests this whole evaluation may make, and the share of it one
+   * mission may take. A bound rather than a prediction: a request that is retried after a
+   * timeout or a rate limit counts against it exactly like a first attempt. Null for the
+   * reference buyer, which calls no model provider at all.
+   */
+  readonly max_provider_requests: number | null;
+  readonly max_requests_per_mission: number | null;
+  /** Which capacity policy the two numbers above were computed under, frozen on the launch. */
+  readonly execution_budget_version: number | null;
   readonly baseline_run_id: string | null;
   readonly baseline_run_completed_at: string | null;
   /**
@@ -87,6 +97,23 @@ export interface EvaluationLaunch {
   readonly run_status: string | null;
   readonly missions_completed: number | null;
   readonly baseline_run_id: string | null;
+  /**
+   * What this evaluation was allowed to spend at its model provider and what it has spent.
+   * All null for the reference buyer, which calls no provider: zeros there would read as a
+   * model buyer that happened to make no requests, which is a different statement.
+   */
+  readonly max_provider_requests: number | null;
+  readonly provider_requests_charged: number | null;
+  readonly provider_requests_remaining: number | null;
+  /**
+   * How much of the charge is an assumption rather than a measurement, because a worker's
+   * outcome was unknown and its whole reservation stayed charged. Said out loud rather than
+   * folded into the total, because overcounting silently is how a bound stops being trusted.
+   */
+  readonly provider_requests_assumed_spent: number | null;
+  readonly provider_responses: number | null;
+  /** Provider responses that carried no token counts at all. Unknown, never zero. */
+  readonly unknown_usage_invocations: number | null;
 }
 
 export interface CountChange {
@@ -254,6 +281,15 @@ export function decodePreflight(value: unknown): EvaluationPreflight {
       source.mission_deadline_seconds,
       "mission_deadline_seconds",
     ),
+    max_provider_requests: nullableInteger(source.max_provider_requests, "max_provider_requests"),
+    max_requests_per_mission: nullableInteger(
+      source.max_requests_per_mission,
+      "max_requests_per_mission",
+    ),
+    execution_budget_version: nullableInteger(
+      source.execution_budget_version,
+      "execution_budget_version",
+    ),
     baseline_run_id: nullableString(source.baseline_run_id, "baseline_run_id"),
     baseline_run_completed_at: nullableString(
       source.baseline_run_completed_at,
@@ -304,6 +340,24 @@ function launchFields(source: Record<string, unknown>): EvaluationLaunch {
     run_status: nullableString(source.run_status, "run_status"),
     missions_completed: nullableInteger(source.missions_completed, "missions_completed"),
     baseline_run_id: nullableString(source.baseline_run_id, "baseline_run_id"),
+    max_provider_requests: nullableInteger(source.max_provider_requests, "max_provider_requests"),
+    provider_requests_charged: nullableInteger(
+      source.provider_requests_charged,
+      "provider_requests_charged",
+    ),
+    provider_requests_remaining: nullableInteger(
+      source.provider_requests_remaining,
+      "provider_requests_remaining",
+    ),
+    provider_requests_assumed_spent: nullableInteger(
+      source.provider_requests_assumed_spent,
+      "provider_requests_assumed_spent",
+    ),
+    provider_responses: nullableInteger(source.provider_responses, "provider_responses"),
+    unknown_usage_invocations: nullableInteger(
+      source.unknown_usage_invocations,
+      "unknown_usage_invocations",
+    ),
   };
 }
 

@@ -25,6 +25,12 @@ import type { EvaluationPreflight } from "@/lib/evaluation";
  * because AgentRank has no pricing data and a figure invented from none would be the most
  * confident thing on the page. Execution bounds are published instead, and those are checkable.
  *
+ * The largest of those bounds is the number of model requests this evaluation may make, and it
+ * is stated with the thing that makes it easy to misread: a request that fails and is retried
+ * counts again. A merchant told "14 missions" and left to infer fourteen model requests would be
+ * wrong by whatever a rate limited provider costs, which on the one real pilot AgentRank has run
+ * was most of the traffic.
+ *
  * Split in two so that every state a merchant can land in, including a refusal and a lost
  * response, is renderable in a test without driving a browser.
  */
@@ -224,8 +230,32 @@ function ExecutionBounds({ preflight }: { preflight: EvaluationPreflight }) {
       ? null
       : `${String(preflight.mission_deadline_seconds)}s per mission`,
   ].filter((bound): bound is string => bound !== null);
-  if (bounds.length === 0) {
+  return (
+    <>
+      {bounds.length === 0 ? null : <li>Execution is bounded at {bounds.join(", ")}.</li>}
+      <RequestAllowance preflight={preflight} />
+    </>
+  );
+}
+
+/**
+ * The model request ceiling, and the sentence that keeps it from being misread.
+ *
+ * A request that times out or is rate limited and then retried is a second request, and it costs
+ * whatever the provider charges for it. AgentRank stops at this number rather than making
+ * another, which is why it is worth a merchant knowing before they commit rather than after an
+ * evaluation stops part way through.
+ */
+function RequestAllowance({ preflight }: { preflight: EvaluationPreflight }) {
+  if (preflight.max_provider_requests === null) {
     return null;
   }
-  return <li>Execution is bounded at {bounds.join(", ")}.</li>;
+  return (
+    <li>
+      AgentRank will make at most {String(preflight.max_provider_requests)} model requests for this
+      evaluation. Retries count against that: a request that times out or is rate limited and is
+      tried again is another request. If the allowance runs out, the evaluation stops rather than
+      making more, and the result says so.
+    </li>
+  );
 }
