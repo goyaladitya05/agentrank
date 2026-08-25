@@ -16,16 +16,27 @@ import uuid
 from dataclasses import replace
 
 import pytest
-from launch_support import build_launch_world, queue_launch, with_openai, without_providers
+from launch_support import (
+    build_initial_world,
+    build_launch_world,
+    queue_launch,
+    with_openai,
+    without_providers,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.benchmark.authored import AuthoredWorld
-from agentrank_api.benchmark.dispatch import FAILURE_NO_PROVIDER, execute_next_launch
+from agentrank_api.benchmark.dispatch import (
+    FAILURE_NO_PROVIDER,
+    buyer_surface,
+    execute_next_launch,
+)
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
 from agentrank_api.benchmark.evaluation_launch import (
     BenchmarkEvaluationLaunch,
     EvaluationLaunchStatus,
+    EvaluationPurpose,
 )
 from agentrank_api.benchmark.execution import REFERENCE_ISOLATED_KIND
 from agentrank_api.benchmark.launch import (
@@ -42,6 +53,8 @@ from agentrank_api.errors import ConflictError
 from agentrank_api.mandates.models import SpendingMandate
 from agentrank_api.payments.fake import FakePaymentProvider
 from agentrank_api.payments.models import PaymentAttempt
+from agentrank_api.representation.models import MerchantSourceSnapshot
+from agentrank_api.representation.projection import compiled_projection, raw_projection
 
 pytestmark = pytest.mark.anyio
 
@@ -228,6 +241,190 @@ class TestExecution:
 
         assert outcome is not None and outcome.status == "COMPLETED"
         assert await counts(bystander.merchant_id) == before
+
+
+class TestFirstEvaluation:
+    """A merchant's first measurement, executed by the same dispatcher and nothing else."""
+
+    async def test_a_queued_first_evaluation_becomes_one_completed_run(
+        self,
+        catalog_settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        settings = without_providers(catalog_settings)
+        world = await build_initial_world(session, "first-dispatch-shop")
+        launch_id = await queue_launch(session, settings, world, request_key="first-dispatch")
+
+        outcome = await execute_next_launch(
+            session,
+            factory,
+            world=world.authored,
+            provider=FakePaymentProvider(),
+            settings=settings,
+        )
+
+        assert outcome is not None
+        assert outcome.status == "COMPLETED"
+        assert outcome.failure_code is None
+        assert outcome.run_id is not None
+
+        settled = await reload(session, launch_id)
+        assert settled.status is EvaluationLaunchStatus.COMPLETED
+        assert settled.run_id == outcome.run_id
+        assert settled.purpose is EvaluationPurpose.INITIAL
+
+        run = await BenchmarkRunService(session).load(outcome.run_id, merchant_id=world.merchant_id)
+        assert run.status is BenchmarkRunStatus.COMPLETED
+        assert run.suite_id == world.suite_id
+        assert run.environment_id == world.environment_id
+        # Nothing was compiled, so the run pins nothing. A representation identifier here would
+        # be a claim that an agent-ready surface was measured when none existed.
+        assert run.representation_id is None
+
+    async def test_a_first_evaluation_leaves_exactly_one_run_and_no_prior_one(
+        self,
+        catalog_settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        """No synthetic before is written to give the first result something to sit beside."""
+        settings = without_providers(catalog_settings)
+        world = await build_initial_world(session, "first-only-run-shop")
+        launch_id = await queue_launch(session, settings, world, request_key="first-only-run")
+
+        await execute_next_launch(
+            session,
+            factory,
+            world=world.authored,
+            provider=FakePaymentProvider(),
+            settings=settings,
+        )
+
+        runs = list(
+            (
+                await session.execute(
+                    select(BenchmarkRun).where(BenchmarkRun.merchant_id == world.merchant_id)
+                )
+            ).scalars()
+        )
+        assert len(runs) == 1
+        settled = await reload(session, launch_id)
+        assert settled.baseline_run_id is None
+        launches = list(
+            (
+                await session.execute(
+                    select(BenchmarkEvaluationLaunch).where(
+                        BenchmarkEvaluationLaunch.merchant_id == world.merchant_id
+                    )
+                )
+            ).scalars()
+        )
+        assert len(launches) == 1
+
+    async def test_a_completed_first_evaluation_reaches_ordinary_diagnostics(
+        self,
+        catalog_settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        """The same trusted engine, with no special path for a merchant's first result."""
+        settings = without_providers(catalog_settings)
+        world = await build_initial_world(session, "first-diagnostics-shop")
+        await queue_launch(session, settings, world, request_key="first-diagnostics")
+
+        outcome = await execute_next_launch(
+            session,
+            factory,
+            world=world.authored,
+            provider=FakePaymentProvider(),
+            settings=settings,
+        )
+
+        assert outcome is not None and outcome.run_id is not None
+        diagnosis = await DiagnosticsService(session).run_diagnostics(
+            outcome.run_id, merchant_id=world.merchant_id
+        )
+        assert diagnosis.status == "COMPLETED"
+        assert diagnosis.metrics.missions_total == len(world.authored.suite.missions)
+
+    async def test_a_first_evaluation_does_not_move_unrelated_authoritative_state(
+        self,
+        catalog_settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        """The bootstrap path owns its own world and nothing else, like every other run."""
+        settings = without_providers(catalog_settings)
+        bystander = await build_launch_world(session, "first-bystander-shop")
+        world = await build_initial_world(session, "first-isolated-shop")
+        await queue_launch(session, settings, world, request_key="first-isolation")
+
+        async def counts(merchant_id: uuid.UUID) -> tuple[int, int]:
+            mandates = (
+                await session.execute(
+                    select(SpendingMandate).where(SpendingMandate.merchant_id == merchant_id)
+                )
+            ).scalars()
+            payments = (
+                await session.execute(
+                    select(PaymentAttempt).where(PaymentAttempt.merchant_id == merchant_id)
+                )
+            ).scalars()
+            return len(list(mandates)), len(list(payments))
+
+        before = await counts(bystander.merchant_id)
+        outcome = await execute_next_launch(
+            session,
+            factory,
+            world=world.authored,
+            provider=FakePaymentProvider(),
+            settings=settings,
+        )
+
+        assert outcome is not None and outcome.status == "COMPLETED"
+        assert await counts(bystander.merchant_id) == before
+
+
+class TestBuyerSurface:
+    """What the model buyer is shown, which is the whole methodology of the two commands."""
+
+    async def test_a_first_evaluation_shows_the_ordinary_storefront(
+        self, session: AsyncSession
+    ) -> None:
+        world = await build_initial_world(session, "surface-initial-shop")
+        snapshot = await session.get(MerchantSourceSnapshot, world.source_snapshot_id)
+        assert snapshot is not None
+
+        surface = buyer_surface(representation=None, source=snapshot)
+
+        # The storefront boundary publishes no typed attribute dictionary at all, and pins no
+        # representation, because there is none to pin.
+        assert surface.discovery == {"kind": "STOREFRONT"}
+        assert surface.merchant_information == raw_projection(snapshot)
+        assert "attributes" not in surface.discovery
+
+    async def test_a_reevaluation_shows_the_representation_it_froze(
+        self, session: AsyncSession
+    ) -> None:
+        world = await build_launch_world(session, "surface-compiled-shop")
+
+        surface = buyer_surface(representation=world.representation, source=None)
+
+        assert surface.discovery["kind"] == "AGENT_READY"
+        assert surface.discovery["representation_id"] == str(world.representation_id)
+        assert surface.merchant_information == compiled_projection(world.representation)
+
+    async def test_a_buyer_is_never_shown_both_or_neither(self, session: AsyncSession) -> None:
+        """Construction errors rather than a quietly weakened arm."""
+        world = await build_launch_world(session, "surface-invalid-shop")
+        snapshot = await session.get(MerchantSourceSnapshot, world.source_snapshot_id)
+        assert snapshot is not None
+
+        with pytest.raises(ValueError):
+            buyer_surface(representation=world.representation, source=snapshot)
+        with pytest.raises(ValueError):
+            buyer_surface(representation=None, source=None)
 
 
 class TestRefusals:

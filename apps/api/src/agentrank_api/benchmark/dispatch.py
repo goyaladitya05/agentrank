@@ -6,9 +6,20 @@ measurement survives, so admission and execution are separate: the API writes a 
 launch and answers, and this claims one and runs it.
 
 What this trusts is the row. By the time it runs there is no request, no session and no
-credential from the merchant's browser left to consult, so the merchant, the representation, the
-suite, the world and the buyer configuration all come from what admission froze. Nothing here
-takes an identity from a caller.
+credential from the merchant's browser left to consult, so the merchant, the purpose, whatever
+that purpose measures, the suite, the world and the buyer configuration all come from what
+admission froze. Nothing here takes an identity from a caller.
+
+The purpose decides what the model buyer is given and nothing else about how the run is carried
+out:
+
+```text
+INITIAL        the ordinary storefront discovery boundary, and the merchant's own information
+               as recorded in the frozen source snapshot. No Commerce IR is constructed, and
+               the run it produces pins no representation, because none was read
+REEVALUATION   the frozen representation as an agent-ready discovery surface, and that
+               representation's buyer projection as its merchant information
+```
 
 Every frozen value is verified rather than adapted. `AgentConfiguration.from_payload` refuses a
 configuration this build cannot reproduce exactly, its digest is checked against the frozen one,
@@ -23,12 +34,14 @@ request that a differently configured worker could have served.
 
 Execution reuses the same isolated boundary the operator command line uses: a loopback commerce
 endpoint, a short lived merchant credential bound to this run, and one worker process per
-mission with no database. Nothing about that changes because the launch came from a console.
+mission with no database. Nothing about that changes because the launch came from a console, and
+nothing about it changes because the launch was a merchant's first.
 """
 
 import logging
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -44,7 +57,11 @@ from agentrank_api.benchmark.endpoint import (
     issued_benchmark_credential,
 )
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
-from agentrank_api.benchmark.evaluation_launch import BenchmarkEvaluationLaunch, BuyerProfile
+from agentrank_api.benchmark.evaluation_launch import (
+    BenchmarkEvaluationLaunch,
+    BuyerProfile,
+    EvaluationPurpose,
+)
 from agentrank_api.benchmark.execution import BenchmarkRunCapability, ExecutorIdentity
 from agentrank_api.benchmark.isolation import (
     IsolatedMissionExecutor,
@@ -65,8 +82,8 @@ from agentrank_api.commerce.repository import MerchantRepository
 from agentrank_api.config import Settings
 from agentrank_api.errors import ConflictError, NotFoundError
 from agentrank_api.payments.provider import PaymentProvider
-from agentrank_api.representation.models import CommerceRepresentation
-from agentrank_api.representation.projection import compiled_projection
+from agentrank_api.representation.models import CommerceRepresentation, MerchantSourceSnapshot
+from agentrank_api.representation.projection import compiled_projection, raw_projection
 
 log = logging.getLogger(__name__)
 
@@ -77,6 +94,7 @@ FAILURE_WORLD_MISMATCH = "benchmark_world_mismatch"
 FAILURE_SUITE_UNAVAILABLE = "benchmark_suite_unavailable"
 FAILURE_BUYER_CONFIGURATION = "buyer_configuration_invalid"
 FAILURE_REPRESENTATION_MISSING = "representation_unavailable"
+FAILURE_SOURCE_MISSING = "merchant_source_unavailable"
 
 # The one refusal that means this launch has executed nothing and may still execute later. The
 # run service raises it when another run owns this merchant's world.
@@ -211,13 +229,18 @@ async def execute_next_launch(
 
 @dataclass(frozen=True, slots=True)
 class _Plan:
-    """The verified execution identity of one claimed launch."""
+    """The verified execution identity of one claimed launch.
+
+    At most one of `representation` and `source` is ever present, and which one follows from the
+    launch's purpose. Both are None for the reference buyer, which reads neither.
+    """
 
     suite_key: str
     suite_version: int
     identity: ExecutorIdentity
     configuration: AgentConfiguration | None
     representation: CommerceRepresentation | None
+    source: MerchantSourceSnapshot | None = None
 
 
 async def _dispatch_plan(
@@ -270,11 +293,7 @@ async def _dispatch_plan(
             FAILURE_NO_PROVIDER,
             f"this worker has no {configuration.provider} credential to run the frozen buyer",
         )
-    representation = await session.get(CommerceRepresentation, launch.representation_id)
-    if representation is None or representation.merchant_id != launch.merchant_id:
-        raise LaunchDispatchError(
-            FAILURE_REPRESENTATION_MISSING, "the representation this launch froze is unreadable"
-        )
+    representation, source = await _measured(session, launch)
     kind = executor_kind(configuration)
     _require_frozen_kind(launch, kind)
     return _Plan(
@@ -285,7 +304,34 @@ async def _dispatch_plan(
         ),
         configuration=configuration,
         representation=representation,
+        source=source,
     )
+
+
+async def _measured(
+    session: AsyncSession, launch: BenchmarkEvaluationLaunch
+) -> tuple[CommerceRepresentation | None, MerchantSourceSnapshot | None]:
+    """The artifact this launch froze, read back and proved to belong to its merchant.
+
+    Which one it is follows from the purpose and never from which column happens to be filled.
+    A document that cannot be read fails the launch by name: the alternative would be running
+    the buyer against whatever else is around, which is a measurement of something the merchant
+    was not shown.
+    """
+    if launch.purpose is EvaluationPurpose.INITIAL:
+        source = await session.get(MerchantSourceSnapshot, launch.source_snapshot_id)
+        if source is None or source.merchant_id != launch.merchant_id:
+            raise LaunchDispatchError(
+                FAILURE_SOURCE_MISSING,
+                "the merchant information this launch froze is unreadable",
+            )
+        return None, source
+    representation = await session.get(CommerceRepresentation, launch.representation_id)
+    if representation is None or representation.merchant_id != launch.merchant_id:
+        raise LaunchDispatchError(
+            FAILURE_REPRESENTATION_MISSING, "the representation this launch froze is unreadable"
+        )
+    return representation, None
 
 
 def _require_frozen_kind(launch: BenchmarkEvaluationLaunch, kind: str) -> None:
@@ -346,6 +392,7 @@ async def _execute(
                 None if plan.configuration is None else plan.configuration.payload()
             ),
             representation=plan.representation,
+            representation_label=_run_label(plan),
         )
         try:
             await worker.bind_run(launch_id, started.id)
@@ -382,6 +429,76 @@ async def _execute(
             )
 
 
+@dataclass(frozen=True, slots=True)
+class BuyerSurface:
+    """Everything the model buyer is shown about this merchant, as protocol JSON.
+
+    Two documents, and neither is the authoritative catalog. `merchant_information` is what the
+    merchant says about themselves, projected neutrally; `discovery` is which discovery boundary
+    the buyer's search and read answers come back through. Both are derived from the one frozen
+    artifact this launch measures, so an arm cannot be enriched from the ground truth it is
+    marked against.
+    """
+
+    merchant_information: dict[str, Any]
+    discovery: dict[str, Any]
+
+
+def buyer_surface(
+    *,
+    representation: CommerceRepresentation | None,
+    source: MerchantSourceSnapshot | None,
+) -> BuyerSurface:
+    """What the model buyer reads, decided by which artifact the launch froze.
+
+    A representation is the compiled surface: the storefront plus that document's typed,
+    unit-bearing facts, which is exactly what a re-evaluation is asking about. A source snapshot
+    is the merchant as they are: the ordinary storefront, which publishes no typed attribute
+    dictionary at all, plus the merchant's own prose and labels.
+
+    Exactly one of the two, and both being absent is a construction error rather than an empty
+    surface. A buyer shown nothing would produce a run that measured nothing while looking like
+    a measurement of this merchant.
+    """
+    if representation is not None:
+        if source is not None:
+            raise ValueError("a launch measures one artifact, not both")
+        return BuyerSurface(
+            merchant_information=compiled_projection(representation),
+            discovery=to_payload(
+                buyer_discovery_view(
+                    representation_kind="COMPILED",
+                    representation_id=representation.id,
+                    representation_payload=representation.payload,
+                )
+            ),
+        )
+    if source is None:
+        raise ValueError("a launch measures one artifact, not none")
+    return BuyerSurface(
+        merchant_information=raw_projection(source),
+        discovery=to_payload(
+            buyer_discovery_view(
+                representation_kind="RAW", representation_id=None, representation_payload=None
+            )
+        ),
+    )
+
+
+def _run_label(plan: _Plan) -> str | None:
+    """What the run records about what its buyer was shown.
+
+    `merchant-information` is the same token the controlled raw arm records, so a run produced
+    by a first evaluation and a raw sample are recognisably the same kind of measurement rather
+    than two labels for one thing. Null for a re-evaluation, whose run pins the representation
+    itself and needs no label to say so, and for the reference buyer, which read nothing.
+
+    A label and never an identity. The run's own `representation_id` is the identity, and it is
+    null on an initial run because none was read.
+    """
+    return "merchant-information" if plan.source is not None else None
+
+
 def _executor(
     plan: _Plan,
     *,
@@ -395,15 +512,19 @@ def _executor(
 
     The reference buyer receives no discovery view, which is the discovery boundary's own rule
     rather than an omission here: it reads structured commerce fields by design, so there is no
-    surface for a representation to change and the run it produces pins none.
+    surface for either artifact to change and the run it produces pins none.
 
-    The model buyer receives exactly the pinned representation, flattened into the agent-ready
-    facts the discovery boundary publishes, plus that representation's buyer projection as its
-    merchant information. Both come from the frozen artifact and never from the catalog the
-    evaluator marks against.
+    The model buyer receives what the purpose says. A re-evaluation gives it exactly the pinned
+    representation, flattened into the agent-ready facts the discovery boundary publishes, plus
+    that representation's buyer projection as its merchant information. A first evaluation gives
+    it the ordinary storefront, which carries no typed attribute dictionaries at all, plus the
+    frozen source snapshot's neutral projection. Both come from the frozen artifact and never
+    from the catalog the evaluator marks against, so an arm's own information cannot be the
+    ground truth it is marked against.
     """
-    if plan.configuration is None or plan.representation is None:
+    if plan.configuration is None:
         return IsolatedMissionExecutor(base_url=base_url, token=token, served=served)
+    surface = buyer_surface(representation=plan.representation, source=plan.source)
     executor = IsolatedMissionExecutor(
         base_url=base_url,
         token=token,
@@ -411,14 +532,8 @@ def _executor(
         strategy=LLM_STRATEGY,
         provision_mandate=lambda brief: provision(trusted, brief),
         agent_configuration=plan.configuration.payload(),
-        merchant_information=compiled_projection(plan.representation),
-        discovery=to_payload(
-            buyer_discovery_view(
-                representation_kind="COMPILED",
-                representation_id=plan.representation.id,
-                representation_payload=plan.representation.payload,
-            )
-        ),
+        merchant_information=surface.merchant_information,
+        discovery=surface.discovery,
         environment=provider_worker_environment(settings, plan.configuration.provider),
     )
     executor.identity = plan.identity
