@@ -17,8 +17,10 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 
 import {
-  SESSION_COOKIE,
+  SESSION_COOKIE_NAMES,
   newCookieValue,
+  presentedCookie,
+  sessionCookieName,
   sessionCookieOptions,
   sessionVerifier,
 } from "@/lib/auth/session";
@@ -27,15 +29,6 @@ import { apiBaseUrl } from "@/lib/config";
 export type SignInError = "empty" | "rejected" | "unreachable" | "unusable";
 
 const SESSIONS = "/api/v1/console/sessions";
-
-/** Seconds from now until the API says this session stops working, floored at zero. */
-function secondsUntil(expiresAt: string): number | null {
-  const expiry = Date.parse(expiresAt);
-  if (Number.isNaN(expiry)) {
-    return null;
-  }
-  return Math.max(0, Math.floor((expiry - Date.now()) / 1000));
-}
 
 export async function signIn(formData: FormData): Promise<void> {
   const apiKey = String(formData.get("apiKey") ?? "").trim();
@@ -73,29 +66,37 @@ export async function signIn(formData: FormData): Promise<void> {
     redirect("/login?error=unreachable");
   }
 
-  let expiresAt: unknown = null;
+  // The lifetime the API measured, not one this process computes. Both halves of that
+  // subtraction are the database's clock, so a console running fast cannot hand a merchant a
+  // cookie that expires before their session does, or compute zero and make signing in
+  // impossible while telling them to check the API they are pointing at.
+  let lifetime: unknown = null;
   try {
-    expiresAt = ((await response.json()) as { expires_at?: unknown }).expires_at;
+    lifetime = ((await response.json()) as { expires_in_seconds?: unknown }).expires_in_seconds;
   } catch {
     redirect("/login?error=unusable");
   }
-  const lifetime = typeof expiresAt === "string" ? secondsUntil(expiresAt) : null;
-  if (lifetime === null || lifetime === 0) {
+  if (typeof lifetime !== "number" || !Number.isFinite(lifetime) || lifetime <= 0) {
     redirect("/login?error=unusable");
   }
 
   const jar = await cookies();
-  jar.set(SESSION_COOKIE, cookieValue, sessionCookieOptions(lifetime));
+  jar.set(sessionCookieName(), cookieValue, sessionCookieOptions(lifetime));
   redirect("/overview");
 }
 
 export async function signOut(): Promise<void> {
   const jar = await cookies();
-  const verifier = sessionVerifier(jar.get(SESSION_COOKIE)?.value);
+  const verifier = sessionVerifier(presentedCookie(jar));
+  // Both names, because a deployment that gained or lost HTTPS since this browser signed in may
+  // hold the other one, and a sign out that left it behind would be a sign out that did not.
+  //
   // The cookie goes whatever the API says. A browser that keeps presenting a session the server
   // has closed learns nothing useful, and a network failure here must not leave somebody looking
   // at a console they asked to leave.
-  jar.delete(SESSION_COOKIE);
+  for (const name of SESSION_COOKIE_NAMES) {
+    jar.delete(name);
+  }
   if (verifier !== null) {
     try {
       await fetch(`${apiBaseUrl().replace(/\/+$/, "")}${SESSIONS}/current`, {

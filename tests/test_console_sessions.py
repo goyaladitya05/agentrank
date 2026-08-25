@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.auth.console import (
     CONSOLE_SESSION_SCHEME,
+    SESSION_LIFETIME,
     ConsoleSessionService,
     is_console_session_verifier,
 )
@@ -83,7 +84,10 @@ class TestOpening:
         response = client.post(SESSIONS, json={"verifier": FIRST}, headers=bearer(token))
 
         assert response.status_code == 201
-        assert response.json()["merchant_id"] == str(merchant.id)
+        body = response.json()
+        assert body["merchant_id"] == str(merchant.id)
+        # The lifetime the database measured, so the console never subtracts with its own clock.
+        assert 0 < body["expires_in_seconds"] <= int(SESSION_LIFETIME.total_seconds())
 
         record = (await session.execute(select(MerchantConsoleSession))).scalars().one()
         assert record.merchant_id == merchant.id
@@ -124,6 +128,30 @@ class TestOpening:
         chained = client.post(SESSIONS, json={"verifier": SECOND}, headers=session_bearer(FIRST))
 
         assert chained.status_code == 401
+        records = (await session.execute(select(MerchantConsoleSession))).scalars().all()
+        assert len(list(records)) == 1
+
+    async def test_a_verifier_already_registered_is_refused_by_name(
+        self, client: TestClient, session: AsyncSession
+    ) -> None:
+        """Not a database failure, and not a place to write the digest into a log.
+
+        The unique index refusing a duplicate used to surface as the application's generic
+        database handler: a 503 saying the database was unavailable when it had worked exactly as
+        designed, and a driver exception carrying the INSERT and its parameters into the log,
+        which is where this table's one secret-adjacent value would have landed.
+        """
+        _, first_token, _ = await merchant_with_key(session, "console-duplicate-one")
+        _, second_token, _ = await merchant_with_key(session, "console-duplicate-two")
+        assert (
+            client.post(SESSIONS, json={"verifier": FIRST}, headers=bearer(first_token))
+        ).status_code == 201
+
+        again = client.post(SESSIONS, json={"verifier": FIRST}, headers=bearer(second_token))
+
+        assert again.status_code == 409
+        assert again.json()["error"] == "console_session_exists"
+        assert FIRST not in again.text
         records = (await session.execute(select(MerchantConsoleSession))).scalars().all()
         assert len(list(records)) == 1
 
@@ -348,6 +376,26 @@ class TestCleanup:
         ]
         assert remaining == [open_id]
         assert long_expired_id not in remaining
+
+    async def test_bounds_that_would_delete_an_open_session_are_refused_by_the_method(
+        self, session: AsyncSession
+    ) -> None:
+        """The invariant belongs to the method, not to the one command line above it.
+
+        A negative cutoff puts the cutoff in the future, and `expires_at < cutoff` then matches
+        every session opened in the last twelve hours, which is every open one. The promise would
+        be broken by arithmetic rather than by intent.
+        """
+        merchant, _, credential = await merchant_with_key(session, "console-cleanup-bounds")
+        service = ConsoleSessionService(session)
+        await service.open(merchant_id=merchant.id, credential_id=credential.id, verifier=FIRST)
+
+        with pytest.raises(ValueError):
+            await service.purge_settled(older_than=timedelta(days=-1), limit=10)
+        with pytest.raises(ValueError):
+            await service.purge_settled(older_than=timedelta(days=7), limit=0)
+
+        assert await service.current(FIRST) is not None
 
     async def test_cleanup_is_bounded_by_its_limit(self, session: AsyncSession) -> None:
         merchant, _, credential = await merchant_with_key(session, "console-cleanup-bound")

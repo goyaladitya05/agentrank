@@ -16,13 +16,27 @@
  *
  * Nothing here reads a value into a message. What a failure names is the variable, which is not
  * a secret, and nothing logs, echoes or returns what was configured.
+ *
+ * The `.env` rule mirrors the backend's and exists for the same reason, with one difference that
+ * changes what can be done about it. `agentrank_api.config` chooses whether to read the file, so
+ * a deployment simply does not. Next.js reads `.env` itself, before any code here runs, so by the
+ * time this is asked the file has already contributed. The only honest protection left is to
+ * refuse to serve at all when a deployment has one, which is what happens: a `.env` shipped into
+ * a deployment is a file that may already have decided something, and a console that started
+ * anyway would be a console nobody could reason about.
  */
 
+import { existsSync } from "node:fs";
+
 import {
+  COOKIE_SECURE_VARIABLE,
   MIN_SESSION_SECRET_LENGTH,
   SESSION_SECRET_VARIABLE,
+  cookiesAreSecure,
   sessionSecret,
 } from "@/lib/auth/session";
+
+export { COOKIE_SECURE_VARIABLE };
 import { API_BASE_URL_VARIABLE, DEFAULT_API_BASE_URL, apiBaseUrl } from "@/lib/config";
 
 export interface ConfigurationReport {
@@ -34,7 +48,25 @@ export interface ConfigurationReport {
   readonly usingDefaultApiBaseUrl: boolean;
 }
 
-export const COOKIE_SECURE_VARIABLE = "AGENTRANK_COOKIE_SECURE";
+export const ENVIRONMENT_VARIABLE = "AGENTRANK_ENV";
+
+export const ENV_FILE = ".env";
+
+/**
+ * The environments that may be configured from a file on disk.
+ *
+ * The same three `agentrank_api.config.FILE_CONFIGURED_ENVIRONMENTS` names. Two copies of a set
+ * of three strings, because the alternative is the console importing from the backend package,
+ * and a console that could not start without the Python distribution installed beside it would be
+ * a worse coupling than this one.
+ */
+export const FILE_CONFIGURED_ENVIRONMENTS = new Set(["development", "ci", "test"]);
+
+/** Whether this process is one that may be configured from a file. */
+export function fileConfigured(): boolean {
+  const environment = (process.env[ENVIRONMENT_VARIABLE] ?? "development").trim();
+  return FILE_CONFIGURED_ENVIRONMENTS.has(environment === "" ? "development" : environment);
+}
 
 /**
  * Everything wrong with this process' configuration, gathered rather than thrown one at a time.
@@ -68,9 +100,19 @@ export function inspectConfiguration(): ConfigurationReport {
     }
   }
 
-  if (process.env[COOKIE_SECURE_VARIABLE] === "false") {
+  if (!fileConfigured() && existsSync(ENV_FILE)) {
+    problems.push(
+      `${ENV_FILE} is present and ${ENVIRONMENT_VARIABLE} names a deployment. Next.js reads that file before this console runs, so a deployment must not ship one: configure this process through its environment and remove the file.`,
+    );
+  }
+
+  // Asked of the function that decides it rather than of the variable, because there are two
+  // ways to turn it off: the documented variable, and `NODE_ENV=development`. Reporting only the
+  // first meant a console started with the second issued cookies without `Secure` while its boot
+  // log and its readiness both said nothing was relaxed.
+  if (!cookiesAreSecure()) {
     relaxed.push(
-      `${COOKIE_SECURE_VARIABLE}=false: session cookies are sent over plain HTTP. Local development only.`,
+      `session cookies are not marked Secure and are sent over plain HTTP, and the __Host- cookie prefix is unavailable. Set ${COOKIE_SECURE_VARIABLE} unset and NODE_ENV to something other than development outside local development.`,
     );
   }
 

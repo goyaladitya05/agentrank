@@ -45,12 +45,14 @@ import re
 import uuid
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentrank_api.auth.models import MerchantApiCredential, MerchantConsoleSession
 from agentrank_api.auth.principal import AuthenticatedMerchant
-from agentrank_api.auth.tokens import hash_secret, verify_secret
+from agentrank_api.auth.tokens import hash_secret
+from agentrank_api.errors import ConflictError
 
 # The scheme marker, and the reason a scanner can act on one of these without decoding anything.
 # Distinct from the merchant key scheme so that neither value can be mistaken for the other, by a
@@ -113,7 +115,22 @@ class ConsoleSessionService:
             expires_at=func.now() + lifetime,
         )
         self._session.add(record)
-        await self._session.commit()
+        try:
+            await self._session.commit()
+        except IntegrityError:
+            # The unique index refusing a verifier that is already registered. Answered by name
+            # rather than left to surface as a database error, for two reasons. It is not a
+            # database failure and reporting one would send an operator to look at PostgreSQL.
+            # And the driver's exception carries the INSERT and its parameters, so letting it
+            # reach the application's generic handler writes this session's digest into the log,
+            # which is the one value this table exists to keep in one place.
+            await self._session.rollback()
+            raise ConflictError(
+                "console_session_exists",
+                "that session credential is already registered",
+                resource=CONSOLE_SESSION_RESOURCE,
+                identifier=str(merchant_id),
+            ) from None
         await self._session.refresh(record)
         return record
 
@@ -129,8 +146,10 @@ class ConsoleSessionService:
         console process at once. A console with a skewed clock cannot extend a session and cannot
         end one early.
 
-        The digest lookup is by unique index and the verifier is then compared in constant time,
-        which is the same two-step shape a merchant key uses and for the same reason.
+        The credential row is joined and not selected. `credential_id` is already on the session
+        row and the foreign key makes them the same value, so loading the credential would pull
+        that merchant's `secret_hash` into this process on every authenticated page render for a
+        value it already has.
 
         No benchmark capability is ever attached. A console session is opened from an ordinary
         merchant credential, and a benchmark-bound credential is refused a session at the route
@@ -139,44 +158,44 @@ class ConsoleSessionService:
         """
         if not is_console_session_verifier(presented):
             return None
-        found = (
-            await self._session.execute(
-                select(MerchantConsoleSession, MerchantApiCredential)
-                .join(
-                    MerchantApiCredential,
-                    MerchantConsoleSession.credential_id == MerchantApiCredential.id,
-                )
-                .where(
-                    MerchantConsoleSession.verifier_hash == hash_secret(presented),
-                    MerchantConsoleSession.revoked_at.is_(None),
-                    MerchantConsoleSession.expires_at > func.now(),
-                    MerchantApiCredential.revoked_at.is_(None),
-                )
-            )
-        ).first()
-        if found is None:
-            return None
-        record, credential = found
-        if not verify_secret(presented, record.verifier_hash):
+        record = await self._open(presented)
+        if record is None:
             return None
         return AuthenticatedMerchant(
             merchant_id=record.merchant_id,
-            credential_id=credential.id,
+            credential_id=record.credential_id,
             benchmark_capability=None,
         )
 
     async def current(self, presented: str) -> MerchantConsoleSession | None:
         """The open session this verifier names, for a console asking how long it has.
 
-        The same conditions the authentication read applies, so a session this answers about is
-        one that would authenticate a request made in the same instant. Two reads rather than one
-        shared helper returning both, because the principal a route needs and the row a console
-        needs are different answers and collapsing them would tempt a caller into passing the row
-        around.
+        The same read `authenticate` makes, stated once so the two cannot answer differently
+        about the same verifier in the same instant.
+        """
+        return await self._open(presented)
+
+    async def _open(self, presented: str) -> MerchantConsoleSession | None:
+        """The one statement that decides whether a presented verifier names an open session.
+
+        Every condition that could refuse is in it: unknown, revoked, expired, and a merchant
+        credential that has since been revoked, all decided by PostgreSQL rather than by a loaded
+        row this code then inspects.
+
+        The lookup is by the unique index on the digest of the presented value, which is what
+        makes this one indexed read rather than a scan. There is deliberately no comparison after
+        it. An earlier version called `verify_secret` here and described it as the constant time
+        half of a two-step check, which read well and was not true: the row had been selected by
+        exact equality against that same digest, so the comparison could not fail and was doing
+        nothing. A merchant key's two steps are different, and genuinely two: it looks up by a
+        credential identifier that travels in the token and is not secret, and the constant time
+        comparison of the secret is the whole of the authentication. Here the lookup is the
+        authentication, and what protects it is that 256 bits of HMAC output has no useful
+        prefix to walk towards.
         """
         if not is_console_session_verifier(presented):
             return None
-        record = (
+        return (
             await self._session.execute(
                 select(MerchantConsoleSession)
                 .join(
@@ -191,9 +210,6 @@ class ConsoleSessionService:
                 )
             )
         ).scalar_one_or_none()
-        if record is None or not verify_secret(presented, record.verifier_hash):
-            return None
-        return record
 
     async def revoke(self, presented: str) -> bool:
         """Close the session this verifier names, and say whether this call is what closed it.
@@ -259,7 +275,21 @@ class ConsoleSessionService:
         this signs a working merchant out, and nothing outside this table is deleted: a session
         is not evidence about a benchmark, a source snapshot or a compiler run and holds no
         reference any of them depend on.
+
+        Both bounds are checked here rather than only at the caller, because that sentence is an
+        invariant of this method and not of the command line above it. A negative `older_than`
+        moves the cutoff into the future and `expires_at < cutoff` then matches every session
+        opened in the last twelve hours, which is every open session: the promise would be
+        broken by arithmetic rather than by intent, which is exactly the kind of promise worth
+        enforcing where it is made.
         """
+        if older_than < timedelta(0):
+            raise ValueError(
+                "older_than must not be negative: a cutoff in the future would "
+                "select sessions that are still open"
+            )
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
         cutoff = func.now() - older_than
         settled = (
             select(MerchantConsoleSession.id)
@@ -271,10 +301,21 @@ class ConsoleSessionService:
             .limit(limit)
         )
         doomed = list((await self._session.execute(settled)).scalars().all())
-        for record in doomed:
-            await self._session.delete(await self._session.get_one(MerchantConsoleSession, record))
+        if not doomed:
+            await self._session.rollback()
+            return 0
+        # One statement rather than a load and a delete per row. Two operators running this at
+        # once is an ordinary thing to happen and a per-row `get_one` would raise on the rows the
+        # other one already removed, turning routine cleanup into an exception. `rowcount` is what
+        # this deployment actually deleted, which is the honest number to report.
+        removed = await self._session.execute(
+            delete(MerchantConsoleSession)
+            .where(MerchantConsoleSession.id.in_(doomed))
+            .returning(MerchantConsoleSession.id)
+        )
+        deleted = len(list(removed.scalars().all()))
         await self._session.commit()
-        return len(doomed)
+        return deleted
 
     async def clock(self) -> datetime:
         """The database's own clock, for a caller that has to report an expiry beside a row."""

@@ -27,6 +27,7 @@ from agentrank_api.auth.console import (
     VERIFIER_HEX_LENGTH,
     ConsoleSessionService,
 )
+from agentrank_api.auth.models import MerchantConsoleSession
 from agentrank_api.dependencies import OperatorKeyDep, PresentedCredentialDep, SessionDep
 from agentrank_api.errors import AuthenticationError, ErrorResponse
 
@@ -65,13 +66,18 @@ class OpenSessionRequest(BaseModel):
 class SessionView(BaseModel):
     """What the console learns about the session it just opened, or the one it holds.
 
-    No secret and no identifier that would be useful to anybody else. The expiry is here because
-    the console sets a cookie lifetime from it, and a console guessing at that would either drop
-    a session that is still good or keep one the API has already stopped honouring.
+    No secret and no identifier that would be useful to anybody else.
+
+    Both a timestamp and a duration, and the duration is the one the console uses. A console that
+    subtracted the timestamp from its own clock would be putting its clock back into an answer
+    the database clock had already decided: one running fast hands every merchant a cookie that
+    expires before their session does, and one running far enough fast computes a lifetime of
+    zero and makes signing in impossible. `expires_at` stays because it is what a human reads.
     """
 
     merchant_id: str
     expires_at: datetime
+    expires_in_seconds: int
 
 
 class SignOutView(BaseModel):
@@ -95,12 +101,13 @@ async def open_session(
     merchant field at all. A caller holding a key for one merchant cannot open a session for
     another whatever they send.
     """
-    record = await ConsoleSessionService(session).open(
+    service = ConsoleSessionService(session)
+    record = await service.open(
         merchant_id=merchant.merchant_id,
         credential_id=merchant.credential_id,
         verifier=body.verifier,
     )
-    return SessionView(merchant_id=str(record.merchant_id), expires_at=record.expires_at)
+    return await _view(service, record)
 
 
 @router.get("/sessions/current", response_model=SessionView, responses=UNAUTHENTICATED)
@@ -111,10 +118,25 @@ async def current_session(session: SessionDep, presented: PresentedCredentialDep
     and has no session lifetime, and answering with a plausible date would be this endpoint
     making one up. The console only ever calls it holding a session.
     """
-    record = await ConsoleSessionService(session).current(presented)
+    service = ConsoleSessionService(session)
+    record = await service.current(presented)
     if record is None:
         raise AuthenticationError()
-    return SessionView(merchant_id=str(record.merchant_id), expires_at=record.expires_at)
+    return await _view(service, record)
+
+
+async def _view(service: ConsoleSessionService, record: MerchantConsoleSession) -> SessionView:
+    """One session as the console reads it, with the remaining lifetime measured by PostgreSQL.
+
+    The clock is read here rather than taken from the process, so both halves of the subtraction
+    come from the database and no console's idea of now enters the answer.
+    """
+    remaining = record.expires_at - await service.clock()
+    return SessionView(
+        merchant_id=str(record.merchant_id),
+        expires_at=record.expires_at,
+        expires_in_seconds=max(0, int(remaining.total_seconds())),
+    )
 
 
 @router.delete("/sessions/current", response_model=SignOutView, responses=UNAUTHENTICATED)

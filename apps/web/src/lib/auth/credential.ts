@@ -14,11 +14,11 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 
-import { SESSION_COOKIE, sessionVerifier } from "@/lib/auth/session";
+import { presentedCookie, sessionVerifier } from "@/lib/auth/session";
 
 export async function consoleCredential(): Promise<string | null> {
   const jar = await cookies();
-  return sessionVerifier(jar.get(SESSION_COOKIE)?.value);
+  return sessionVerifier(presentedCookie(jar));
 }
 
 /**

@@ -2,10 +2,16 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   COOKIE_SCHEME,
+  COOKIE_SECURE_VARIABLE,
   MIN_SESSION_SECRET_LENGTH,
+  SECURE_SESSION_COOKIE,
+  SESSION_COOKIE,
   SESSION_SECRET_VARIABLE,
   VERIFIER_SCHEME,
+  cookiesAreSecure,
   newCookieValue,
+  presentedCookie,
+  sessionCookieName,
   sessionCookieOptions,
   sessionSecret,
   sessionVerifier,
@@ -131,5 +137,64 @@ describe("console session cookie attributes", () => {
     } else {
       process.env.AGENTRANK_COOKIE_SECURE = before;
     }
+  });
+});
+
+describe("which cookie name a session is written under and read from", () => {
+  /**
+   * `__Host-` is what stops a sibling subdomain, an extension or an XSS anywhere under the
+   * registrable domain planting a path-scoped cookie that outranks the real one and quietly moves
+   * a merchant into somebody else's tenant. It requires `Secure`, so plain HTTP localhost cannot
+   * have it and gets the unprefixed name instead.
+   */
+
+  const savedSecure = process.env[COOKIE_SECURE_VARIABLE];
+
+  afterEach(() => {
+    if (savedSecure === undefined) {
+      delete process.env[COOKIE_SECURE_VARIABLE];
+    } else {
+      process.env[COOKIE_SECURE_VARIABLE] = savedSecure;
+    }
+  });
+
+  it("writes the prefixed name when the cookie can be Secure", () => {
+    delete process.env[COOKIE_SECURE_VARIABLE];
+    expect(cookiesAreSecure()).toBe(true);
+    expect(sessionCookieName()).toBe(SECURE_SESSION_COOKIE);
+    expect(sessionCookieOptions(60).secure).toBe(true);
+  });
+
+  it("falls back to the plain name only where Secure is explicitly off", () => {
+    process.env[COOKIE_SECURE_VARIABLE] = "false";
+    expect(sessionCookieName()).toBe(SESSION_COOKIE);
+    expect(sessionCookieOptions(60).secure).toBe(false);
+  });
+
+  it("prefers the prefixed cookie when a request presents both", () => {
+    const injected = `${COOKIE_SCHEME}_${"a".repeat(64)}`;
+    const genuine = `${COOKIE_SCHEME}_${"b".repeat(64)}`;
+    const jar = {
+      get: (name: string) =>
+        name === SECURE_SESSION_COOKIE
+          ? { value: genuine }
+          : name === SESSION_COOKIE
+            ? { value: injected }
+            : undefined,
+    };
+    // A prefixed cookie is one no other host and no other path could have set, so an injected
+    // unprefixed one must not displace it by being read first.
+    expect(presentedCookie(jar)).toBe(genuine);
+  });
+
+  it("still reads a session written under the plain name", () => {
+    const value = `${COOKIE_SCHEME}_${"c".repeat(64)}`;
+    const jar = { get: (name: string) => (name === SESSION_COOKIE ? { value } : undefined) };
+    expect(presentedCookie(jar)).toBe(value);
+  });
+
+  it("answers undefined when no session cookie is present at all", () => {
+    expect(presentedCookie({ get: () => undefined })).toBeUndefined();
+    expect(presentedCookie({ get: () => ({ value: "" }) })).toBeUndefined();
   });
 });

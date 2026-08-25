@@ -30,7 +30,38 @@
 
 import { createHmac, randomBytes } from "node:crypto";
 
+/**
+ * The cookie name, which depends on whether this deployment can use the `__Host-` prefix.
+ *
+ * `__Host-` is not decoration. A browser refuses to store a cookie with that prefix unless it is
+ * `Secure`, `Path=/` and carries no `Domain`, and it refuses to let any other host set one. That
+ * closes the one attack this scheme is otherwise open to: a sibling subdomain, an extension or an
+ * XSS on any host under the registrable domain can otherwise plant
+ * `ar_console_session=<attacker value>; Path=/overview`, which sorts before the real cookie by
+ * path length and cannot be overwritten or cleared by a sign-in or sign-out writing `Path=/`. The
+ * victim then works inside the attacker's tenant and their source documents, their compiler
+ * corrections and their evaluations land there.
+ *
+ * The prefix requires `Secure`, so it cannot be used on plain HTTP localhost, which is the one
+ * deployment shape `AGENTRANK_COOKIE_SECURE=false` exists for. Both names are read on the way in
+ * so a merchant signed in before a deployment gained HTTPS is not signed out by the change; only
+ * one is ever written.
+ */
 export const SESSION_COOKIE = "ar_console_session";
+export const SECURE_SESSION_COOKIE = "__Host-ar_console_session";
+
+/** Which cookie name this process writes, given whether it can set `Secure`. */
+export function sessionCookieName(): string {
+  return cookiesAreSecure() ? SECURE_SESSION_COOKIE : SESSION_COOKIE;
+}
+
+/**
+ * Every cookie name a session may arrive under, most preferred first.
+ *
+ * The prefixed one wins when both are present. A `__Host-` cookie is one no other host could have
+ * set, so preferring it means an injected unprefixed cookie cannot displace a real session.
+ */
+export const SESSION_COOKIE_NAMES = [SECURE_SESSION_COOKIE, SESSION_COOKIE] as const;
 
 /** What the browser holds. Recognisable, and deliberately not what the API is told about. */
 export const COOKIE_SCHEME = "arc";
@@ -81,6 +112,28 @@ export function sessionSecret(): string {
   return configured;
 }
 
+/** The smallest thing a cookie jar has to be able to do for this module to read one. */
+export interface CookieJar {
+  get(name: string): { readonly value: string } | undefined;
+}
+
+/**
+ * The session cookie this request presented, under whichever name it arrived.
+ *
+ * The `__Host-` prefixed name is preferred when both are present, and that preference is the
+ * point rather than tidiness: a prefixed cookie is one no other host and no other path could have
+ * set, so an injected unprefixed cookie cannot displace a real session by being read first.
+ */
+export function presentedCookie(jar: CookieJar): string | undefined {
+  for (const name of SESSION_COOKIE_NAMES) {
+    const found = jar.get(name)?.value;
+    if (found !== undefined && found.length > 0) {
+      return found;
+    }
+  }
+  return undefined;
+}
+
 /** A fresh cookie value. Nothing derives it from the merchant, the request or the clock. */
 export function newCookieValue(): string {
   return `${COOKIE_SCHEME}_${randomBytes(SECRET_BYTES).toString("hex")}`;
@@ -122,7 +175,22 @@ export function sessionCookieOptions(maxAgeSeconds: number): {
     sameSite: "lax",
     path: "/",
     maxAge: Math.max(0, Math.floor(maxAgeSeconds)),
-    secure:
-      process.env.AGENTRANK_COOKIE_SECURE !== "false" && process.env.NODE_ENV !== "development",
+    secure: cookiesAreSecure(),
   };
+}
+
+export const COOKIE_SECURE_VARIABLE = "AGENTRANK_COOKIE_SECURE";
+
+/**
+ * Whether this deployment marks the session cookie `Secure`.
+ *
+ * Stated once, because two callers depend on it and they must not disagree: the cookie name is
+ * `__Host-` prefixed exactly when this is true, and a name written under one answer and read
+ * under the other would be a session nobody can resolve.
+ *
+ * Two ways to turn it off and both are development. The explicit variable is the documented one.
+ * `NODE_ENV === "development"` is `next dev`, where there is no HTTPS to be had.
+ */
+export function cookiesAreSecure(): boolean {
+  return process.env[COOKIE_SECURE_VARIABLE] !== "false" && process.env.NODE_ENV !== "development";
 }
