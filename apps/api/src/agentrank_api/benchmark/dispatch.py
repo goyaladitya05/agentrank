@@ -231,16 +231,22 @@ async def execute_next_launch(
 class _Plan:
     """The verified execution identity of one claimed launch.
 
-    At most one of `representation` and `source` is ever present, and which one follows from the
-    launch's purpose. Both are None for the reference buyer, which reads neither.
+    Identifiers and plain values only, and that is load bearing rather than tidy. The claim's
+    transaction is rolled back before anything long starts, which expires every instance loaded
+    inside it, so a plan holding an ORM row would hand execution an object whose first attribute
+    read is a lazy load with no transaction open and no greenlet context to run it in. The
+    documents are read again in `_execute`, where a session is live.
+
+    At most one of `representation_id` and `source_snapshot_id` is ever set, and which one
+    follows from the launch's purpose. Both are None for the reference buyer, which reads neither.
     """
 
     suite_key: str
     suite_version: int
     identity: ExecutorIdentity
     configuration: AgentConfiguration | None
-    representation: CommerceRepresentation | None
-    source: MerchantSourceSnapshot | None = None
+    representation_id: uuid.UUID | None
+    source_snapshot_id: uuid.UUID | None = None
 
 
 async def _dispatch_plan(
@@ -273,7 +279,7 @@ async def _dispatch_plan(
             suite_version=suite.version,
             identity=IsolatedMissionExecutor.identity,
             configuration=None,
-            representation=None,
+            representation_id=None,
         )
 
     assert launch.buyer_configuration is not None  # the schema pairs profile and configuration
@@ -303,8 +309,8 @@ async def _dispatch_plan(
             kind=kind, version=1, revision=configuration.configuration_digest
         ),
         configuration=configuration,
-        representation=representation,
-        source=source,
+        representation_id=None if representation is None else representation.id,
+        source_snapshot_id=None if source is None else source.id,
     )
 
 
@@ -332,6 +338,38 @@ async def _measured(
             FAILURE_REPRESENTATION_MISSING, "the representation this launch froze is unreadable"
         )
     return representation, None
+
+
+async def measured_documents(
+    session: AsyncSession, plan: _Plan
+) -> tuple[CommerceRepresentation | None, MerchantSourceSnapshot | None]:
+    """The documents this plan's buyer will read, loaded where a session is live.
+
+    Read again rather than carried, because the claim's transaction was rolled back before this
+    point and every instance loaded inside it is expired. `_dispatch_plan` already proved both
+    that the artifact exists and that it belongs to this launch's merchant, and both tables are
+    immutable and RESTRICT protected, so what this can fail on is a database that has gone away
+    rather than a launch that should not run.
+    """
+    representation = (
+        None
+        if plan.representation_id is None
+        else await session.get(CommerceRepresentation, plan.representation_id)
+    )
+    source = (
+        None
+        if plan.source_snapshot_id is None
+        else await session.get(MerchantSourceSnapshot, plan.source_snapshot_id)
+    )
+    if (plan.representation_id is None) != (representation is None):
+        raise LaunchDispatchError(
+            FAILURE_REPRESENTATION_MISSING, "the representation this launch froze is unreadable"
+        )
+    if (plan.source_snapshot_id is None) != (source is None):
+        raise LaunchDispatchError(
+            FAILURE_SOURCE_MISSING, "the merchant information this launch froze is unreadable"
+        )
+    return representation, source
 
 
 def _require_frozen_kind(launch: BenchmarkEvaluationLaunch, kind: str) -> None:
@@ -382,6 +420,9 @@ async def _execute(
     runs = BenchmarkRunService(session)
     worker = EvaluationLaunchWorkerService(session)
     served = RequestLedger()
+    # Before the server starts, and after the claim's rollback, which is the only window where
+    # these are both live and cheap. Everything downstream reads them as plain attributes.
+    representation, source = await measured_documents(session, plan)
     async with LocalCommerceEndpoint(settings, provider=provider, observer=served) as endpoint:
         started = await runs.start_suite(
             suite_key=plan.suite_key,
@@ -391,8 +432,8 @@ async def _execute(
             agent_configuration=(
                 None if plan.configuration is None else plan.configuration.payload()
             ),
-            representation=plan.representation,
-            representation_label=_run_label(plan),
+            representation=representation,
+            representation_label=_run_label(source),
         )
         try:
             await worker.bind_run(launch_id, started.id)
@@ -414,6 +455,8 @@ async def _execute(
         ) as token:
             executor = _executor(
                 plan,
+                representation=representation,
+                source=source,
                 base_url=endpoint.base_url,
                 token=token,
                 served=served,
@@ -485,23 +528,27 @@ def buyer_surface(
     )
 
 
-def _run_label(plan: _Plan) -> str | None:
+def _run_label(source: MerchantSourceSnapshot | None) -> str | None:
     """What the run records about what its buyer was shown.
 
-    `merchant-information` is the same token the controlled raw arm records, so a run produced
-    by a first evaluation and a raw sample are recognisably the same kind of measurement rather
-    than two labels for one thing. Null for a re-evaluation, whose run pins the representation
-    itself and needs no label to say so, and for the reference buyer, which read nothing.
+    `merchant-information` is the token the controlled experiment records on every sample it
+    executes, whichever arm. It says the buyer was given the merchant's own information rather
+    than nothing, which is true of a first evaluation and true of both experiment arms, and it
+    distinguishes none of them from each other. Null for a re-evaluation, whose run pins the
+    representation itself, and for the reference buyer, which read neither.
 
-    A label and never an identity. The run's own `representation_id` is the identity, and it is
-    null on an initial run because none was read.
+    A label and never an identity, which matters most exactly here: an initial run shows this
+    label above a null representation identifier, and the identity of what its buyer read is the
+    source snapshot the launch froze rather than anything on the run.
     """
-    return "merchant-information" if plan.source is not None else None
+    return "merchant-information" if source is not None else None
 
 
 def _executor(
     plan: _Plan,
     *,
+    representation: CommerceRepresentation | None,
+    source: MerchantSourceSnapshot | None,
     base_url: str,
     token: str,
     served: RequestLedger,
@@ -524,7 +571,7 @@ def _executor(
     """
     if plan.configuration is None:
         return IsolatedMissionExecutor(base_url=base_url, token=token, served=served)
-    surface = buyer_surface(representation=plan.representation, source=plan.source)
+    surface = buyer_surface(representation=representation, source=source)
     executor = IsolatedMissionExecutor(
         base_url=base_url,
         token=token,

@@ -17,6 +17,8 @@ from dataclasses import replace
 
 import pytest
 from launch_support import (
+    InitialWorld,
+    LaunchWorld,
     build_initial_world,
     build_launch_world,
     queue_launch,
@@ -29,8 +31,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from agentrank_api.benchmark.authored import AuthoredWorld
 from agentrank_api.benchmark.dispatch import (
     FAILURE_NO_PROVIDER,
+    _dispatch_plan,
+    _Plan,
     buyer_surface,
     execute_next_launch,
+    measured_documents,
 )
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
 from agentrank_api.benchmark.evaluation_launch import (
@@ -384,6 +389,78 @@ class TestFirstEvaluation:
 
         assert outcome is not None and outcome.status == "COMPLETED"
         assert await counts(bystander.merchant_id) == before
+
+
+class TestPlanSurvivesTheClaim:
+    """What execution reads after the claim's transaction is gone.
+
+    The dispatcher rolls back the claim before the loopback server starts, so the row lock is
+    not held across a server boot. That rollback expires every instance loaded inside the claim,
+    and the model buyer path is the only one that reads a document afterwards, so it is the only
+    path where carrying an ORM row on the plan would fail. It fails a long way from the cause:
+    the first attribute read is a lazy load with no transaction open and no greenlet context, and
+    the launch is left queued with no run and no failure code.
+
+    Executing this path end to end would call a model provider, so what is asserted is exactly
+    the boundary the defect lived on: the plan, the rollback, and then the documents.
+    """
+
+    async def _claimed_plan(
+        self, session: AsyncSession, world: LaunchWorld | InitialWorld, settings: Settings
+    ) -> _Plan:
+        environment = await BenchmarkEnvironmentService(session).require_registered(world.fixture)
+        launch = await EvaluationLaunchWorkerService(session).claim_next(
+            world.merchant_id, environment_id=environment.id
+        )
+        assert launch is not None
+        return await _dispatch_plan(session, launch, environment=environment, settings=settings)
+
+    async def test_a_re_evaluations_representation_is_readable_after_the_rollback(
+        self, catalog_settings: Settings, session: AsyncSession
+    ) -> None:
+        settings = with_openai(catalog_settings)
+        world = await build_launch_world(session, "survive-compiled-shop")
+        await queue_launch(session, settings, world, request_key="survive-compiled")
+        plan = await self._claimed_plan(session, world, settings)
+
+        await session.rollback()
+        representation, source = await measured_documents(session, plan)
+
+        assert source is None
+        assert representation is not None
+        assert representation.id == world.representation_id
+        surface = buyer_surface(representation=representation, source=source)
+        assert surface.discovery["kind"] == "AGENT_READY"
+
+    async def test_a_first_evaluations_source_is_readable_after_the_rollback(
+        self, catalog_settings: Settings, session: AsyncSession
+    ) -> None:
+        settings = with_openai(catalog_settings)
+        world = await build_initial_world(session, "survive-initial-shop")
+        await queue_launch(session, settings, world, request_key="survive-initial")
+        plan = await self._claimed_plan(session, world, settings)
+
+        await session.rollback()
+        representation, source = await measured_documents(session, plan)
+
+        assert representation is None
+        assert source is not None
+        assert source.id == world.source_snapshot_id
+        surface = buyer_surface(representation=representation, source=source)
+        assert surface.discovery == {"kind": "STOREFRONT"}
+        assert surface.merchant_information == raw_projection(source)
+
+    async def test_a_reference_buyer_reads_no_document_at_all(
+        self, catalog_settings: Settings, session: AsyncSession
+    ) -> None:
+        settings = without_providers(catalog_settings)
+        world = await build_initial_world(session, "survive-reference-shop")
+        await queue_launch(session, settings, world, request_key="survive-reference")
+        plan = await self._claimed_plan(session, world, settings)
+
+        await session.rollback()
+
+        assert await measured_documents(session, plan) == (None, None)
 
 
 class TestBuyerSurface:
