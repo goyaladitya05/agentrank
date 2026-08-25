@@ -48,6 +48,7 @@ mismatch, destroying a request the merchant made.
 """
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -102,6 +103,15 @@ RESOURCE = "merchant_evaluation_workspace"
 # configuration reach the constraint together. Named here because this service is what turns
 # losing that race back into the workspace the winner wrote.
 WORKSPACE_ALREADY_BUILT = "workspace_already_built"
+
+
+@dataclass(frozen=True, slots=True)
+class _Labels:
+    """What one page of workspaces names, read once rather than once per row."""
+
+    environments: dict[uuid.UUID, str]
+    suites: dict[uuid.UUID, str]
+    snapshots: dict[uuid.UUID, str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -418,43 +428,111 @@ class MerchantEvaluationWorkspaceService:
                 )
             ).scalars()
         )
-        return [await self._summary(row) for row in rows]
+        return await self._summaries(rows)
 
     async def _summary(self, workspace: MerchantEvaluationWorkspace) -> WorkspaceSummary:
         """One stored workspace, read back with the labels a merchant sees it under."""
-        environment = await self._session.get(BenchmarkEnvironment, workspace.environment_id)
-        suite = await self._session.get(BenchmarkSuite, workspace.suite_id)
-        snapshot = await self._session.get(MerchantSourceSnapshot, workspace.source_snapshot_id)
-        if environment is None or suite is None or snapshot is None:  # pragma: no cover
-            # Held impossible by three RESTRICT foreign keys and by the immutability triggers on
-            # all three tables. Stated so that a lineage nobody can explain is a named error
-            # rather than an attribute access on None.
-            raise ConflictError(
-                "workspace_lineage_unreadable",
-                "This evaluation workspace names artifacts that cannot be read.",
-                resource=RESOURCE,
-                identifier=str(workspace.id),
+        return (await self._summaries([workspace]))[0]
+
+    async def _summaries(
+        self, workspaces: Sequence[MerchantEvaluationWorkspace]
+    ) -> list[WorkspaceSummary]:
+        """A page of workspaces, read back in a fixed number of queries.
+
+        Four reads for a page rather than four per row. A history of ten workspaces used to be
+        forty round trips to draw a table of labels and counts, which is the same read a source
+        history already computes in PostgreSQL rather than by loading every document.
+        """
+        if not workspaces:
+            return []
+        labels = await self._labels(workspaces)
+        counts = await self._workspaces.mission_counts({entry.suite_id for entry in workspaces})
+        summaries: list[WorkspaceSummary] = []
+        for workspace in workspaces:
+            environment = labels.environments.get(workspace.environment_id)
+            suite = labels.suites.get(workspace.suite_id)
+            snapshot = labels.snapshots.get(workspace.source_snapshot_id)
+            if environment is None or suite is None or snapshot is None:  # pragma: no cover
+                # Held impossible by three RESTRICT foreign keys and by the immutability
+                # triggers on all three tables. Stated so that a lineage nobody can explain is a
+                # named error rather than an attribute access on None.
+                raise ConflictError(
+                    "workspace_lineage_unreadable",
+                    "This evaluation workspace names artifacts that cannot be read.",
+                    resource=RESOURCE,
+                    identifier=str(workspace.id),
+                )
+            composition, unsupported = _stored_composition(workspace)
+            summaries.append(
+                WorkspaceSummary(
+                    workspace_id=workspace.id,
+                    created_at=workspace.created_at,
+                    source_snapshot_id=workspace.source_snapshot_id,
+                    source_snapshot_label=snapshot,
+                    environment_id=workspace.environment_id,
+                    environment_label=environment,
+                    suite_id=workspace.suite_id,
+                    suite_label=suite,
+                    mission_count=counts.get(workspace.suite_id, 0),
+                    catalog=_stored_catalog(workspace),
+                    composition=composition,
+                    unsupported=unsupported,
+                    generator_version=workspace.generator_version,
+                    configuration_digest=workspace.configuration_digest,
+                    catalog_hash=workspace.catalog_hash,
+                    suite_hash=workspace.suite_hash,
+                )
             )
-        catalog = _stored_catalog(workspace)
-        composition, unsupported = _stored_composition(workspace)
-        return WorkspaceSummary(
-            workspace_id=workspace.id,
-            created_at=workspace.created_at,
-            source_snapshot_id=workspace.source_snapshot_id,
-            source_snapshot_label=snapshot.label,
-            environment_id=environment.id,
-            environment_label=environment.label,
-            suite_id=suite.id,
-            suite_label=suite.label,
-            mission_count=await self._workspaces.mission_count(suite.id),
-            catalog=catalog,
-            composition=composition,
-            unsupported=unsupported,
-            generator_version=workspace.generator_version,
-            configuration_digest=workspace.configuration_digest,
-            catalog_hash=workspace.catalog_hash,
-            suite_hash=workspace.suite_hash,
-        )
+        return summaries
+
+    async def _labels(self, workspaces: Sequence[MerchantEvaluationWorkspace]) -> _Labels:
+        """The name of every artifact this page of workspaces points at, in three queries.
+
+        Labels rather than rows. A workspace summary renders `key@version` for each of its three
+        artifacts and nothing else about them, and loading a benchmark suite as an object would
+        bring a relationship configured to raise rather than lazily load along with it.
+        """
+        environments = {
+            row.id: f"{row.fixture_key}@{row.fixture_version}"
+            for row in (
+                await self._session.execute(
+                    select(
+                        BenchmarkEnvironment.id,
+                        BenchmarkEnvironment.fixture_key,
+                        BenchmarkEnvironment.fixture_version,
+                    ).where(
+                        BenchmarkEnvironment.id.in_({entry.environment_id for entry in workspaces})
+                    )
+                )
+            ).all()
+        }
+        suites = {
+            row.id: f"{row.suite_key}@{row.version}"
+            for row in (
+                await self._session.execute(
+                    select(
+                        BenchmarkSuite.id, BenchmarkSuite.suite_key, BenchmarkSuite.version
+                    ).where(BenchmarkSuite.id.in_({entry.suite_id for entry in workspaces}))
+                )
+            ).all()
+        }
+        snapshots = {
+            row.id: f"{row.source_key}@{row.source_version}"
+            for row in (
+                await self._session.execute(
+                    select(
+                        MerchantSourceSnapshot.id,
+                        MerchantSourceSnapshot.source_key,
+                        MerchantSourceSnapshot.source_version,
+                    ).where(
+                        MerchantSourceSnapshot.id.in_(
+                            {entry.source_snapshot_id for entry in workspaces}
+                        )
+                    )
+                )
+            ).all()
+        }
+        return _Labels(environments=environments, suites=suites, snapshots=snapshots)
 
     async def _operator_world(self, merchant_id: uuid.UUID) -> str | None:
         """The benchmark world this merchant has that no workspace generated, if they have one.

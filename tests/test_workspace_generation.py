@@ -10,7 +10,15 @@ frozen catalog and by the same predicate a run recomputes ground truth with.
 from collections.abc import Callable
 
 import pytest
-from workspace_support import awkward, catalogued, plain, product, source, variant
+from workspace_support import (
+    awkward,
+    catalogued,
+    plain,
+    product,
+    source,
+    uncategorised,
+    variant,
+)
 
 from agentrank_api.benchmark.catalog import satisfies
 from agentrank_api.benchmark.definitions import (
@@ -320,14 +328,32 @@ def test_a_category_nobody_can_supply_produces_an_abstention() -> None:
     assert MissionFamily.UNAVAILABLE_ABSTENTION in built
 
 
-def test_a_merchant_with_no_category_still_gets_missions() -> None:
-    suite = generated(plain(SLUG))
-    assert suite.mission_count > 0
-    assert not any(
-        isinstance(constraint, AllowedCategory)
-        for mission in suite.definition.missions
-        for constraint in mission.brief.hard_constraints
-    )
+def test_every_mission_states_something_the_buyer_requires() -> None:
+    """A mission whose only requirement is a budget cannot be completed by anybody.
+
+    `provision` writes a mandate's constraint set only when a mission has a category or an
+    attribute to state, and the semantic authorization gate refuses to certify a purchase made
+    under a mandate with no recorded terms. Such a mission is denied whatever the merchant
+    sells, which is a mission nobody can complete for a reason that has nothing to do with them.
+    Found by running a deliberately category-free catalog end to end, and now structural.
+    """
+    for document in (catalogued(SLUG), plain(SLUG), awkward(SLUG)):
+        for mission in generated(document).definition.missions:
+            stated = [
+                constraint
+                for constraint in mission.brief.hard_constraints
+                if isinstance(constraint, AllowedCategory | RequiredAttribute)
+            ]
+            assert stated, mission.key
+
+
+def test_a_catalog_with_no_category_and_no_specification_is_refused() -> None:
+    """Stocked and priced is not enough. Reported rather than turned into missions that would
+    every one of them fail for a reason the merchant could do nothing about."""
+    with pytest.raises(BootstrapRefusedError) as refused:
+        generated(uncategorised(SLUG))
+    assert refused.value.blocker.code == "no_mission_family"
+    assert "category or a structured specification" in refused.value.blocker.message
 
 
 def test_a_mission_never_mixes_currencies() -> None:

@@ -11,6 +11,7 @@ on nothing but its own table.
 """
 
 import uuid
+from collections.abc import Collection
 from typing import Any
 
 from sqlalchemy import func, select
@@ -132,19 +133,29 @@ class MerchantEvaluationWorkspaceRepository:
             ).scalars()
         )
 
-    async def mission_count(self, suite_id: uuid.UUID) -> int:
-        """How many missions one generated suite holds, counted rather than remembered.
+    async def mission_counts(self, suite_ids: Collection[uuid.UUID]) -> dict[uuid.UUID, int]:
+        """How many missions each of these generated suites holds, in one query.
 
-        From the mission rows rather than from the stored composition, for the same reason
-        benchmark metrics are derived rather than stored: a remembered count is a count that can
-        disagree with the rows it describes.
+        Counted from the mission rows rather than read from the stored composition, for the same
+        reason benchmark metrics are derived rather than stored: a remembered count is a count
+        that can disagree with the rows it describes.
+
+        One query for a page rather than one per row. A history of ten workspaces answered a
+        count each was ten round trips to draw one column, which is the shape of read this
+        repository already computes in PostgreSQL everywhere else it renders a table of numbers.
+
+        A suite with no missions is absent from the aggregate rather than zero, so the keys are
+        filled in from the identifiers that were asked about.
         """
-        return int(
-            (
-                await self._session.execute(
-                    select(func.count())
-                    .select_from(BenchmarkMission)
-                    .where(BenchmarkMission.suite_id == suite_id)
-                )
-            ).scalar_one()
-        )
+        wanted = list(suite_ids)
+        if not wanted:
+            return {}
+        rows = (
+            await self._session.execute(
+                select(BenchmarkMission.suite_id, func.count())
+                .where(BenchmarkMission.suite_id.in_(wanted))
+                .group_by(BenchmarkMission.suite_id)
+            )
+        ).all()
+        counted = {suite_id: int(total) for suite_id, total in rows}
+        return {suite_id: counted.get(suite_id, 0) for suite_id in wanted}

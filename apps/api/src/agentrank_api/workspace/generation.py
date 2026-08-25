@@ -188,8 +188,10 @@ def generate_suite(
             BootstrapBlocker(
                 "no_mission_family",
                 "AgentRank could not build a single benchmark mission from your merchant"
-                " information. A catalog needs at least one product a buyer could be asked to"
-                " buy, with a price and stock.",
+                " information. A benchmark mission has to state something a buyer requires, so"
+                " a catalog needs at least one product a buyer could be asked to buy, with a"
+                " price, stock, and either a category or a structured specification for the"
+                " mission to ask about.",
             )
         )
 
@@ -241,15 +243,30 @@ def _resolved(family: MissionFamily, catalog: EvaluationCatalog) -> list[_Resolv
 
 
 def _agreed(candidate: _Candidate, entries: Sequence[CatalogEntry]) -> _Resolved | None:
-    """This candidate with its computed oracle, or None when the catalog says otherwise.
+    """This candidate with its computed oracle, or None when it cannot honestly be published.
 
-    Three ways to be dropped, and all three are the catalog disagreeing rather than an error.
+    Four ways to be dropped, and none of them is an error.
+
+    A candidate that states no semantic requirement is dropped first, and that one is not about
+    the catalog at all. `provision` writes a mandate's constraint set only when the mission has
+    a category or an attribute to state, and the semantic authorization gate refuses to certify
+    a purchase made under a mandate with no recorded terms: absence of a semantic authorization
+    is not a passed one. A mission whose only requirement is a budget is therefore denied at the
+    gate whatever the merchant sells, which is a mission nobody can complete for a reason that
+    has nothing to do with them. An independent review of a deliberately category-free catalog
+    found this by running one.
+
     The computed outcome may not be the one the family claimed, which is the check that makes a
     purchase family incapable of publishing an abstention under its own name. And a purchase
     whose cheapest qualifying line is free carries no simulated demand, which a mission with an
     available purchase is not allowed to do, because a zero would drop it out of the potential
     demand it belongs in.
     """
+    if not any(
+        isinstance(constraint, AllowedCategory | RequiredAttribute)
+        for constraint in candidate.constraints
+    ):
+        return None
     brief = AgentMissionBrief(
         key=mission_key(candidate.family, _PROVISIONAL_ORDINAL),
         objective=_objective(candidate.quantity),
@@ -396,9 +413,10 @@ class _Group:
     def constraints(self) -> tuple[HardConstraint, ...]:
         """The category constraint this group states, or nothing when it has no category.
 
-        A merchant whose products carry no category still gets missions; they are simply about
-        the whole catalog. Inventing a category name for them would be writing down a fact the
-        merchant did not state.
+        A group with no category contributes only through the specification families, which
+        state an attribute of their own. Every mission has to state something a buyer requires,
+        and inventing a category name for a merchant who wrote none would be writing down a fact
+        they did not state.
         """
         return () if self.category is None else (AllowedCategory(self.category),)
 
@@ -513,7 +531,7 @@ def _category_purchases(catalog: EvaluationCatalog) -> Iterable[_Candidate]:
     why it is one of eight.
     """
     for group in _groups(catalog):
-        if not group.purchasable:
+        if group.category is None or not group.purchasable:
             continue
         ceiling = max(entry.price_amount_minor for entry in group.purchasable)
         if ceiling <= 0:
@@ -537,6 +555,8 @@ def _budget_constrained_purchases(catalog: EvaluationCatalog) -> Iterable[_Candi
     the mission genuinely requires reading prices.
     """
     for group in _groups(catalog):
+        if group.category is None:
+            continue
         prices = {entry.price_amount_minor for entry in group.purchasable}
         if len(prices) < 2:
             continue
@@ -561,6 +581,8 @@ def _multi_unit_purchases(catalog: EvaluationCatalog) -> Iterable[_Candidate]:
     """
     quantity = MULTI_UNIT_QUANTITY
     for group in _groups(catalog):
+        if group.category is None:
+            continue
         stocked = [entry for entry in group.purchasable if entry.can_supply(quantity)]
         if not stocked:
             continue
@@ -627,7 +649,7 @@ def _budget_abstentions(catalog: EvaluationCatalog) -> Iterable[_Candidate]:
     exponent and AgentRank deliberately does not decide what any currency's minor unit is worth.
     """
     for group in _groups(catalog):
-        if not group.purchasable:
+        if group.category is None or not group.purchasable:
             continue
         cheapest = min(entry.price_amount_minor for entry in group.purchasable)
         budget = cheapest // 2
@@ -654,7 +676,7 @@ def _stock_abstentions(catalog: EvaluationCatalog) -> Iterable[_Candidate]:
     qualifies is the shelf rather than the money.
     """
     for group in _groups(catalog):
-        if not group.purchasable:
+        if group.category is None or not group.purchasable:
             continue
         deepest = max(entry.inventory_quantity for entry in group.purchasable)
         quantity = deepest + 1

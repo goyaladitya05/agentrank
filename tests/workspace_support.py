@@ -5,12 +5,20 @@ ever ran against one catalog would be an importer for that catalog, and the whol
 phase makes is that a merchant does not need bespoke code.
 
 ```text
-catalogued    categories, several prices per category, structured metadata, one currency
-plain         no categories at all, two currencies, no metadata, one product many variants
-awkward       the shapes a real merchant pilot actually produced: several wattages stated only
-              in prose, optional fields missing on some variants and present on others, and
-              metadata this projection cannot compare
+catalogued     categories, several prices per category, structured metadata, one currency
+plain          one product carrying every variant, two currencies, no metadata, no labels
+awkward        the shapes a real merchant pilot actually produced: several wattages stated only
+               in prose, optional fields missing on some variants and present on others, and
+               metadata this projection cannot compare
+uncategorised  a catalog with nothing a mission could state a requirement about
 ```
+
+`uncategorised` exists because an earlier version of `plain` had no category either, and running
+it end to end is what found a real defect: a mission whose only requirement is a budget states no
+semantic terms, so no constraint set is written for its mandate, and the authorization gate
+refuses to certify a purchase made under one. Every such mission failed for a reason that had
+nothing to do with the merchant. The generator now refuses instead, and this is the catalog that
+proves it.
 
 `awkward` is a synthetic analogue and holds no real merchant's text. What it reproduces is the
 difficulty rather than the data: an evaluation catalog built from it carries less than a reader
@@ -120,11 +128,11 @@ def catalogued(slug: str = "test-merchant") -> MerchantSourceDefinition:
 
 
 def plain(slug: str = "plain-merchant") -> MerchantSourceDefinition:
-    """No categories, two currencies, no metadata, and one product carrying every variant.
+    """One product carrying every variant, in two currencies, with no metadata and no labels.
 
-    A merchant whose evidence is as thin as the schema allows. It supports the families that
-    need nothing but a price and a shelf, and nothing else, which is the answer a merchant with
-    this catalog should be given rather than a suite that pretends otherwise.
+    A merchant whose evidence is close to as thin as the schema allows. It supports the families
+    that need nothing but a category, a price and a shelf, and nothing else, which is the answer
+    a merchant with this catalog should be given rather than a suite that pretends otherwise.
     """
     return source(
         product(
@@ -133,6 +141,26 @@ def plain(slug: str = "plain-merchant") -> MerchantSourceDefinition:
             variant("ONLY-M", label=None, price=75000, stock=9),
             variant("ONLY-L", label=None, price=125000, currency="USD", stock=9),
             title="One product",
+            description=None,
+            category="accessories",
+        ),
+        slug=slug,
+    )
+
+
+def uncategorised(slug: str = "uncategorised-merchant") -> MerchantSourceDefinition:
+    """A stocked, priced catalog with nothing a mission could state a requirement about.
+
+    No category and no structured specification, so every mission a generator could propose
+    would state only a budget. Such a mission is denied at the semantic authorization gate
+    whatever the merchant sells, so the honest answer is a refusal naming what is missing.
+    """
+    return source(
+        product(
+            "BARE",
+            variant("BARE-A", label=None, price=50000, stock=9),
+            variant("BARE-B", label=None, price=75000, stock=9),
+            title="A product",
             description=None,
             category=None,
         ),

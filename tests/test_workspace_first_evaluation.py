@@ -15,6 +15,7 @@ is evidence that the benchmark path works rather than evidence about an autonomo
 """
 
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,7 +23,7 @@ import pytest
 from launch_support import without_providers
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from workspace_support import catalogued, plain, source
+from workspace_support import awkward, catalogued, plain, source
 
 from agentrank_api.benchmark.dispatch import execute_next_launch
 from agentrank_api.benchmark.evaluation_launch import (
@@ -33,10 +34,12 @@ from agentrank_api.benchmark.evaluation_launch import (
 from agentrank_api.benchmark.launch import MerchantEvaluationLaunchService
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus
 from agentrank_api.benchmark.models import BenchmarkRun
+from agentrank_api.benchmark.runner import BenchmarkRunService
 from agentrank_api.commerce.models import Variant
 from agentrank_api.commerce.repository import MerchantRepository
 from agentrank_api.config import Settings
 from agentrank_api.payments.fake import FakePaymentProvider
+from agentrank_api.representation.definitions import MerchantSourceDefinition
 from agentrank_api.representation.service import MerchantRepresentationService
 from agentrank_api.workspace.service import MerchantEvaluationWorkspaceService
 from agentrank_api.workspace.world import WorkspaceWorld, workspace_world
@@ -64,11 +67,15 @@ class Bootstrapped:
     catalog_fixture: dict[str, Any]
 
 
-async def bootstrapped(session: AsyncSession, slug: str) -> Bootstrapped:
+async def bootstrapped(
+    session: AsyncSession,
+    slug: str,
+    builder: Callable[[str], MerchantSourceDefinition] = catalogued,
+) -> Bootstrapped:
     """A merchant whose entire history is one source snapshot and one built setup."""
     merchant = await MerchantRepository(session).create(slug=slug, name=slug.title())
     await session.commit()
-    snapshot = await MerchantRepresentationService(session).publish_source(catalogued(slug))
+    snapshot = await MerchantRepresentationService(session).publish_source(builder(slug))
     workspace = (
         await MerchantEvaluationWorkspaceService(session).bootstrap(
             merchant.id, source_snapshot_id=snapshot.id
@@ -134,6 +141,57 @@ async def test_a_bootstrapped_merchant_reaches_a_completed_first_evaluation(
     await session.refresh(launch)
     assert launch.status is EvaluationLaunchStatus.COMPLETED
     assert launch.source_snapshot_id == built.source_snapshot_id
+
+
+@pytest.mark.parametrize("builder", [catalogued, plain, awkward])
+async def test_the_commerce_runtime_agrees_with_every_generated_oracle(
+    catalog_settings: Settings,
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+    builder: Callable[[str], MerchantSourceDefinition],
+) -> None:
+    """The independent confirmation that a generated answer key is right.
+
+    Two separate things could be wrong with a generated suite and neither would be visible from
+    the generator alone. A mission the oracle calls purchasable could be one the commerce runtime
+    refuses, and a mission it calls impossible could be one a buyer completes. Both are checked
+    here by the runtime rather than by the code that wrote the oracle.
+
+    Every purchasable mission is carried through a real mandate, quote, stock hold and payment by
+    the deterministic executor, so a wrong `PURCHASE_AVAILABLE` would fail at the semantic
+    authorization gate. Every control mission is declined. And `oracle_disagreements` is the
+    run's own recomputation of ground truth against the catalog it actually executed against,
+    which is the check that catches an answer key that was right when it was written and is not
+    right now.
+    """
+    settings = without_providers(catalog_settings)
+    built = await bootstrapped(session, "oracle-eval-shop", builder)
+    await queue(session, settings, built.merchant_id)
+
+    outcome = await execute_next_launch(
+        session,
+        factory,
+        world=built.world,
+        provider=FakePaymentProvider(),
+        settings=settings,
+    )
+
+    assert outcome is not None and outcome.run_id is not None
+    metrics = await BenchmarkRunService(session).metrics(
+        outcome.run_id, merchant_id=built.merchant_id
+    )
+    assert metrics.oracle_disagreements == 0
+    assert metrics.oracle_unchecked == 0
+    # Every mission the catalog said was purchasable was bought, and every one it said was not
+    # was declined. A generated suite nothing could complete would report the same run status.
+    assert metrics.missions_succeeded > 0
+    assert metrics.missions_abstained > 0
+    assert metrics.task_completion_rate == 1.0
+    assert metrics.correct_abstention_rate == 1.0
+    assert metrics.missions_failed == 0
+    assert metrics.missions_errored == 0
+    assert metrics.unsafe_attempts == 0
+    assert metrics.unsafe_completions == 0
 
 
 async def test_a_first_evaluation_of_a_generated_world_stays_raw(

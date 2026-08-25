@@ -10,9 +10,9 @@ import uuid
 from collections.abc import Callable
 
 import pytest
-from sqlalchemy import func, select, text
+from sqlalchemy import event, func, select, text
 from sqlalchemy.exc import DBAPIError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from workspace_support import awkward, catalogued, plain, product, source, variant
 
 from agentrank_api.benchmark.models import (
@@ -299,6 +299,53 @@ async def test_the_newest_workspace_is_the_current_one(session: AsyncSession) ->
     assert summary.workspace_id == second.id
     history = await service.history(merchant.id)
     assert history[0].workspace_id == second.id
+
+
+# Reads
+
+
+async def test_reading_a_history_does_not_query_once_per_workspace(
+    session: AsyncSession, catalog_engine: AsyncEngine
+) -> None:
+    """A page of setups is a fixed number of reads, whatever the page holds.
+
+    Counted rather than asserted in prose. Each summary names three artifacts and a mission
+    count, so the obvious implementation is four queries per row, and a merchant with a long
+    history would pay for all of them to draw a table of labels.
+    """
+    merchant, first = await merchant_with(session, "batched-shop")
+    service = MerchantEvaluationWorkspaceService(session)
+    await service.bootstrap(merchant.id, source_snapshot_id=first.id)
+    for version in (2, 3):
+        newer = await refresh_source(
+            session,
+            merchant.slug,
+            source(*plain(merchant.slug).products, slug=merchant.slug, version=version),
+        )
+        await service.bootstrap(merchant.id, source_snapshot_id=newer.id)
+
+    statements: list[str] = []
+
+    def record(
+        connection: object,
+        cursor: object,
+        statement: str,
+        parameters: object,
+        context: object,
+        executemany: object,
+    ) -> None:
+        statements.append(statement)
+
+    event.listen(catalog_engine.sync_engine, "before_cursor_execute", record)
+    try:
+        history = await service.history(merchant.id)
+    finally:
+        event.remove(catalog_engine.sync_engine, "before_cursor_execute", record)
+
+    assert [entry.mission_count > 0 for entry in history] == [True, True, True]
+    # The page itself, then one read each for the worlds, the workloads, the snapshots and the
+    # mission counts. Five, and the same five for a page of one or a page of fifty.
+    assert len(statements) == 5, statements
 
 
 # Preflight

@@ -48,6 +48,7 @@ from agentrank_api.representation.definitions import (
     SourceVariant,
     instruction_like,
 )
+from agentrank_api.representation.schemas import MAX_PRODUCTS, MAX_TOTAL_VARIANTS
 from agentrank_api.workspace.definitions import (
     BootstrapBlocker,
     BootstrapRefusedError,
@@ -168,6 +169,7 @@ def project_catalog(
             )
         )
 
+    _require_bounded(source)
     omitted: list[str] = []
     products = tuple(_product(product, omitted) for product in source.products)
     fixture = BenchmarkFixture(
@@ -210,6 +212,28 @@ def catalog_entries(fixture: BenchmarkFixture) -> tuple[CatalogEntry, ...]:
         )
         for product in fixture.products
         for variant in product.variants
+    )
+
+
+def _require_bounded(source: MerchantSourceDefinition) -> None:
+    """Refuse a source too large to become an evaluation world, by the intake's own bounds.
+
+    The same numbers a console submission is already held to, imported rather than restated so
+    the two cannot disagree. They are checked again here because the operator command line
+    publishes a snapshot without going through the submission schema, and an unbounded document
+    would become an unbounded stored world payload, an unbounded catalog to prepare before every
+    mission, and a benchmark nobody chose the size of.
+    """
+    variants = sum(len(product.variants) for product in source.products)
+    if len(source.products) <= MAX_PRODUCTS and variants <= MAX_TOTAL_VARIANTS:
+        return
+    raise BootstrapRefusedError(
+        BootstrapBlocker(
+            "source_too_large",
+            f"Your merchant information describes {len(source.products)} products and"
+            f" {variants} variants. An evaluation catalog holds at most {MAX_PRODUCTS} products"
+            f" and {MAX_TOTAL_VARIANTS} variants.",
+        )
     )
 
 

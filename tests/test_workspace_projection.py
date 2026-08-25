@@ -8,6 +8,7 @@ import pytest
 from workspace_support import awkward, catalogued, plain, product, source, variant
 
 from agentrank_api.representation.definitions import MerchantSourceDefinition
+from agentrank_api.representation.schemas import MAX_PRODUCTS
 from agentrank_api.workspace.definitions import BootstrapRefusedError, workspace_key
 from agentrank_api.workspace.projection import (
     CATALOG_KEY_SUFFIX,
@@ -192,6 +193,22 @@ def test_a_value_wider_than_a_catalog_column_is_refused_rather_than_truncated() 
     with pytest.raises(BootstrapRefusedError) as refused:
         projected(document)
     assert refused.value.blocker.code == "source_field_too_long"
+
+
+def test_a_source_larger_than_an_evaluation_catalog_is_refused() -> None:
+    """The operator command line publishes a snapshot without the submission schema's bounds,
+    so an unbounded document would become an unbounded stored world and an unbounded shelf to
+    prepare before every mission."""
+    document = source(
+        *(
+            product(f"P{index}", variant(f"P{index}-A"), category="chargers")
+            for index in range(MAX_PRODUCTS + 1)
+        ),
+        slug=SLUG,
+    )
+    with pytest.raises(BootstrapRefusedError) as refused:
+        projected(document)
+    assert refused.value.blocker.code == "source_too_large"
 
 
 def test_catalog_entries_are_derived_from_the_fixture_and_never_stored() -> None:
