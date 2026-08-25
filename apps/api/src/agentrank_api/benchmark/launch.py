@@ -146,6 +146,17 @@ def resolve_buyer(settings: Settings) -> BuyerPlan:
     return BuyerPlan(BuyerProfile.REFERENCE_BUYER, REFERENCE_EXECUTOR_KIND, None)
 
 
+def _delivers_representation(purpose: EvaluationPurpose, buyer: BuyerPlan) -> bool:
+    """Whether the run this launch would produce will pin a Commerce IR representation.
+
+    The dispatcher's rule, stated once here so the preflight predicts what will actually happen.
+    Only the model buyer receives a discovery surface at all, and only a re-evaluation gives it
+    the agent-ready one; a first evaluation gives it the ordinary storefront, and the reference
+    buyer is given neither.
+    """
+    return purpose is EvaluationPurpose.REEVALUATION and buyer.profile is BuyerProfile.AI_BUYER
+
+
 @dataclass(frozen=True, slots=True)
 class LaunchBlocker:
     """One reason an evaluation cannot be launched right now, with a merchant sentence."""
@@ -189,6 +200,14 @@ class EvaluationPlan:
     mission_deadline_seconds: float | None
     baseline_run_id: uuid.UUID | None
     baseline_run_completed_at: datetime | None
+    # Whether the prior run's buyer read the same kind of surface this launch's will. False is
+    # the honest warning a merchant needs before spending: the comparison engine refuses to draw
+    # a before and after across the storefront and agent-ready arms, so this launch would produce
+    # a result with no reading beside it.
+    #
+    # A prediction of one input to that engine's rule and never a second copy of the rule. What
+    # is comparable is still decided after the fact, from the runs, by the engine.
+    baseline_surface_matches: bool | None
     blockers: tuple[LaunchBlocker, ...]
     pending_launch_id: uuid.UUID | None
 
@@ -236,6 +255,7 @@ class EvaluationPlan:
             "max_tool_calls": self.max_tool_calls,
             "mission_deadline_seconds": self.mission_deadline_seconds,
             "baseline_run_id": _text(self.baseline_run_id),
+            "baseline_surface_matches": self.baseline_surface_matches,
         }
 
 
@@ -304,11 +324,28 @@ class MerchantEvaluationLaunchService:
         self._sources = MerchantSourceIntakeService(session)
 
     async def plan(self, merchant_id: uuid.UUID) -> EvaluationPlan:
-        """What a launch would evaluate now, and what stops it if anything does."""
+        """What a launch would evaluate now, and what stops it if anything does.
+
+        The reads are ordered, and the order is about one thing. PostgreSQL gives each statement
+        here its own snapshot, and the advisory lock admission holds serializes other launches
+        rather than benchmark runs, so a run reaching COMPLETED partway through this method is a
+        real interleaving. Whether this merchant has any completed evidence is therefore the
+        last of the state reads: a run that finished earlier is seen and makes this a
+        re-evaluation, and one still executing is refused for being active. What is left is the
+        window between that read and the insert, which no ordering closes. See
+        docs/shortcomings.md.
+
+        The blockers are still appended in their own fixed order, because the first of them is
+        the refusal a merchant is given and that should not depend on which read happened first.
+        """
         buyer = resolve_buyer(self._settings)
         blockers: list[LaunchBlocker] = []
 
         representation = await self._current_representation(merchant_id)
+        suite = await self._current_suite(merchant_id)
+        environment = await self._current_environment(merchant_id)
+        pending = await self._pending(merchant_id)
+        active = await self._runs.active_run_id(merchant_id=merchant_id)
         purpose = await self._purpose(merchant_id, representation)
         compiler_run = None
         source: SourceIdentity | None = None
@@ -343,7 +380,6 @@ class MerchantEvaluationLaunchService:
                     )
                 )
 
-        suite = await self._current_suite(merchant_id)
         if suite is None:
             blockers.append(
                 LaunchBlocker(
@@ -353,7 +389,6 @@ class MerchantEvaluationLaunchService:
                 )
             )
 
-        environment = await self._current_environment(merchant_id)
         if environment is None:
             blockers.append(
                 LaunchBlocker(
@@ -364,7 +399,6 @@ class MerchantEvaluationLaunchService:
                 )
             )
 
-        pending = await self._pending(merchant_id)
         if pending is not None:
             blockers.append(
                 LaunchBlocker(
@@ -373,7 +407,6 @@ class MerchantEvaluationLaunchService:
                     " to finish before starting another.",
                 )
             )
-        active = await self._runs.active_run_id(merchant_id=merchant_id)
         if active is not None and (pending is None or pending.run_id != active):
             blockers.append(
                 LaunchBlocker(
@@ -421,6 +454,12 @@ class MerchantEvaluationLaunchService:
             ),
             baseline_run_id=None if baseline is None else baseline.id,
             baseline_run_completed_at=None if baseline is None else baseline.completed_at,
+            baseline_surface_matches=(
+                None
+                if baseline is None
+                else (baseline.representation_id is not None)
+                == _delivers_representation(purpose, buyer)
+            ),
             blockers=tuple(blockers),
             pending_launch_id=None if pending is None else pending.id,
         )
@@ -570,7 +609,7 @@ class MerchantEvaluationLaunchService:
         if plan.digest != plan_digest:
             raise ConflictError(
                 "preflight_superseded",
-                "What this re-evaluation would run has changed since this page was loaded.",
+                "What this evaluation would run has changed since this page was loaded.",
                 resource=RESOURCE,
                 identifier=str(merchant.id),
             )

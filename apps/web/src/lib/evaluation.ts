@@ -51,6 +51,12 @@ export interface EvaluationPreflight {
   readonly mission_deadline_seconds: number | null;
   readonly baseline_run_id: string | null;
   readonly baseline_run_completed_at: string | null;
+  /**
+   * Whether the earlier run's buyer read the same kind of surface this launch's will. Null when
+   * there is no earlier run. False means the two will not be read as a before and after, and is
+   * published so a merchant is told that before spending rather than after.
+   */
+  readonly baseline_surface_matches: boolean | null;
   readonly pending_launch_id: string | null;
   readonly blockers: readonly LaunchBlocker[];
 }
@@ -222,7 +228,7 @@ function profile(value: unknown): BuyerProfile {
 }
 
 export function decodePreflight(value: unknown): EvaluationPreflight {
-  const source = object(value, "re-evaluation preflight");
+  const source = object(value, "evaluation preflight");
   return {
     launchable: bool(source.launchable, "launchable"),
     purpose: purpose(source.purpose),
@@ -252,6 +258,10 @@ export function decodePreflight(value: unknown): EvaluationPreflight {
     baseline_run_completed_at: nullableString(
       source.baseline_run_completed_at,
       "baseline_run_completed_at",
+    ),
+    baseline_surface_matches: nullableBoolean(
+      source.baseline_surface_matches,
+      "baseline_surface_matches",
     ),
     pending_launch_id: nullableString(source.pending_launch_id, "pending_launch_id"),
     blockers: array(source.blockers, "blockers").map((item) => {
@@ -298,11 +308,11 @@ function launchFields(source: Record<string, unknown>): EvaluationLaunch {
 }
 
 export function decodeEvaluationLaunch(value: unknown): EvaluationLaunch {
-  return launchFields(object(value, "re-evaluation"));
+  return launchFields(object(value, "evaluation launch"));
 }
 
 export function decodeEvaluationLaunchList(value: unknown): readonly EvaluationLaunch[] {
-  return array(value, "re-evaluations").map(decodeEvaluationLaunch);
+  return array(value, "evaluation launches").map(decodeEvaluationLaunch);
 }
 
 function countChange(value: unknown): CountChange {
@@ -406,7 +416,7 @@ function decodeComparison(value: unknown): RunComparison {
 }
 
 export function decodeEvaluationLaunchDetail(value: unknown): EvaluationLaunchDetail {
-  const source = object(value, "re-evaluation detail");
+  const source = object(value, "evaluation launch detail");
   return {
     ...launchFields(source),
     comparison: source.comparison === null ? null : decodeComparison(source.comparison),

@@ -65,6 +65,9 @@ class EvaluationPreflightView(BaseModel):
     mission_deadline_seconds: float | None
     baseline_run_id: uuid.UUID | None
     baseline_run_completed_at: datetime | None
+    # Null when there is no prior run. False means the two would not be read as a before and
+    # after, and is published here so a merchant knows that before spending rather than after.
+    baseline_surface_matches: bool | None
     pending_launch_id: uuid.UUID | None
     blockers: list[LaunchBlockerView]
 
@@ -94,6 +97,7 @@ class EvaluationPreflightView(BaseModel):
             mission_deadline_seconds=plan.mission_deadline_seconds,
             baseline_run_id=plan.baseline_run_id,
             baseline_run_completed_at=plan.baseline_run_completed_at,
+            baseline_surface_matches=plan.baseline_surface_matches,
             pending_launch_id=plan.pending_launch_id,
             blockers=[
                 LaunchBlockerView(code=blocker.code, message=blocker.message)

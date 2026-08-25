@@ -18,6 +18,7 @@ import {
   QUEUED_REEVALUATION_FIXTURE,
   REFERENCE_PREFLIGHT_FIXTURE,
   RUNNING_REEVALUATION_FIXTURE,
+  SURFACE_CHANGE_PREFLIGHT_FIXTURE,
 } from "@/lib/evaluation-fixtures";
 
 function render(fixture: Record<string, unknown>): string {
@@ -67,6 +68,13 @@ describe("<LaunchConfirmation>", () => {
     expect(html).toContain("nothing to compare against yet");
     // A buyer with no model has no model bounds, and none are invented for it.
     expect(html).not.toContain("model turns per mission");
+  });
+
+  it("says before spending when the earlier run measured a different kind of surface", () => {
+    const html = confirmation(SURFACE_CHANGE_PREFLIGHT_FIXTURE);
+    expect(html).toContain("measured a different kind of surface");
+    expect(html).toContain("what a controlled experiment is for");
+    expect(html).not.toContain("will be shown beside your most recent completed run");
   });
 
   it("disables submission while a request is in flight", () => {

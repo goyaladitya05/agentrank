@@ -30,6 +30,7 @@ export const PREFLIGHT_FIXTURE = {
   mission_deadline_seconds: 120.0,
   baseline_run_id: "01992222-2222-7222-8222-222222222222",
   baseline_run_completed_at: "2026-08-23T10:04:30Z",
+  baseline_surface_matches: true,
   pending_launch_id: null,
   blockers: [],
 };
@@ -45,6 +46,7 @@ export const REFERENCE_PREFLIGHT_FIXTURE = {
   mission_deadline_seconds: null,
   baseline_run_id: null,
   baseline_run_completed_at: null,
+  baseline_surface_matches: null,
 };
 
 /** A merchant AgentRank has never measured and who has published nothing. */
@@ -57,6 +59,7 @@ export const INITIAL_PREFLIGHT_FIXTURE = {
   source_snapshot_label: "voltedge-source@1",
   baseline_run_id: null,
   baseline_run_completed_at: null,
+  baseline_surface_matches: null,
 };
 
 /** The same merchant before they have told AgentRank anything about themselves. */
@@ -72,6 +75,12 @@ export const INITIAL_BLOCKED_PREFLIGHT_FIXTURE = {
         "AgentRank has no record of your merchant information yet, so there is nothing to evaluate you against. Add your merchant source first.",
     },
   ],
+};
+
+/** A merchant whose only earlier run measured the storefront, about to measure an artifact. */
+export const SURFACE_CHANGE_PREFLIGHT_FIXTURE = {
+  ...PREFLIGHT_FIXTURE,
+  baseline_surface_matches: false,
 };
 
 export const BLOCKED_PREFLIGHT_FIXTURE = {

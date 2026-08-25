@@ -149,6 +149,12 @@ export function LaunchConfirmation({
             You have no earlier completed run of this suite, so there will be nothing to compare
             against yet.
           </li>
+        ) : preflight.baseline_surface_matches === false ? (
+          <li>
+            Your most recent completed run of this suite measured a different kind of surface, so
+            this result will not be shown beside it. Reading a difference between those two is what
+            a controlled experiment is for.
+          </li>
         ) : (
           <li>The result will be shown beside your most recent completed run of this suite.</li>
         )}

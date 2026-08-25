@@ -362,6 +362,51 @@ class TestPreflight:
         assert body["representation_id"] == str(world.representation_id)
         assert body["baseline_run_id"] is None
 
+    async def test_preflight_says_when_the_earlier_run_read_a_different_surface(
+        self,
+        settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+        issue_credential: CredentialIssuer,
+    ) -> None:
+        """A merchant is told before spending that there will be no reading beside this one.
+
+        Their first evaluation read the ordinary storefront and this re-evaluation would deliver
+        a representation, so the comparison engine refuses to draw a before and after across the
+        two. Saying that after the run finishes would be saying it after the quota was spent.
+        """
+        world = await build_initial_world(session, "surface-warning-shop")
+        await complete_run(session, world)
+        compiler = MerchantCompilerService(session)
+        compiler_run = await compiler.run(world.merchant_id, world.source_snapshot_id)
+        await compiler.publish(world.merchant_id, compiler_run.id)
+        token = await issue_credential(world.merchant_id)
+        http = client_with_model_provider(settings, factory)
+
+        body = http.get(PREFLIGHT, headers=bearer(token)).json()
+
+        assert body["purpose"] == "REEVALUATION"
+        assert body["buyer_profile"] == "AI_BUYER"
+        assert body["baseline_run_id"] is not None
+        assert body["baseline_surface_matches"] is False
+
+    async def test_preflight_reports_no_surface_change_without_a_baseline(
+        self,
+        settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+        issue_credential: CredentialIssuer,
+    ) -> None:
+        """Null rather than true. With nothing to compare against there is nothing to match."""
+        world = await build_launch_world(session, "surface-null-shop")
+        token = await issue_credential(world.merchant_id)
+        http = client(settings, factory)
+
+        body = http.get(PREFLIGHT, headers=bearer(token)).json()
+
+        assert body["baseline_run_id"] is None
+        assert body["baseline_surface_matches"] is None
+
     async def test_preflight_names_a_baseline_once_one_run_has_completed(
         self,
         settings: Settings,
