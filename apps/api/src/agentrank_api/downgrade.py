@@ -83,9 +83,7 @@ class BlockedDowngrade:
         return f"{self.rows} row(s) at revision {self.revision}: {self.reason}"
 
 
-def blockers_for(
-    connection: Connection, *, unwinding: Collection[str]
-) -> list[BlockedDowngrade]:
+def blockers_for(connection: Connection, *, unwinding: Collection[str]) -> list[BlockedDowngrade]:
     """Which declared blockers actually hold, for the revisions a downgrade would unwind.
 
     Read only. Nothing here writes, locks or migrates, so running it is never the thing that

@@ -55,7 +55,7 @@ def run_migrations_offline() -> None:
 
 
 def revisions_unwound(
-    script: ScriptDirectory, *, current: str | None, target: str | None
+    script: ScriptDirectory, *, current: str | None, target: str | tuple[str, ...] | None
 ) -> Sequence[str]:
     """Exactly the revisions a downgrade to `target` would undo, or nothing for an upgrade.
 
@@ -71,7 +71,9 @@ def revisions_unwound(
     add a refusal and never to invent one. Alembic itself refuses a target it cannot resolve a
     moment later, with a better message than this could produce.
     """
-    if current is None:
+    if current is None or isinstance(target, tuple):
+        # A tuple is a multi-head destination, which this repository's linear chain never
+        # produces. Reading one would be reasoning about a shape that does not exist here.
         return ()
     lower = "base" if target in (None, "base") else target
     try:
