@@ -18,7 +18,9 @@ import asyncio
 import json
 import uuid
 from dataclasses import dataclass
+from datetime import timedelta
 from io import StringIO
+from typing import cast
 
 import pytest
 from conftest import bearer
@@ -27,6 +29,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentrank_api.audit.repository import AuditRepository
+from agentrank_api.auth.console import CONSOLE_SESSION_SCHEME, ConsoleSessionService
+from agentrank_api.auth.service import MerchantCredentialService
+from agentrank_api.auth.tokens import TokenMarker, hash_secret
 from agentrank_api.cli import ExitCode, main
 from agentrank_api.commerce.repository import MerchantRepository
 from agentrank_api.config import Settings
@@ -354,3 +359,115 @@ async def test_provisioning_is_recorded_in_the_audit_trail(
     assert [event.event_type for event in events] == ["credential.issued", "credential.revoked"]
     # An operator is not a credential, so nothing here claims one authorized it.
     assert [event.credential_id for event in events] == [None, None]
+
+
+# Console sessions.
+
+
+async def open_session(
+    session: AsyncSession, merchant_id: uuid.UUID, settings: Settings, verifier: str
+) -> None:
+    """One session opened through the real service, from a real issued credential."""
+    issued = await MerchantCredentialService(session).issue(
+        merchant_id=merchant_id, label="console", marker=TokenMarker.DEVELOPMENT
+    )
+    del settings
+    await ConsoleSessionService(session).open(
+        merchant_id=merchant_id, credential_id=issued.credential.id, verifier=verifier
+    )
+
+
+async def test_sessions_lists_what_is_open_and_never_a_verifier(
+    catalog_settings: Settings, merchant_id: uuid.UUID, session: AsyncSession
+) -> None:
+    """The row holds a digest, and printing a digest would be printing the value worth attacking."""
+    verifier = f"{CONSOLE_SESSION_SCHEME}_{'1a' * 32}"
+    await open_session(session, merchant_id, catalog_settings, verifier)
+
+    listed = await run(
+        catalog_settings, "credentials", "sessions", "--merchant-slug", SLUG, "--json"
+    )
+
+    assert listed.code == ExitCode.OK
+    rows = cast(list[dict[str, object]], listed.json()["sessions"])
+    assert len(rows) == 1
+    assert set(rows[0]) == {"session_id", "credential_id", "created_at", "expires_at"}
+    assert verifier not in listed.out
+    assert hash_secret(verifier) not in listed.out
+
+
+async def test_sessions_reports_a_merchant_with_none(
+    catalog_settings: Settings, merchant_id: uuid.UUID
+) -> None:
+    del merchant_id
+    listed = await run(
+        catalog_settings, "credentials", "sessions", "--merchant-slug", SLUG, "--json"
+    )
+
+    assert listed.code == ExitCode.OK
+    assert listed.json()["sessions"] == []
+
+
+async def test_revoke_sessions_signs_a_merchant_out_and_leaves_their_key_working(
+    catalog_settings: Settings, merchant_id: uuid.UUID, session: AsyncSession
+) -> None:
+    """Ending browser access is not the same act as withdrawing a credential."""
+    verifier = f"{CONSOLE_SESSION_SCHEME}_{'2b' * 32}"
+    await open_session(session, merchant_id, catalog_settings, verifier)
+    created = await mint(catalog_settings, label="integration")
+
+    closed = await run(
+        catalog_settings, "credentials", "revoke-sessions", "--merchant-slug", SLUG, "--json"
+    )
+
+    assert closed.code == ExitCode.OK
+    assert closed.json() == {"merchant_id": str(merchant_id), "revoked": 1}
+    assert await ConsoleSessionService(session).authenticate(verifier) is None
+
+    # The merchant's own API key still authenticates, which is the whole distinction.
+    with TestClient(create_app(catalog_settings, payment_provider=FakePaymentProvider())) as http:
+        token = cast(str, created["token"])
+        answered = http.post(PRODUCTS_URL, json={"query": "charger"}, headers=bearer(token))
+        assert answered.status_code == 200
+
+    again = await run(
+        catalog_settings, "credentials", "revoke-sessions", "--merchant-slug", SLUG, "--json"
+    )
+    assert again.json()["revoked"] == 0
+
+
+async def test_purge_sessions_deletes_only_what_stopped_being_usable_long_ago(
+    catalog_settings: Settings, merchant_id: uuid.UUID, session: AsyncSession
+) -> None:
+    open_verifier = f"{CONSOLE_SESSION_SCHEME}_{'3c' * 32}"
+    stale_verifier = f"{CONSOLE_SESSION_SCHEME}_{'4d' * 32}"
+    await open_session(session, merchant_id, catalog_settings, open_verifier)
+    issued = await MerchantCredentialService(session).issue(
+        merchant_id=merchant_id, label="stale console", marker=TokenMarker.DEVELOPMENT
+    )
+    await ConsoleSessionService(session).open(
+        merchant_id=merchant_id,
+        credential_id=issued.credential.id,
+        verifier=stale_verifier,
+        lifetime=timedelta(days=-30),
+    )
+
+    purged = await run(catalog_settings, "credentials", "purge-sessions", "--json")
+
+    assert purged.code == ExitCode.OK
+    assert purged.json()["deleted"] == 1
+    assert await ConsoleSessionService(session).current(open_verifier) is not None
+
+
+async def test_purge_sessions_refuses_bounds_that_would_delete_an_open_session(
+    catalog_settings: Settings, merchant_id: uuid.UUID
+) -> None:
+    """A negative cutoff would delete by arithmetic rather than by intent."""
+    del merchant_id
+    refused = await run(
+        catalog_settings, "credentials", "purge-sessions", "--older-than-days", "-1", "--json"
+    )
+    assert refused.code == ExitCode.USAGE
+
+    empty = await run(catalog_settings, "credentials", "purge-sessions", "--limit", "0", "--json")
+    assert empty.code == ExitCode.USAGE

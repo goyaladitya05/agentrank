@@ -69,6 +69,7 @@ from agentrank_api.benchmark.endpoint import (
     issued_benchmark_credential,
 )
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
+from agentrank_api.benchmark.evaluation_launch import PENDING_STATUSES, BenchmarkEvaluationLaunch
 from agentrank_api.benchmark.execution import BenchmarkRunCapability, ExecutorIdentity
 from agentrank_api.benchmark.experiment import (
     CompilerImpactExperimentService,
@@ -78,7 +79,7 @@ from agentrank_api.benchmark.isolation import (
     IsolatedMissionExecutor,
     provider_worker_environment,
 )
-from agentrank_api.benchmark.launch import EvaluationLaunchWorkerService
+from agentrank_api.benchmark.launch import EvaluationLaunchWorkerService, worker_executor_kinds
 from agentrank_api.benchmark.lifecycle import MissionRunStatus
 from agentrank_api.benchmark.llm import (
     GEMINI_PROVIDER,
@@ -100,6 +101,7 @@ from agentrank_api.benchmark.tools import MeasuredBuyerSurface, ToolLedger
 from agentrank_api.benchmark.wire import LLM_STRATEGY
 from agentrank_api.cli.exits import ExitCode
 from agentrank_api.cli.output import write_json
+from agentrank_api.commerce.models import Merchant
 from agentrank_api.commerce.repository import MerchantRepository
 from agentrank_api.config import Settings
 from agentrank_api.errors import NotFoundError
@@ -110,6 +112,10 @@ from agentrank_api.payments.provider import PaymentProvider
 DEFAULT_WORLD = Path("benchmarks/voltedge")
 
 # Column widths, so a mission line is one line on an ordinary terminal.
+# A version 7 identifier is thirty six characters.
+LAUNCH_WIDTH = 36
+MERCHANT_WIDTH = 20
+EXECUTOR_WIDTH = 20
 KEY_WIDTH = 30
 STATUS_WIDTH = 10
 REASON_WIDTH = 26
@@ -266,6 +272,19 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
     _add_world(dispatching)
     _add_json(dispatching)
     dispatching.set_defaults(command=dispatch)
+
+    queueing = commands.add_parser(
+        "queue",
+        help="what evaluation work is queued or executing, and whether this worker can serve it",
+        description=(
+            "Read the launches that have not settled, deployment wide. Nothing is claimed,"
+            " nothing is written and no world is prepared. `serviceable` is whether this"
+            " process' own configuration could execute each one, so a queue of unserviceable"
+            " work read from the only worker there is names the credential nobody configured."
+        ),
+    )
+    _add_json(queueing)
+    queueing.set_defaults(command=queue)
 
     settling = commands.add_parser(
         "settle",
@@ -553,15 +572,24 @@ async def dispatch(
     asking for, and an operator loop that read that as "nothing to do" would never find out.
     """
     world = read_world(arguments.world)
+    # What this process can run, stated before it tries. An operator whose launches are not
+    # moving reads this line first: a worker that lists only the reference executor is a worker
+    # with no provider credential, which is configuration rather than failure.
+    executors = ",".join(sorted(worker_executor_kinds(settings)))
     outcome = await execute_next_launch(
         session, sessions, world=world, provider=provider, settings=settings
     )
     if outcome is None:
-        payload: dict[str, Any] = {"launch_id": None, "status": "NONE_QUEUED"}
+        payload: dict[str, Any] = {
+            "launch_id": None,
+            "status": "NONE_QUEUED",
+            "executors": executors,
+        }
         if arguments.as_json:
             write_json(out, payload)
         else:
             print("queued      nothing to execute for this world", file=out)
+            print(f"executors   {executors}", file=out)
         return ExitCode.OK
 
     payload = {
@@ -570,6 +598,7 @@ async def dispatch(
         "run_id": None if outcome.run_id is None else str(outcome.run_id),
         "failure_code": outcome.failure_code,
         "detail": outcome.detail,
+        "executors": executors,
     }
     if arguments.as_json:
         write_json(out, payload)
@@ -577,12 +606,95 @@ async def dispatch(
         print(f"launch      {payload['launch_id']}", file=out)
         print(f"status      {payload['status']}", file=out)
         print(f"run         {payload['run_id'] or MISSING}", file=out)
+        print(f"executors   {executors}", file=out)
         if outcome.failure_code is not None:
             print(f"failure     {outcome.failure_code}", file=out)
         if outcome.detail is not None:
             print(f"detail      {outcome.detail}", file=out)
     if outcome.failure_code is not None or outcome.status == UNSERVICEABLE:
         return ExitCode.REFUSED
+    return ExitCode.OK
+
+
+async def queue(
+    session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
+    provider: PaymentProvider,
+    arguments: argparse.Namespace,
+    out: TextIO,
+    settings: Settings,
+) -> int:
+    """Say what evaluation work exists and whether this process could serve it.
+
+    The command an operator runs when a merchant says nothing is happening. It reads the launch
+    table and nothing else: there is no monitoring copy of benchmark truth to disagree with, and
+    a second store of "what is queued" would be a second answer to a question that must have one.
+
+    Deployment wide rather than scoped to one world, because the question it answers is whether
+    any worker anywhere is configured for this work. `serviceable` is this process' answer to
+    that, derived from the same capability the claim filters on, so a queue full of unserviceable
+    work read from the one worker that exists is a configuration report.
+
+    Nothing here writes, claims or settles anything.
+    """
+    del sessions, provider
+    executors = worker_executor_kinds(settings)
+    rows = list(
+        (
+            await session.execute(
+                select(BenchmarkEvaluationLaunch, Merchant.slug)
+                .join(Merchant, BenchmarkEvaluationLaunch.merchant_id == Merchant.id)
+                .where(BenchmarkEvaluationLaunch.status.in_(sorted(PENDING_STATUSES)))
+                .order_by(BenchmarkEvaluationLaunch.requested_at, BenchmarkEvaluationLaunch.id)
+            )
+        ).all()
+    )
+    launches = [
+        {
+            "launch_id": str(launch.id),
+            "merchant_slug": slug,
+            "purpose": launch.purpose.value,
+            "status": launch.status.value,
+            "executor_kind": launch.executor_kind,
+            "serviceable": launch.executor_kind in executors,
+            "requested_at": launch.requested_at.isoformat(),
+        }
+        for launch, slug in rows
+    ]
+    payload: dict[str, Any] = {
+        "executors": ",".join(sorted(executors)),
+        "queued": sum(1 for entry in launches if entry["status"] == "QUEUED"),
+        "executing": sum(1 for entry in launches if entry["status"] == "EXECUTING"),
+        "unserviceable": sum(
+            1 for entry in launches if entry["status"] == "QUEUED" and not entry["serviceable"]
+        ),
+        "launches": launches,
+    }
+    if arguments.as_json:
+        write_json(out, payload)
+        return ExitCode.OK
+
+    print(f"executors    {payload['executors']}", file=out)
+    print(
+        f"queued {payload['queued']}  executing {payload['executing']}"
+        f"  needing another worker {payload['unserviceable']}",
+        file=out,
+    )
+    if not launches:
+        print("nothing queued and nothing executing", file=out)
+        return ExitCode.OK
+    print(
+        f"{'launch':<{LAUNCH_WIDTH}}  {'merchant':<{MERCHANT_WIDTH}}"
+        f"  {'status':<{STATUS_WIDTH}}  {'executor':<{EXECUTOR_WIDTH}}  serviceable",
+        file=out,
+    )
+    for entry in launches:
+        print(
+            f"{entry['launch_id']!s:<{LAUNCH_WIDTH}}  {entry['merchant_slug']!s:<{MERCHANT_WIDTH}}"
+            f"  {entry['status']!s:<{STATUS_WIDTH}}  {entry['executor_kind']!s:<{EXECUTOR_WIDTH}}"
+            f"  {'yes' if entry['serviceable'] else 'no'}",
+            file=out,
+        )
     return ExitCode.OK
 
 

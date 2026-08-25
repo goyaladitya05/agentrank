@@ -76,14 +76,18 @@ async def cli(settings: Settings, provider: FakePaymentProvider, *arguments: str
     process entry point should do and what cannot be done from inside the loop a test is already
     running on.
 
-    Every benchmark command is given the authored world by absolute path unless the test names
-    one itself. The default is relative to the working directory, which is the repository root
-    for an operator and is whatever pytest was started from here, and a suite of tests that
-    depended on that would be a suite that passes for a reason nobody chose. That the default
-    resolves is asserted separately, once.
+    Every benchmark command that takes a world is given the authored one by absolute path unless
+    the test names one itself. The default is relative to the working directory, which is the
+    repository root for an operator and is whatever pytest was started from here, and a suite of
+    tests that depended on that would be a suite that passes for a reason nobody chose. That the
+    default resolves is asserted separately, once.
+
+    `queue` reads the launch table deployment wide and has no world, so it is not given one: a
+    flag added for uniformity would be a flag the command would have to accept and ignore.
     """
     named = list(arguments)
-    if named[:1] == ["benchmark"] and "--world" not in named:
+    takes_world = named[:1] == ["benchmark"] and named[1:2] != ["queue"]
+    if takes_world and "--world" not in named:
         named += ["--world", str(VOLTEDGE_DIRECTORY)]
     out, err = StringIO(), StringIO()
     code = await asyncio.to_thread(
@@ -460,13 +464,25 @@ async def test_settle_refuses_a_run_that_has_not_finished(
 async def test_dispatch_with_nothing_queued_is_an_ordinary_answer(
     catalog_settings: Settings, provider: FakePaymentProvider
 ) -> None:
-    """An empty work list is not a failure, and a script has to be able to tell."""
-    await cli(catalog_settings, provider, "benchmark", "seed", "--json")
+    """An empty work list is not a failure, and a script has to be able to tell.
 
-    run = await cli(catalog_settings, provider, "benchmark", "dispatch", "--json")
+    The settings are pinned rather than inherited: a developer machine with a provider key in
+    `.env` and a CI runner without one would otherwise report different executors and this would
+    be asserting whatever the environment happened to hold.
+    """
+    settings = without_providers(catalog_settings)
+    await cli(settings, provider, "benchmark", "seed", "--json")
+
+    run = await cli(settings, provider, "benchmark", "dispatch", "--json")
 
     assert run.code == ExitCode.OK
-    assert run.json() == {"launch_id": None, "status": "NONE_QUEUED"}
+    assert run.json() == {
+        "launch_id": None,
+        "status": "NONE_QUEUED",
+        # What this worker could have run, said even when there was nothing to run. An operator
+        # whose launches are not moving reads this before anything else.
+        "executors": "reference-isolated",
+    }
 
 
 async def test_dispatch_says_when_queued_work_needs_a_worker_it_is_not(
@@ -503,6 +519,7 @@ async def test_dispatch_says_when_queued_work_needs_a_worker_it_is_not(
     assert run.code == ExitCode.REFUSED
     payload = run.json()
     assert payload["status"] == UNSERVICEABLE
+    assert payload["executors"] == "reference-isolated"
     assert payload["launch_id"] == str(launch_id)
     assert payload["failure_code"] is None
     assert "llm-openai" in cast(str, payload["detail"])
@@ -512,3 +529,62 @@ async def test_dispatch_says_when_queued_work_needs_a_worker_it_is_not(
     await session.refresh(still_queued)
     assert still_queued.status is EvaluationLaunchStatus.QUEUED
     assert still_queued.run_id is None
+
+
+async def test_queue_says_what_is_waiting_and_whether_this_worker_could_serve_it(
+    catalog_settings: Settings, provider: FakePaymentProvider, session: AsyncSession
+) -> None:
+    """The command an operator runs when a merchant says nothing is happening.
+
+    It reads the launch table and nothing else. There is no monitoring copy of benchmark truth
+    to disagree with, so what it reports is what the dispatcher would find.
+    """
+    await cli(catalog_settings, provider, "benchmark", "seed", "--json")
+    merchant = await MerchantRepository(session).get_by_slug(MERCHANT_SLUG)
+    assert merchant is not None
+    await MerchantRepresentationService(session).publish_source(
+        read_source(VOLTEDGE_DIRECTORY / "source.json")
+    )
+    service = MerchantEvaluationLaunchService(session, with_openai(catalog_settings))
+    plan = await service.plan(merchant.id)
+    launch = await service.request(
+        merchant.id,
+        purpose=plan.purpose,
+        representation_id=plan.representation_id,
+        request_key="cli-queue",
+        plan_digest=plan.digest,
+    )
+    launch_id = launch.id
+
+    run = await cli(without_providers(catalog_settings), provider, "benchmark", "queue", "--json")
+
+    assert run.code == ExitCode.OK
+    payload = run.json()
+    assert payload["executors"] == "reference-isolated"
+    assert payload["queued"] == 1
+    assert payload["executing"] == 0
+    assert payload["unserviceable"] == 1
+    listed = cast(list[dict[str, object]], payload["launches"])
+    assert [entry["launch_id"] for entry in listed] == [str(launch_id)]
+    assert listed[0]["executor_kind"] == "llm-openai"
+    assert listed[0]["serviceable"] is False
+    assert listed[0]["merchant_slug"] == MERCHANT_SLUG
+
+    # A worker that holds the frozen provider reads the same queue as serviceable.
+    capable = await cli(with_openai(catalog_settings), provider, "benchmark", "queue", "--json")
+    capable_listed = cast(list[dict[str, object]], capable.json()["launches"])
+    assert capable_listed[0]["serviceable"] is True
+    assert capable.json()["unserviceable"] == 0
+
+
+async def test_queue_reports_an_empty_deployment_without_inventing_work(
+    catalog_settings: Settings, provider: FakePaymentProvider
+) -> None:
+    await cli(catalog_settings, provider, "benchmark", "seed", "--json")
+
+    run = await cli(without_providers(catalog_settings), provider, "benchmark", "queue", "--json")
+
+    assert run.code == ExitCode.OK
+    assert run.json()["launches"] == []
+    assert run.json()["queued"] == 0
+    assert run.json()["unserviceable"] == 0

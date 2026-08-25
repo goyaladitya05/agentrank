@@ -9,10 +9,19 @@ one honest answer: the first credential comes from somebody with a shell.
 So there are three commands, all local, all delegating to `MerchantCredentialService`:
 
 ```text
-create   mints a key and prints it once      the only place a secret ever exists
-list     shows what a merchant holds         never shows a secret, because none is stored
-revoke   withdraws one key, terminally       takes effect on the next request
+create           mints a key and prints it once      the only place a secret ever exists
+list             shows what a merchant holds         never shows a secret, none is stored
+revoke           withdraws one key, terminally       takes effect on the next request
+sessions         shows a merchant's open consoles    no verifier, because none is stored
+revoke-sessions  signs a merchant out everywhere     leaves their API keys working
+purge-sessions   deletes settled session rows        bounded, and never an open one
 ```
+
+The three session commands exist because a durable browser session is a thing an operator has to
+be able to act on. Signing a merchant out of every console is not the same as revoking their key:
+one ends browser access and leaves their integrations working, the other ends both. And a table
+of sessions that only grows is a table nobody pruned, so there is a bounded delete for the rows
+that stopped being usable long enough ago to be uninteresting.
 
 `create` is the only command in this application that prints a secret. It prints it once, to
 stdout, and nothing can produce it again: the row holds a SHA-256 verifier and there is no
@@ -39,12 +48,14 @@ know whose. Nothing here reads a Unix username and calls it authentication.
 
 import argparse
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, TextIO
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from agentrank_api.auth.models import MerchantApiCredential
+from agentrank_api.auth.console import ConsoleSessionService
+from agentrank_api.auth.models import MerchantApiCredential, MerchantConsoleSession
 from agentrank_api.auth.service import MerchantCredentialService, validate_label
 from agentrank_api.auth.tokens import TokenMarker
 from agentrank_api.cli.exits import ExitCode
@@ -73,6 +84,13 @@ MISSING = "-"
 # this is the only time they will see it, and a warning after the value has already scrolled
 # past is a warning nobody reads.
 ONCE_ONLY = "This is the only time this key is shown. Nothing stores it and nothing can recover it."
+
+# How long a settled console session stays readable before cleanup will delete it, and how many
+# one invocation removes. A week because the question a settled session answers is "why was this
+# merchant signed out", which is asked within days or not at all; a bounded batch because this is
+# an operator command and an unbounded delete is not something to type by accident.
+DEFAULT_PURGE_DAYS = 7
+DEFAULT_PURGE_LIMIT = 1000
 
 
 def add_commands(parser: argparse.ArgumentParser) -> None:
@@ -132,6 +150,62 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
     )
     _add_json(withdrawal)
     withdrawal.set_defaults(command=revoke)
+
+    open_sessions = commands.add_parser(
+        "sessions",
+        help="the console browser sessions one merchant currently holds",
+        description=(
+            "List a merchant's open console sessions, oldest first. No verifier appears: none"
+            " is stored, exactly as no key is. What is shown is when each session was opened,"
+            " when it expires and which credential opened it, which is what an operator needs"
+            " to decide whether to end them."
+        ),
+    )
+    _add_merchant(open_sessions)
+    _add_json(open_sessions)
+    open_sessions.set_defaults(command=sessions)
+
+    signing_out = commands.add_parser(
+        "revoke-sessions",
+        help="close every console session one merchant holds. Their API keys keep working",
+        description=(
+            "Revoke every open console session for one merchant. Distinct from revoking a"
+            " credential: this ends browser access and leaves the merchant's integrations"
+            " authenticating. Idempotent, and it reports how many sessions it closed."
+        ),
+    )
+    _add_merchant(signing_out)
+    _add_json(signing_out)
+    signing_out.set_defaults(command=revoke_sessions)
+
+    pruning = commands.add_parser(
+        "purge-sessions",
+        help="delete console sessions that stopped being usable long enough ago",
+        description=(
+            "Delete expired and revoked console sessions older than a cutoff. Bounded on both"
+            " sides: the cutoff keeps a recently ended session readable while somebody is still"
+            " working out why a merchant was signed out, and the limit keeps one invocation from"
+            " being an unbounded delete. An open session is never touched, and nothing outside"
+            " this table is deleted."
+        ),
+    )
+    pruning.add_argument(
+        "--older-than-days",
+        type=int,
+        default=DEFAULT_PURGE_DAYS,
+        help=(
+            "how long a session must have been settled to be deleted"
+            f" (default {DEFAULT_PURGE_DAYS})"
+        ),
+    )
+    pruning.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_PURGE_LIMIT,
+        help=f"the most rows one invocation deletes (default {DEFAULT_PURGE_LIMIT})",
+    )
+    _add_json(pruning)
+    pruning.set_defaults(command=purge_sessions)
 
 
 def _add_merchant(parser: argparse.ArgumentParser) -> None:
@@ -338,3 +412,121 @@ def _stamp(moment: datetime | None) -> str:
 
 def _iso(moment: datetime | None) -> str | None:
     return None if moment is None else moment.isoformat()
+
+
+async def sessions(
+    session: AsyncSession,
+    sessions_factory: async_sessionmaker[AsyncSession],
+    provider: PaymentProvider,
+    arguments: argparse.Namespace,
+    out: TextIO,
+    settings: Settings,
+) -> int:
+    """List one merchant's open console sessions.
+
+    Open ones only, unlike the credential listing, and the difference is what each is for. A
+    revoked credential answers "was this key ever ours", which is the first question asked about
+    a leak. A settled session answers nothing anybody asks later, and listing every session a
+    merchant has ever opened would bury the ones that are live.
+
+    No verifier and no fragment of one. The row holds a digest, and printing a digest would be
+    printing the one value that is worth a brute force attempt.
+    """
+    del sessions_factory, provider, settings
+    merchant_id = await _resolve_merchant(session, arguments)
+    open_sessions = list(
+        (
+            await session.execute(
+                select(MerchantConsoleSession)
+                .where(
+                    MerchantConsoleSession.merchant_id == merchant_id,
+                    MerchantConsoleSession.revoked_at.is_(None),
+                    MerchantConsoleSession.expires_at > await _now(session),
+                )
+                .order_by(MerchantConsoleSession.created_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    rows = [
+        {
+            "session_id": str(record.id),
+            "credential_id": str(record.credential_id),
+            "created_at": record.created_at.isoformat(),
+            "expires_at": record.expires_at.isoformat(),
+        }
+        for record in open_sessions
+    ]
+    if arguments.as_json:
+        write_json(out, {"merchant_id": str(merchant_id), "sessions": rows})
+        return ExitCode.OK
+
+    if not rows:
+        print("no open console sessions", file=out)
+        return ExitCode.OK
+    print(
+        f"{'session':<{ID_WIDTH}}  {'credential':<{ID_WIDTH}}  {'opened':<{STAMP_WIDTH}}  expires",
+        file=out,
+    )
+    for row in rows:
+        opened = row["created_at"][:STAMP_WIDTH]
+        expires = row["expires_at"][:STAMP_WIDTH]
+        print(
+            f"{row['session_id']:<{ID_WIDTH}}  {row['credential_id']:<{ID_WIDTH}}"
+            f"  {opened:<{STAMP_WIDTH}}  {expires}",
+            file=out,
+        )
+    return ExitCode.OK
+
+
+async def revoke_sessions(
+    session: AsyncSession,
+    sessions_factory: async_sessionmaker[AsyncSession],
+    provider: PaymentProvider,
+    arguments: argparse.Namespace,
+    out: TextIO,
+    settings: Settings,
+) -> int:
+    """Close every open console session one merchant holds, and say how many that was."""
+    del sessions_factory, provider, settings
+    merchant_id = await _resolve_merchant(session, arguments)
+    closed = await ConsoleSessionService(session).revoke_for_merchant(merchant_id)
+    if arguments.as_json:
+        write_json(out, {"merchant_id": str(merchant_id), "revoked": closed})
+    else:
+        print(f"revoked     {closed} console session(s)", file=out)
+    return ExitCode.OK
+
+
+async def purge_sessions(
+    session: AsyncSession,
+    sessions_factory: async_sessionmaker[AsyncSession],
+    provider: PaymentProvider,
+    arguments: argparse.Namespace,
+    out: TextIO,
+    settings: Settings,
+) -> int:
+    """Delete settled console sessions older than the cutoff, up to the limit.
+
+    Both bounds are refused rather than clamped when they are nonsense. A negative cutoff would
+    delete sessions that are still open by arithmetic rather than by intent, and a limit of zero
+    is a command that does nothing while reporting success.
+    """
+    del sessions_factory, provider, settings
+    if arguments.older_than_days < 0 or arguments.limit < 1:
+        print("--older-than-days must not be negative and --limit must be at least 1", file=out)
+        return ExitCode.USAGE
+    removed = await ConsoleSessionService(session).purge_settled(
+        older_than=timedelta(days=arguments.older_than_days), limit=arguments.limit
+    )
+    if arguments.as_json:
+        write_json(out, {"deleted": removed, "limit": arguments.limit})
+    else:
+        print(f"deleted     {removed} settled console session(s)", file=out)
+    return ExitCode.OK
+
+
+async def _now(session: AsyncSession) -> datetime:
+    """The database clock, so a listing cannot call a session open that the API would refuse."""
+    return await ConsoleSessionService(session).clock()
