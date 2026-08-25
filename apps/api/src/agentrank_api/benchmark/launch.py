@@ -863,9 +863,14 @@ class MerchantEvaluationLaunchService:
     ) -> CommerceRepresentation | None:
         """The compiler-produced representation this merchant is publishing now.
 
-        Newest by identifier, which is time ordered here because these are version 7 UUIDs. The
-        same rule the overview's representation state uses, so the console never shows one
-        artifact and launches another.
+        Newest by `write_order`, the value PostgreSQL assigns at INSERT. The same rule the
+        overview's representation state uses, so the console never shows one artifact and
+        launches another, and the same rule the merchant's source history is read with.
+
+        This decides what a re-evaluation measures, which is why it is not ordered by the
+        primary key. Those are version 7 UUIDs generated in Python, monotonic only within one
+        process, so two processes publishing in the same millisecond would order themselves by a
+        random draw and the launch could measure the representation the merchant replaced.
         """
         return (
             await self._session.execute(
@@ -874,7 +879,7 @@ class MerchantEvaluationLaunchService:
                     CommerceRepresentation.merchant_id == merchant_id,
                     CommerceRepresentation.producer == RepresentationProducer.COMPILER,
                 )
-                .order_by(CommerceRepresentation.id.desc())
+                .order_by(CommerceRepresentation.write_order.desc())
                 .limit(1)
             )
         ).scalar_one_or_none()

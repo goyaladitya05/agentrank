@@ -6,11 +6,13 @@ from enum import StrEnum
 from typing import Any
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
     Enum,
     ForeignKeyConstraint,
+    Identity,
     Index,
     Integer,
     String,
@@ -66,6 +68,27 @@ MAX_SUBMISSION_KEY_LENGTH = 64
 _ORIGIN_VALUES = ", ".join(f"'{origin.value}'" for origin in SourceOrigin)
 
 
+def write_order_column() -> Mapped[int]:
+    """The order PostgreSQL wrote this row in, and the only authority on which one is newest.
+
+    `GENERATED ALWAYS AS IDENTITY` rather than a default, because "always" is the half that
+    matters: no INSERT anywhere can supply a value, so nothing in this application can decide
+    that one row was written before another. The database decides, at the moment the INSERT
+    reaches it, for every writer at once.
+
+    That is what the primary key used to be doing and could not. A version 7 UUID is generated
+    in Python and is monotonic only within one process, so two API processes inserting in the
+    same millisecond order themselves by a random draw. `created_at` cannot do it either: it is
+    `transaction_timestamp()`, so a transaction that began first and committed second carries
+    the earlier timestamp, which is the exact shape two submissions serializing on the
+    per-merchant advisory lock have.
+
+    Unique rather than merely indexed. A tie here would be a tie in the answer to which snapshot
+    a merchant is publishing, and there is no sensible way to break one.
+    """
+    return mapped_column(BigInteger, Identity(always=True), nullable=False, unique=True)
+
+
 class MerchantSourceSnapshot(Base):
     """One published raw merchant input, written once and never reinterpreted."""
 
@@ -82,6 +105,7 @@ class MerchantSourceSnapshot(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)
+    write_order: Mapped[int] = write_order_column()
     merchant_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
     source_key: Mapped[str] = mapped_column(String(MAX_KEY_LENGTH), nullable=False)
     source_version: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -130,6 +154,7 @@ class CommerceRepresentation(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)
+    write_order: Mapped[int] = write_order_column()
     merchant_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
     source_snapshot_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
     compiler_run_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)

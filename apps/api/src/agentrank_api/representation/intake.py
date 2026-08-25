@@ -212,30 +212,31 @@ class MerchantSourceIntakeService:
     async def current(self, merchant_id: uuid.UUID) -> MerchantSourceSnapshot | None:
         """The merchant's newest source snapshot, or None if they have never published one.
 
-        Ordered by identifier rather than by `created_at`, and that is load bearing rather than
-        arbitrary. `created_at` defaults to `now()`, which PostgreSQL evaluates as
+        Ordered by `write_order`, which PostgreSQL assigns at INSERT and no writer can supply.
+        That is load bearing rather than tidiness, and both of the orderings it replaces were
+        wrong in a way this answer cannot afford.
+
+        `created_at` cannot do it: it defaults to `now()`, which PostgreSQL evaluates as
         `transaction_timestamp()`, so a transaction that began earlier and committed later
-        carries an earlier timestamp than a snapshot it was written after. Two submissions
-        serializing on the advisory lock are exactly that shape: the waiter's transaction began
-        first and its row is written second, so ordering by timestamp would report the older
-        version as current, and the next submission would compare its evidence against the wrong
-        snapshot and write a duplicate.
+        carries the earlier timestamp. Two submissions serializing on the advisory lock are
+        exactly that shape, so the waiter would be reported as older than the row it was written
+        after.
 
-        The identifier is `uuid7`, generated in Python at insert, so it is ordered by when the
-        row was actually written rather than by when its transaction began.
+        The identifier cannot do it either, which is what this ordering used to be. It is
+        `uuid7`, generated in Python, and CPython's generator is monotonic only within one
+        process: two processes generating one in the same millisecond share the timestamp and
+        draw independent random counters, so their order is a coin flip. A second API process or
+        the operator command line running beside one is enough to reach it.
 
-        Narrowed rather than eliminated, and worth stating precisely. CPython's `uuid7` is
-        monotonic within one process; two processes generating one in the same millisecond share
-        the timestamp and get independent random counters, so their order is a coin flip. That is
-        reachable from a second API worker or from the operator command line. It replaces "wrong
-        whenever two transactions overlap", which the advisory lock guarantees to happen, with
-        "wrong only when two inserts land in the same millisecond from different processes".
+        Getting this wrong writes a duplicate. The next submission compares its evidence against
+        whatever this returns, so an inverted answer compares against a superseded snapshot and
+        publishes a version that says the same thing as the one before it.
         """
         return (
             await self._session.execute(
                 select(MerchantSourceSnapshot)
                 .where(MerchantSourceSnapshot.merchant_id == merchant_id)
-                .order_by(MerchantSourceSnapshot.id.desc())
+                .order_by(MerchantSourceSnapshot.write_order.desc())
                 .limit(1)
             )
         ).scalar_one_or_none()
@@ -259,7 +260,7 @@ class MerchantSourceIntakeService:
                     MerchantSourceSnapshot.source_version,
                 )
                 .where(MerchantSourceSnapshot.merchant_id == merchant_id)
-                .order_by(MerchantSourceSnapshot.id.desc())
+                .order_by(MerchantSourceSnapshot.write_order.desc())
                 .limit(1)
             )
         ).first()
@@ -295,7 +296,7 @@ class MerchantSourceIntakeService:
                 await self._session.execute(
                     self._summary_columns()
                     .where(MerchantSourceSnapshot.merchant_id == merchant_id)
-                    .order_by(MerchantSourceSnapshot.id.desc())
+                    .order_by(MerchantSourceSnapshot.write_order.desc())
                     .limit(limit)
                 )
             ).all()

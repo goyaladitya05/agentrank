@@ -1097,11 +1097,16 @@ class DiagnosticsService:
         )
 
     async def _representation_state(self, merchant_id: uuid.UUID) -> RepresentationState:
+        # Both reads order by `write_order`, the value PostgreSQL assigns at INSERT, because both
+        # answer which artifact the merchant is publishing now. Ordering by the primary key would
+        # be ordering by a version 7 UUID generated in Python, which is monotonic only within one
+        # process, and this surface has to agree with the launch service that reads the same two
+        # rows the same way.
         snapshot = (
             await self._session.execute(
                 select(MerchantSourceSnapshot)
                 .where(MerchantSourceSnapshot.merchant_id == merchant_id)
-                .order_by(MerchantSourceSnapshot.id.desc())
+                .order_by(MerchantSourceSnapshot.write_order.desc())
                 .limit(1)
             )
         ).scalar_one_or_none()
@@ -1112,7 +1117,7 @@ class DiagnosticsService:
                     CommerceRepresentation.merchant_id == merchant_id,
                     CommerceRepresentation.producer == RepresentationProducer.COMPILER,
                 )
-                .order_by(CommerceRepresentation.id.desc())
+                .order_by(CommerceRepresentation.write_order.desc())
                 .limit(1)
             )
         ).scalar_one_or_none()
