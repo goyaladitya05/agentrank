@@ -12,10 +12,18 @@ from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from benchmark_support import mission as benchmark_mission
 from benchmark_support import suite as benchmark_suite
+from launch_support import (
+    build_initial_world,
+    build_launch_world,
+    queue_launch,
+    without_providers,
+)
 from sqlalchemy import create_engine, func, inspect, select, text
+from sqlalchemy.exc import DBAPIError
 
 from agentrank_api.audit.models import ActorType, AuditEvent
 from agentrank_api.benchmark.definitions import ExpectedOutcome
+from agentrank_api.benchmark.evaluation_launch import BenchmarkEvaluationLaunch
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus
 from agentrank_api.benchmark.models import BenchmarkSuite
 from agentrank_api.benchmark.repository import BenchmarkRunRepository, BenchmarkSuiteRepository
@@ -54,6 +62,9 @@ PHASE_1F_HEAD = "ab60fc05d747"
 PHASE_1G_HEAD = "4c8de0a1b562"
 PHASE_1I_HEAD = "5b3f27ad9e14"
 BENCHMARK_DEFINITIONS_HEAD = "a9c07ae31e5e"
+# The revision before evaluation launches gained a purpose, and so the last one that has no
+# way to say what a first evaluation measured.
+BEFORE_LAUNCH_PURPOSE = "a4b7c1d9e2f5"
 
 HOUR = timedelta(hours=1)
 CHECKOUT_ID = uuid.uuid7()
@@ -936,3 +947,68 @@ async def test_benchmark_migrations_apply_to_a_database_that_already_holds_data(
     # The definitions are gone with the tables that held them, which is what a downgrade of
     # these phases means. Everything written before them is still here.
     assert row_count(throwaway_database, BenchmarkSuite) == 0
+
+
+@pytest.mark.anyio
+async def test_downgrading_past_the_launch_purpose_refuses_rather_than_rewriting_one(
+    throwaway_database: Settings, alembic_config_factory: AlembicConfigFactory
+) -> None:
+    """A first evaluation cannot be represented by a schema whose launches all name an artifact.
+
+    The previous shape requires a representation and a compiler run on every launch. Narrowing
+    back with an initial evaluation present would have to either invent those, which would claim
+    a merchant measured a Commerce IR document that did not exist, or drop the row, which would
+    erase the command behind a benchmark run. Both falsify history, so the migration refuses.
+
+    Intentional rather than a constraint violation, and the whole run is one transaction, so
+    nothing is half applied and the database stays at head.
+    """
+    config = alembic_config_factory(throwaway_database)
+    command.upgrade(config, "head")
+    head = ScriptDirectory.from_config(config).get_current_head()
+
+    engine = create_async_engine(throwaway_database)
+    try:
+        async with create_session_factory(engine)() as session:
+            world = await build_initial_world(session, "downgrade-first-shop")
+            await queue_launch(
+                session,
+                without_providers(throwaway_database),
+                world,
+                request_key="downgrade-first",
+            )
+    finally:
+        await engine.dispose()
+
+    with pytest.raises(DBAPIError, match="cannot be represented before this revision"):
+        command.downgrade(config, BEFORE_LAUNCH_PURPOSE)
+
+    assert current_revision(throwaway_database) == head
+    assert row_count(throwaway_database, BenchmarkEvaluationLaunch) == 1
+
+
+@pytest.mark.anyio
+async def test_downgrading_past_the_launch_purpose_succeeds_without_a_first_evaluation(
+    throwaway_database: Settings, alembic_config_factory: AlembicConfigFactory
+) -> None:
+    """A re-evaluation is representable either side, so nothing stands in the way."""
+    config = alembic_config_factory(throwaway_database)
+    command.upgrade(config, "head")
+
+    engine = create_async_engine(throwaway_database)
+    try:
+        async with create_session_factory(engine)() as session:
+            world = await build_launch_world(session, "downgrade-again-shop")
+            await queue_launch(
+                session,
+                without_providers(throwaway_database),
+                world,
+                request_key="downgrade-again",
+            )
+    finally:
+        await engine.dispose()
+
+    command.downgrade(config, BEFORE_LAUNCH_PURPOSE)
+
+    assert current_revision(throwaway_database) == BEFORE_LAUNCH_PURPOSE
+    assert "benchmark_reevaluation" in table_names(throwaway_database)
