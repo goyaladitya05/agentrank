@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime
 from typing import Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agentrank_api.benchmark.evaluation_launch import (
     REQUEST_KEY_PATTERN,
@@ -49,6 +49,7 @@ class EvaluationPreflightView(BaseModel):
     representation_label: str | None
     compiler_run_id: uuid.UUID | None
     source_snapshot_id: uuid.UUID | None
+    source_snapshot_label: str | None
     suite_id: uuid.UUID | None
     suite_label: str | None
     suite_definition_hash: str | None
@@ -77,6 +78,7 @@ class EvaluationPreflightView(BaseModel):
             representation_label=plan.representation_label,
             compiler_run_id=plan.compiler_run_id,
             source_snapshot_id=plan.source_snapshot_id,
+            source_snapshot_label=plan.source_snapshot_label,
             suite_id=plan.suite_id,
             suite_label=plan.suite_label,
             suite_definition_hash=plan.suite_definition_hash,
@@ -103,13 +105,15 @@ class EvaluationPreflightView(BaseModel):
 class EvaluationLaunchRequest(BaseModel):
     """The whole of what a browser may say about a launch.
 
-    A representation identifier, so a page rendered against an artifact that has since been
-    superseded is refused rather than quietly running something else. A request key, so a double
-    submit and a retry after a lost response are the same launch. And the preflight digest, so
-    every other thing the merchant was shown, the suite, the world and the buyer, is refused if
-    it moved rather than frozen silently.
+    A purpose, so a caller that believes it is measuring a published representation is refused
+    rather than quietly given a measurement of the storefront. A representation identifier when
+    that purpose has one, so a page rendered against an artifact that has since been superseded
+    is refused rather than quietly running something else. A request key, so a double submit and
+    a retry after a lost response are the same launch. And the preflight digest, so every other
+    thing the merchant was shown, the suite, the world and the buyer, is refused if it moved
+    rather than frozen silently.
 
-    None of the three selects anything. Each is checked against what the server resolves for the
+    None of the four selects anything. Each is checked against what the server resolves for the
     merchant its credential authenticated, and which merchant that is comes from the credential
     and is not a field here or anywhere else.
 
@@ -121,9 +125,25 @@ class EvaluationLaunchRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    representation_id: uuid.UUID
+    purpose: EvaluationPurpose
+    representation_id: uuid.UUID | None = None
     request_key: str = Field(pattern=REQUEST_KEY_PATTERN)
     plan_digest: str = Field(pattern=HASH_PATTERN)
+
+    @model_validator(mode="after")
+    def _identity_matches_purpose(self) -> Self:
+        """A body that names the wrong artifact for its own purpose is refused as malformed.
+
+        The service refuses this too, and would still refuse it if this were removed. It is here
+        as well because the shapes are genuinely different requests rather than one request with
+        an optional field, and a caller sending the wrong one has made a mistake worth naming
+        before any state is read.
+        """
+        if self.purpose is EvaluationPurpose.INITIAL and self.representation_id is not None:
+            raise ValueError("a first evaluation names no representation")
+        if self.purpose is EvaluationPurpose.REEVALUATION and self.representation_id is None:
+            raise ValueError("a re-evaluation names the representation it measures")
+        return self
 
 
 class EvaluationLaunchView(BaseModel):
@@ -140,6 +160,7 @@ class EvaluationLaunchView(BaseModel):
     representation_label: str | None
     compiler_run_id: uuid.UUID | None
     source_snapshot_id: uuid.UUID | None
+    source_snapshot_label: str | None
     suite_id: uuid.UUID
     suite_label: str
     mission_count: int
@@ -168,6 +189,7 @@ class EvaluationLaunchView(BaseModel):
             representation_label=detail.representation_label,
             compiler_run_id=detail.compiler_run_id,
             source_snapshot_id=detail.source_snapshot_id,
+            source_snapshot_label=detail.source_snapshot_label,
             suite_id=detail.suite_id,
             suite_label=detail.suite_label,
             mission_count=detail.mission_count,

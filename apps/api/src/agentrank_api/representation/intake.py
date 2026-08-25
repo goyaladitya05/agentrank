@@ -117,6 +117,18 @@ class SubmissionOutcome:
     snapshot: MerchantSourceSnapshot
 
 
+@dataclass(frozen=True, slots=True)
+class SourceIdentity:
+    """Which source snapshot a merchant is currently publishing, and what to call it.
+
+    A label rather than a document. The label is `key@version`, which is what a merchant reads
+    on every other surface that names a snapshot, and it carries none of the content.
+    """
+
+    snapshot_id: uuid.UUID
+    label: str
+
+
 class MerchantSourceIntakeService:
     """The merchant's own source evidence: submitted, listed and read back."""
 
@@ -228,21 +240,36 @@ class MerchantSourceIntakeService:
             )
         ).scalar_one_or_none()
 
-    async def _current_id(self, merchant_id: uuid.UUID) -> uuid.UUID | None:
-        """Which snapshot is current, without loading the document inside it.
+    async def current_identity(self, merchant_id: uuid.UUID) -> SourceIdentity | None:
+        """Which snapshot is current and what it is called, without loading the document in it.
 
-        The read views need the identifier and nothing else, and a source document is up to a
-        hundred and twenty eight kilobytes of JSONB. Loading one to compare a UUID is the exact
-        cost the summary columns are computed in PostgreSQL to avoid.
+        Callers that need to name the merchant's current source, rather than read it, come here.
+        A source document is up to a hundred and twenty eight kilobytes of JSONB, and loading one
+        to print a label is the exact cost the summary columns are computed in PostgreSQL to
+        avoid.
+
+        The ordering rule is `current`'s and is argued there. Stated once, so a caller cannot
+        end up with a different answer to which snapshot is the merchant's current one.
         """
-        return (
+        row = (
             await self._session.execute(
-                select(MerchantSourceSnapshot.id)
+                select(
+                    MerchantSourceSnapshot.id,
+                    MerchantSourceSnapshot.source_key,
+                    MerchantSourceSnapshot.source_version,
+                )
                 .where(MerchantSourceSnapshot.merchant_id == merchant_id)
                 .order_by(MerchantSourceSnapshot.id.desc())
                 .limit(1)
             )
-        ).scalar_one_or_none()
+        ).first()
+        if row is None:
+            return None
+        return SourceIdentity(snapshot_id=row.id, label=f"{row.source_key}@{row.source_version}")
+
+    async def _current_id(self, merchant_id: uuid.UUID) -> uuid.UUID | None:
+        identity = await self.current_identity(merchant_id)
+        return None if identity is None else identity.snapshot_id
 
     async def snapshot(
         self, merchant_id: uuid.UUID, source_snapshot_id: uuid.UUID

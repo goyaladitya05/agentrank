@@ -1,11 +1,29 @@
-"""Admitting and settling a merchant's request to measure a published representation again.
+"""Admitting and settling a merchant's request to run one benchmark evaluation.
 
-The product loop this closes is: diagnostics show a problem, the merchant reviews compiler
-facts, the merchant publishes a new agent-ready representation, and then the merchant asks for
-the benchmark to be run again. The last step is a separate command on purpose. Publishing
-writes an artifact and spends nothing; launching spends model quota and takes as long as a
-suite takes, and a workflow that started one as a side effect of the other would be spending on
-the merchant's behalf without being asked.
+Two commands land here and the server decides which one a merchant is making, because which one
+it is follows from what they have rather than from what a browser asks for.
+
+```text
+INITIAL        the merchant has published no agent-ready representation and has no completed
+               benchmark run, so there is nothing to measure again and no evidence at all. The
+               honest thing to measure is the merchant as they are: the ordinary storefront
+               discovery boundary, and their own information as recorded in their current
+               source snapshot. Nothing is compiled and nothing is compared
+REEVALUATION   the merchant is publishing an agent-ready representation, so the thing to
+               measure is that artifact, against whichever prior run of the same suite the
+               launch freezes
+```
+
+A merchant who has published always gets the second, whether or not they have ever run a
+benchmark, which is the Phase 4D behaviour exactly. A merchant who has not published and has a
+completed run already gets the second too, blocked, and is told to publish: an initial
+evaluation is the bootstrap out of having no evidence, not a second way to measure a storefront
+whenever somebody feels like it.
+
+The last step is a separate command on purpose either way. Publishing writes an artifact and
+spends nothing, and provisioning a merchant measures nothing; launching spends model quota and
+takes as long as a suite takes, and a workflow that started one as a side effect of the other
+would be spending on the merchant's behalf without being asked.
 
 Two halves live here and they run in different processes.
 
@@ -21,10 +39,10 @@ run it produced, and settles the launch when the run finishes. It never reads a 
 and never takes a merchant identity from anything but the persisted row, because by the time it
 runs there is no request and no session left to trust.
 
-What the browser may say is a representation identifier, a request key and the digest of the
-preflight it read. None of the three selects anything; each is checked against what the server
-resolves. Everything else, including which merchant this is, comes from the credential and from
-the database.
+What the browser may say is which purpose it was shown, the representation it was shown if that
+purpose has one, a request key and the digest of the preflight it read. None of them selects
+anything; each is checked against what the server resolves. Everything else, including which
+merchant this is, comes from the credential and from the database.
 """
 
 import hashlib
@@ -68,7 +86,8 @@ from agentrank_api.config import Settings
 from agentrank_api.conflicts import translated_conflicts
 from agentrank_api.errors import ConflictError, NotFoundError
 from agentrank_api.representation.definitions import RepresentationProducer
-from agentrank_api.representation.models import CommerceRepresentation
+from agentrank_api.representation.intake import MerchantSourceIntakeService, SourceIdentity
+from agentrank_api.representation.models import CommerceRepresentation, MerchantSourceSnapshot
 
 RESOURCE = "benchmark_evaluation_launch"
 
@@ -110,12 +129,13 @@ class BuyerPlan:
 def resolve_buyer(settings: Settings) -> BuyerPlan:
     """The buyer this deployment can actually run, named honestly.
 
-    A merchant re-evaluation is only evidence about an agent-ready representation when an agent
-    reads it, and only the model buyer is given the representation as its discovery surface.
-    With no provider credential configured there is no model buyer, so the launch falls back to
-    the deterministic reference buyer and every surface says so in those words: it is not an AI
-    agent, it reads structured commerce fields a storefront does not publish, and the run it
-    produces pins no representation because it never saw one.
+    An evaluation is only evidence about an autonomous agent when an agent does the shopping,
+    and only the model buyer is given a discovery surface at all: the pinned representation for
+    a re-evaluation, the ordinary storefront for an initial evaluation. With no provider
+    credential configured there is no model buyer, so the launch falls back to the deterministic
+    reference buyer and every surface says so in those words: it is not an AI agent, it reads
+    structured commerce fields a storefront does not publish, and what it measures is that the
+    benchmark path works rather than how readable this merchant is.
     """
     if settings.openai is not None:
         configuration = AgentConfiguration(provider=OPENAI_PROVIDER, requested_model=OPENAI_MODEL)
@@ -128,7 +148,7 @@ def resolve_buyer(settings: Settings) -> BuyerPlan:
 
 @dataclass(frozen=True, slots=True)
 class LaunchBlocker:
-    """One reason a re-evaluation cannot be launched right now, with a merchant sentence."""
+    """One reason an evaluation cannot be launched right now, with a merchant sentence."""
 
     code: str
     message: str
@@ -149,6 +169,11 @@ class EvaluationPlan:
     representation_label: str | None
     compiler_run_id: uuid.UUID | None
     source_snapshot_id: uuid.UUID | None
+    # Named only when the source is what is being measured. A re-evaluation's source identifier
+    # is the provenance of the artifact under test rather than the artifact, and the
+    # representation's own label already names that, so resolving a second label for it would be
+    # a query for something nobody reads.
+    source_snapshot_label: str | None
     suite_id: uuid.UUID | None
     suite_label: str | None
     suite_definition_hash: str | None
@@ -196,6 +221,7 @@ class EvaluationPlan:
             "representation_id": _text(self.representation_id),
             "compiler_run_id": _text(self.compiler_run_id),
             "source_snapshot_id": _text(self.source_snapshot_id),
+            "source_snapshot_label": self.source_snapshot_label,
             "suite_id": _text(self.suite_id),
             "suite_label": self.suite_label,
             "suite_definition_hash": self.suite_definition_hash,
@@ -225,6 +251,7 @@ class _Labels:
     mission_counts: dict[uuid.UUID, int]
     environment_labels: dict[uuid.UUID, str]
     representation_labels: dict[uuid.UUID, str]
+    source_labels: dict[uuid.UUID, str]
     run_statuses: dict[uuid.UUID, str]
     missions_finished: dict[uuid.UUID, int]
 
@@ -249,6 +276,7 @@ class EvaluationLaunchDetail:
     representation_label: str | None
     compiler_run_id: uuid.UUID | None
     source_snapshot_id: uuid.UUID | None
+    source_snapshot_label: str | None
     suite_id: uuid.UUID
     suite_label: str
     mission_count: int
@@ -273,6 +301,7 @@ class MerchantEvaluationLaunchService:
         self._suites = BenchmarkSuiteRepository(session)
         self._runs = BenchmarkRunRepository(session)
         self._environments = BenchmarkEnvironmentService(session)
+        self._sources = MerchantSourceIntakeService(session)
 
     async def plan(self, merchant_id: uuid.UUID) -> EvaluationPlan:
         """What a launch would evaluate now, and what stops it if anything does."""
@@ -280,8 +309,20 @@ class MerchantEvaluationLaunchService:
         blockers: list[LaunchBlocker] = []
 
         representation = await self._current_representation(merchant_id)
+        purpose = await self._purpose(merchant_id, representation)
         compiler_run = None
-        if representation is None:
+        source: SourceIdentity | None = None
+        if purpose is EvaluationPurpose.INITIAL:
+            source = await self._sources.current_identity(merchant_id)
+            if source is None:
+                blockers.append(
+                    LaunchBlocker(
+                        "merchant_source_unavailable",
+                        "AgentRank has no record of your merchant information yet, so there is"
+                        " nothing to evaluate you against. Add your merchant source first.",
+                    )
+                )
+        elif representation is None:
             blockers.append(
                 LaunchBlocker(
                     "no_published_representation",
@@ -328,7 +369,7 @@ class MerchantEvaluationLaunchService:
             blockers.append(
                 LaunchBlocker(
                     "evaluation_already_pending",
-                    "A re-evaluation is already queued or running for this merchant. Wait for it"
+                    "An evaluation is already queued or running for this merchant. Wait for it"
                     " to finish before starting another.",
                 )
             )
@@ -342,16 +383,27 @@ class MerchantEvaluationLaunchService:
                 )
             )
 
-        baseline = None if suite is None else await self._baseline(merchant_id, suite.id)
+        # An initial evaluation is admitted only while the merchant has no completed run, so
+        # there is nothing for one to be read against and the schema refuses to hold anything
+        # anyway. Not resolved rather than resolved and discarded: a merchant's first evaluation
+        # has no before, and this is where that is true rather than somewhere it is filtered.
+        baseline = (
+            None
+            if suite is None or purpose is EvaluationPurpose.INITIAL
+            else await self._baseline(merchant_id, suite.id)
+        )
         configuration = buyer.configuration
         return EvaluationPlan(
-            purpose=EvaluationPurpose.REEVALUATION,
+            purpose=purpose,
             representation_id=None if representation is None else representation.id,
             representation_label=None if representation is None else representation.label,
             compiler_run_id=None if compiler_run is None else compiler_run.id,
             source_snapshot_id=(
-                None if representation is None else representation.source_snapshot_id
+                source.snapshot_id
+                if source is not None
+                else (None if representation is None else representation.source_snapshot_id)
             ),
+            source_snapshot_label=None if source is None else source.label,
             suite_id=None if suite is None else suite.id,
             suite_label=None if suite is None else suite.label,
             suite_definition_hash=None if suite is None else suite.definition_hash,
@@ -377,7 +429,8 @@ class MerchantEvaluationLaunchService:
         self,
         merchant_id: uuid.UUID,
         *,
-        representation_id: uuid.UUID,
+        purpose: EvaluationPurpose,
+        representation_id: uuid.UUID | None,
         request_key: str,
         plan_digest: str,
     ) -> BenchmarkEvaluationLaunch:
@@ -393,11 +446,15 @@ class MerchantEvaluationLaunchService:
         nothing external is called, so this whole method is one short transaction. What comes
         back is a queued launch, which is the only thing an honest answer can promise while the
         work has not started.
+
+        The purpose is checked, never taken. A caller states which command it believes it is
+        making, and a caller that believes it is measuring a published representation is refused
+        rather than quietly given a measurement of the storefront, or the other way round.
         """
         merchant = await self._merchant(merchant_id)
         existing = await self._by_request_key(merchant_id, request_key)
         if existing is not None:
-            return self._same_request(existing, representation_id)
+            return self._same_request(existing, purpose, representation_id)
 
         await self._environments.claim(merchant.slug)
         # Read again under the lock: a concurrent identical submit may have committed between
@@ -405,21 +462,25 @@ class MerchantEvaluationLaunchService:
         # request key.
         existing = await self._by_request_key(merchant_id, request_key)
         if existing is not None:
-            return self._same_request(existing, representation_id)
+            return self._same_request(existing, purpose, representation_id)
 
         plan = await self.plan(merchant_id)
-        self._require_launchable(plan, merchant, representation_id, plan_digest)
+        self._require_launchable(plan, merchant, purpose, representation_id, plan_digest)
         buyer = resolve_buyer(self._settings)
-        assert plan.representation_id is not None  # a launchable plan resolved every identity
-        assert plan.compiler_run_id is not None
+        initial = plan.purpose is EvaluationPurpose.INITIAL
+        # A launchable plan resolved every identity its own purpose needs.
+        assert initial or plan.representation_id is not None
+        assert initial or plan.compiler_run_id is not None
+        assert not initial or plan.source_snapshot_id is not None
         assert plan.suite_id is not None
         assert plan.environment_id is not None
         launch = BenchmarkEvaluationLaunch(
             merchant_id=merchant.id,
             request_key=request_key,
             purpose=plan.purpose,
-            representation_id=plan.representation_id,
-            compiler_run_id=plan.compiler_run_id,
+            representation_id=None if initial else plan.representation_id,
+            compiler_run_id=None if initial else plan.compiler_run_id,
+            source_snapshot_id=plan.source_snapshot_id if initial else None,
             suite_id=plan.suite_id,
             environment_id=plan.environment_id,
             buyer_profile=buyer.profile,
@@ -444,7 +505,7 @@ class MerchantEvaluationLaunchService:
             await self._session.rollback()
             duplicate = await self._by_request_key(merchant_id, request_key)
             if duplicate is not None:
-                return self._same_request(duplicate, representation_id)
+                return self._same_request(duplicate, purpose, representation_id)
             raise
         return launch
 
@@ -452,14 +513,17 @@ class MerchantEvaluationLaunchService:
         self,
         plan: EvaluationPlan,
         merchant: Merchant,
-        representation_id: uuid.UUID,
+        purpose: EvaluationPurpose,
+        representation_id: uuid.UUID | None,
         plan_digest: str,
     ) -> None:
         """Refuse a launch this merchant cannot have, or one they were shown differently.
 
         Blockers first and by their own name, because a merchant with nothing published needs to
-        be told that rather than told a digest disagreed. The representation second, because it
-        is the artifact the whole command is about and deserves its own sentence. Everything
+        be told that rather than told a digest disagreed. The purpose second, because which
+        command this is decides what everything else means and a mismatch there is not a stale
+        field, it is a different request. The representation third, because for a re-evaluation
+        it is the artifact the whole command is about and deserves its own sentence. Everything
         else the preflight showed is covered by the digest at once: what a merchant committed to
         is the whole plan they read, and any part of it moving underneath them is one refusal.
         """
@@ -471,7 +535,28 @@ class MerchantEvaluationLaunchService:
                 resource=RESOURCE,
                 identifier=str(merchant.id),
             )
-        if plan.representation_id != representation_id:
+        if plan.purpose is not purpose:
+            # The merchant published between the page render and the submit, or their first
+            # evaluation finished. Either way the command they read is no longer the command
+            # this would make, and running the other one would measure something they did not
+            # ask about.
+            raise ConflictError(
+                "evaluation_purpose_superseded",
+                "What AgentRank would evaluate for this merchant has changed since this page was"
+                " loaded.",
+                resource=RESOURCE,
+                identifier=str(merchant.id),
+            )
+        if plan.purpose is EvaluationPurpose.INITIAL:
+            if representation_id is not None:
+                raise ConflictError(
+                    "initial_evaluation_names_no_representation",
+                    "A first evaluation measures your current merchant-facing state, so it"
+                    " cannot name a published representation.",
+                    resource=RESOURCE,
+                    identifier=str(merchant.id),
+                )
+        elif plan.representation_id != representation_id:
             # Either somebody published a newer representation while this page was open, or the
             # browser named an older one. Both are the same refusal: a re-evaluation measures
             # what is published now, and running an artifact the merchant is no longer publishing
@@ -514,12 +599,17 @@ class MerchantEvaluationLaunchService:
         results to produce two integers is the same defect one level down.
         """
         if not launches:
-            return _Labels({}, {}, {}, {}, {}, {})
+            return _Labels({}, {}, {}, {}, {}, {}, {})
         merchant_ids = {launch.merchant_id for launch in launches}
         suite_ids = {launch.suite_id for launch in launches}
         environment_ids = {launch.environment_id for launch in launches}
         representation_ids = {
             launch.representation_id for launch in launches if launch.representation_id is not None
+        }
+        source_ids = {
+            launch.source_snapshot_id
+            for launch in launches
+            if launch.source_snapshot_id is not None
         }
         run_ids = {launch.run_id for launch in launches if launch.run_id is not None}
 
@@ -545,6 +635,24 @@ class MerchantEvaluationLaunchService:
                 CommerceRepresentation.merchant_id.in_(merchant_ids),
             )
         )
+        # Key, version and identifier only. A source document is up to a hundred and twenty
+        # eight kilobytes of JSONB, and a launch list that loaded one per row to print a label
+        # would be the most expensive read in the console by a wide margin.
+        source_labels: dict[uuid.UUID, str] = {}
+        if source_ids:
+            sources = await self._session.execute(
+                select(
+                    MerchantSourceSnapshot.id,
+                    MerchantSourceSnapshot.source_key,
+                    MerchantSourceSnapshot.source_version,
+                ).where(
+                    MerchantSourceSnapshot.id.in_(source_ids),
+                    MerchantSourceSnapshot.merchant_id.in_(merchant_ids),
+                )
+            )
+            source_labels = {
+                row.id: f"{row.source_key}@{row.source_version}" for row in sources.all()
+            }
         run_statuses: dict[uuid.UUID, str] = {}
         finished: dict[uuid.UUID, int] = {}
         if run_ids:
@@ -569,6 +677,7 @@ class MerchantEvaluationLaunchService:
             mission_counts={row[0]: row[1] for row in missions.all()},
             environment_labels={row.id: row.label for row in environments.scalars()},
             representation_labels={row.id: row.label for row in representations.scalars()},
+            source_labels=source_labels,
             run_statuses=run_statuses,
             missions_finished=finished,
         )
@@ -595,6 +704,11 @@ class MerchantEvaluationLaunchService:
             ),
             compiler_run_id=launch.compiler_run_id,
             source_snapshot_id=launch.source_snapshot_id,
+            source_snapshot_label=(
+                None
+                if launch.source_snapshot_id is None
+                else labels.source_labels.get(launch.source_snapshot_id, "")
+            ),
             suite_id=launch.suite_id,
             suite_label=labels.suite_labels.get(launch.suite_id, ""),
             mission_count=labels.mission_counts.get(launch.suite_id, 0),
@@ -641,19 +755,22 @@ class MerchantEvaluationLaunchService:
         return list(rows.scalars())
 
     def _same_request(
-        self, existing: BenchmarkEvaluationLaunch, representation_id: uuid.UUID
+        self,
+        existing: BenchmarkEvaluationLaunch,
+        purpose: EvaluationPurpose,
+        representation_id: uuid.UUID | None,
     ) -> BenchmarkEvaluationLaunch:
         """The launch this request key already produced, or a refusal that it asked for another.
 
-        A retry after a lost response repeats the key and the representation and gets its own
-        launch back. A different representation under a key that has already been used is a
-        different command wearing an old name, and answering with the old launch would tell a
-        merchant something was queued that was not.
+        A retry after a lost response repeats the key, the purpose and the representation, and
+        gets its own launch back. Either of the first two differing under a key that has already
+        been used is a different command wearing an old name, and answering with the old launch
+        would tell a merchant something was queued that was not.
         """
-        if existing.representation_id != representation_id:
+        if existing.purpose is not purpose or existing.representation_id != representation_id:
             raise ConflictError(
                 "evaluation_request_key_reused",
-                "This request has already launched a re-evaluation of a different representation.",
+                "This request has already launched a different evaluation.",
                 resource=RESOURCE,
                 identifier=str(existing.id),
             )
@@ -666,6 +783,41 @@ class MerchantEvaluationLaunchService:
         if merchant is None:
             raise NotFoundError("merchant", str(merchant_id))
         return merchant
+
+    async def _purpose(
+        self, merchant_id: uuid.UUID, representation: CommerceRepresentation | None
+    ) -> EvaluationPurpose:
+        """Which command this merchant is making, decided from what they have.
+
+        A merchant publishing an agent-ready representation is asking about that artifact, and
+        that is true whether or not they have ever run a benchmark: a first run of a published
+        representation was always admissible and still is, with nothing to compare it against
+        and every surface saying so.
+
+        Everyone else is deciding between two things. With no completed run there is no evidence
+        about this merchant at all, and the honest measurement is of the merchant as they are.
+        With a completed run there already is, so the merchant is not bootstrapping and is told
+        to publish rather than handed a second way to measure a storefront: repeating an initial
+        evaluation once evidence exists would be a raw arm collected whenever somebody felt like
+        it, which is a controlled experiment's job and is a different thing with different rules.
+
+        An aborted run is not a completed one and does not count. A merchant whose first
+        evaluation stopped has no result, and stranding them because something already failed
+        would be the opposite of what this exists for.
+        """
+        if representation is not None:
+            return EvaluationPurpose.REEVALUATION
+        completed = await self._session.scalar(
+            select(BenchmarkRun.id)
+            .where(
+                BenchmarkRun.merchant_id == merchant_id,
+                BenchmarkRun.status == BenchmarkRunStatus.COMPLETED,
+            )
+            .limit(1)
+        )
+        return (
+            EvaluationPurpose.REEVALUATION if completed is not None else EvaluationPurpose.INITIAL
+        )
 
     async def _current_representation(
         self, merchant_id: uuid.UUID

@@ -16,7 +16,14 @@ import asyncio
 import uuid
 
 import pytest
-from launch_support import LaunchWorld, build_launch_world, queue_launch, without_providers
+from launch_support import (
+    InitialWorld,
+    LaunchWorld,
+    build_initial_world,
+    build_launch_world,
+    queue_launch,
+    without_providers,
+)
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -38,7 +45,7 @@ LOCK_WAIT = 0.4
 async def launch_in_new_session(
     sessions: async_sessionmaker[AsyncSession],
     settings: Settings,
-    world: LaunchWorld,
+    world: LaunchWorld | InitialWorld,
     *,
     request_key: str,
 ) -> uuid.UUID | ConflictError:
@@ -120,4 +127,39 @@ async def test_two_identical_requests_answer_with_one_launch(
     assert isinstance(first, uuid.UUID)
     assert isinstance(second, uuid.UUID)
     assert first == second
+    assert await launch_count(session) == 1
+
+
+async def test_two_first_evaluations_admit_one_launch(
+    session: AsyncSession, factory: async_sessionmaker[AsyncSession], settings: Settings
+) -> None:
+    """A merchant with no evidence cannot accidentally create two first measurements.
+
+    The same invariant the re-evaluation race proves, on the command that a merchant reaches
+    before they have anything at all: two admitted launches would be two runs resetting one
+    world's shelf between each other's missions, and both would look fine afterwards.
+    """
+    world = await build_initial_world(session, "first-race-shop")
+
+    async with asyncio.timeout(CONCURRENCY_TIMEOUT):
+        async with factory() as gate:
+            await BenchmarkEnvironmentService(gate).claim(world.merchant_slug)
+            attempts: list[asyncio.Task[uuid.UUID | ConflictError]] = [
+                asyncio.create_task(
+                    launch_in_new_session(factory, settings, world, request_key="first-race-one")
+                ),
+                asyncio.create_task(
+                    launch_in_new_session(factory, settings, world, request_key="first-race-two")
+                ),
+            ]
+            assert await still_waiting(*attempts)
+            await gate.rollback()
+
+        outcomes = list(await asyncio.gather(*attempts))
+
+    admitted = [outcome for outcome in outcomes if isinstance(outcome, uuid.UUID)]
+    refused = [outcome for outcome in outcomes if isinstance(outcome, ConflictError)]
+    assert len(admitted) == 1
+    assert len(refused) == 1
+    assert refused[0].reason == "evaluation_already_pending"
     assert await launch_count(session) == 1

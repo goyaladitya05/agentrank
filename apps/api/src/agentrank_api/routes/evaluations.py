@@ -1,8 +1,15 @@
-"""The merchant's explicit command to measure a published representation again.
+"""The merchant's explicit command to run one benchmark evaluation of their own merchant.
 
 Three reads and one write, and the write is a command rather than a resource creation form. The
-browser says which representation it is looking at and what request this is; everything else,
-including which merchant, is resolved server side from the authenticated credential.
+browser says which kind of evaluation it was shown, the representation if that kind has one, and
+what request this is; everything else, including which merchant and which kind of evaluation is
+actually available, is resolved server side from the authenticated credential.
+
+Which command a merchant is making is a server decision. A merchant publishing an agent-ready
+representation is asking about that artifact; a merchant with nothing published and no completed
+run has no evidence at all, and what an evaluation can honestly measure for them is their current
+merchant-facing state. The browser names the purpose it read so a stale page is refused, and
+never so that it can choose.
 
 Publishing never reaches here. `POST /api/v1/compiler/runs/{id}/publish` writes an artifact and
 launches nothing, which is a product decision as well as an engineering one: a benchmark run
@@ -42,7 +49,7 @@ async def preflight(
     merchant: OperatorDep,
     settings: SettingsDep,
 ) -> EvaluationPreflightView:
-    """What a re-evaluation would evaluate now, and what stops it if anything does."""
+    """What an evaluation would measure now, which kind it would be, and what stops it."""
     plan = await MerchantEvaluationLaunchService(session, settings).plan(merchant.merchant_id)
     return EvaluationPreflightView.from_domain(plan)
 
@@ -96,6 +103,7 @@ async def request_launch(
     service = MerchantEvaluationLaunchService(session, settings)
     launch = await service.request(
         merchant.merchant_id,
+        purpose=request.purpose,
         representation_id=request.representation_id,
         request_key=request.request_key,
         plan_digest=request.plan_digest,

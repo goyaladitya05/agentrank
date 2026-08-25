@@ -1,8 +1,9 @@
-"""The merchant re-evaluation command over HTTP, and the identity it freezes.
+"""The merchant evaluation launch command over HTTP, and the identity it freezes.
 
 Every test here talks to the real application with a real merchant credential, because what is
-being asserted is exactly the boundary: who may launch, what a foreign identifier answers, what
-a repeated request does, and what the server resolves rather than accepting from a browser.
+being asserted is exactly the boundary: who may launch, which command the server decides this
+merchant is making, what a foreign identifier answers, what a repeated request does, and what
+the server resolves rather than accepting from a browser.
 
 Nothing here executes a benchmark. Admission writes a queued launch and answers, which is what
 lets a browser request stay an ordinary short request.
@@ -15,7 +16,9 @@ import pytest
 from conftest import CredentialIssuer, bearer
 from fastapi.testclient import TestClient
 from launch_support import (
+    build_initial_world,
     build_launch_world,
+    complete_run,
     queue_launch,
     with_openai,
     without_providers,
@@ -27,7 +30,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from agentrank_api.auth.service import MerchantCredentialService
 from agentrank_api.auth.tokens import TokenMarker
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
-from agentrank_api.benchmark.evaluation_launch import BenchmarkEvaluationLaunch
+from agentrank_api.benchmark.evaluation_launch import (
+    BenchmarkEvaluationLaunch,
+    EvaluationPurpose,
+)
 from agentrank_api.benchmark.execution import BenchmarkRunCapability
 from agentrank_api.benchmark.launch import (
     EvaluationLaunchWorkerService,
@@ -48,16 +54,29 @@ LAUNCH = "/api/v1/benchmark/evaluations"
 
 
 def launch_body(
-    http: TestClient, token: str, *, representation_id: str, request_key: str
-) -> dict[str, str]:
-    """The body the console sends: what it is looking at, and what request this is.
+    http: TestClient,
+    token: str,
+    *,
+    request_key: str,
+    representation_id: str | None = None,
+    purpose: str | None = None,
+) -> dict[str, str | None]:
+    """The body the console sends: which command it read, what it is looking at, and which
+    request this is.
 
-    The digest comes from the preflight this "page" just read, which is exactly what the console
-    binds into its form. A test that invented one would be admitting a plan nobody was shown.
+    The purpose and the digest come from the preflight this "page" just read, which is exactly
+    what the console binds into its form. A test that invented either would be admitting a plan
+    nobody was shown.
     """
     preflight = http.get(PREFLIGHT, headers=bearer(token)).json()
+    resolved = preflight["purpose"] if purpose is None else purpose
     return {
-        "representation_id": representation_id,
+        "purpose": resolved,
+        "representation_id": (
+            representation_id
+            if representation_id is not None or resolved == "INITIAL"
+            else preflight["representation_id"]
+        ),
         "request_key": request_key,
         "plan_digest": preflight["plan_digest"],
     }
@@ -100,6 +119,7 @@ class TestAuthorization:
             http.post(
                 LAUNCH,
                 json={
+                    "purpose": "REEVALUATION",
                     "representation_id": str(world.representation.id),
                     "request_key": "anonymous-key",
                     "plan_digest": "sha256:" + "0" * 64,
@@ -266,13 +286,14 @@ class TestPreflight:
         assert "cost" not in body
         assert "estimate" not in body
 
-    async def test_a_merchant_with_nothing_published_is_told_why(
+    async def test_a_merchant_with_nothing_at_all_is_told_every_reason(
         self,
         settings: Settings,
         session: AsyncSession,
         factory: async_sessionmaker[AsyncSession],
         issue_credential: CredentialIssuer,
     ) -> None:
+        """A merchant with no evidence is offered a first evaluation, and told what it needs."""
         from agentrank_api.commerce.repository import MerchantRepository
 
         merchant = await MerchantRepository(session).create(slug="bare-shop", name="Bare")
@@ -282,14 +303,64 @@ class TestPreflight:
 
         body = http.get(PREFLIGHT, headers=bearer(token)).json()
 
+        assert body["purpose"] == "INITIAL"
         assert body["launchable"] is False
         codes = {blocker["code"] for blocker in body["blockers"]}
         assert codes == {
-            "no_published_representation",
+            "merchant_source_unavailable",
             "benchmark_suite_unavailable",
             "benchmark_world_unregistered",
         }
         assert all(blocker["message"] for blocker in body["blockers"])
+
+    async def test_a_merchant_with_history_and_nothing_published_is_told_to_publish(
+        self,
+        settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+        issue_credential: CredentialIssuer,
+    ) -> None:
+        """Once evidence exists, an initial evaluation is not offered a second time.
+
+        A first evaluation is the way out of having no evidence. A merchant who has one is past
+        that, so the next honest measurement is of something they publish, and the preflight says
+        so rather than offering to measure the storefront again.
+        """
+        world = await build_initial_world(session, "history-bare-shop")
+        await complete_run(session, world)
+        token = await issue_credential(world.merchant_id)
+        http = client(settings, factory)
+
+        body = http.get(PREFLIGHT, headers=bearer(token)).json()
+
+        assert body["purpose"] == "REEVALUATION"
+        assert body["launchable"] is False
+        assert [blocker["code"] for blocker in body["blockers"]] == ["no_published_representation"]
+
+    async def test_a_published_merchant_with_no_runs_still_re_evaluates(
+        self,
+        settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+        issue_credential: CredentialIssuer,
+    ) -> None:
+        """Publishing decides the command, not run history.
+
+        A merchant who has published is asking about that artifact whether or not they have ever
+        run a benchmark, and this was admissible before first evaluations existed. Making them
+        measure a storefront first would be forcing a workflow on a merchant who already told
+        AgentRank what they want measured.
+        """
+        world = await build_launch_world(session, "published-no-runs-shop")
+        token = await issue_credential(world.merchant_id)
+        http = client(settings, factory)
+
+        body = http.get(PREFLIGHT, headers=bearer(token)).json()
+
+        assert body["purpose"] == "REEVALUATION"
+        assert body["launchable"] is True
+        assert body["representation_id"] == str(world.representation_id)
+        assert body["baseline_run_id"] is None
 
     async def test_preflight_names_a_baseline_once_one_run_has_completed(
         self,
@@ -401,6 +472,7 @@ class TestAdmission:
             LAUNCH,
             headers=bearer(token),
             json={
+                "purpose": "REEVALUATION",
                 "representation_id": str(uuid.uuid7()),
                 "request_key": "reused-key",
                 "plan_digest": "sha256:" + "0" * 64,
@@ -435,6 +507,7 @@ class TestAdmission:
             LAUNCH,
             headers=bearer(token),
             json={
+                "purpose": "REEVALUATION",
                 "representation_id": str(world.representation_id),
                 "request_key": "second-launch",
                 "plan_digest": "sha256:" + "0" * 64,
@@ -527,6 +600,256 @@ class TestAdmission:
             ),
         )
         assert accepted.status_code == 201
+
+
+class TestFirstEvaluation:
+    """The command a merchant with no evidence and nothing published is actually making."""
+
+    async def test_a_merchant_with_no_history_is_offered_their_current_state(
+        self,
+        settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+        issue_credential: CredentialIssuer,
+    ) -> None:
+        world = await build_initial_world(session, "first-preflight-shop")
+        token = await issue_credential(world.merchant_id)
+        http = client(settings, factory)
+
+        body = http.get(PREFLIGHT, headers=bearer(token)).json()
+
+        assert body["purpose"] == "INITIAL"
+        assert body["launchable"] is True
+        assert body["blockers"] == []
+        # What is measured is the merchant as they are: no Commerce IR anywhere, and the source
+        # snapshot named so a merchant reads which of their own documents is under test.
+        assert body["representation_id"] is None
+        assert body["representation_label"] is None
+        assert body["compiler_run_id"] is None
+        assert body["source_snapshot_id"] == str(world.source_snapshot_id)
+        assert body["source_snapshot_label"] == f"{world.merchant_slug}-source@1"
+        assert body["suite_id"] == str(world.suite_id)
+        assert body["mission_count"] == len(world.authored.suite.missions)
+        assert body["environment_id"] == str(world.environment_id)
+        # No before, and no field pretending there might be one later.
+        assert body["baseline_run_id"] is None
+        assert body["baseline_run_completed_at"] is None
+
+    async def test_a_merchant_without_recorded_information_is_told_what_is_missing(
+        self,
+        settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+        issue_credential: CredentialIssuer,
+    ) -> None:
+        world = await build_initial_world(session, "first-nosource-shop", with_source=False)
+        token = await issue_credential(world.merchant_id)
+        http = client(settings, factory)
+
+        body = http.get(PREFLIGHT, headers=bearer(token)).json()
+
+        assert body["purpose"] == "INITIAL"
+        assert body["launchable"] is False
+        assert [blocker["code"] for blocker in body["blockers"]] == ["merchant_source_unavailable"]
+        assert body["source_snapshot_id"] is None
+
+    async def test_a_first_evaluation_freezes_the_state_it_measures(
+        self,
+        settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+        issue_credential: CredentialIssuer,
+    ) -> None:
+        world = await build_initial_world(session, "first-launch-shop")
+        token = await issue_credential(world.merchant_id)
+        http = client(settings, factory)
+
+        response = http.post(
+            LAUNCH,
+            headers=bearer(token),
+            json=launch_body(http, token, request_key="first-evaluation"),
+        )
+
+        assert response.status_code == 201
+        body = response.json()
+        assert body["purpose"] == "INITIAL"
+        assert body["status"] == "QUEUED"
+        assert body["run_id"] is None
+        assert body["representation_id"] is None
+        assert body["representation_label"] is None
+        assert body["compiler_run_id"] is None
+        assert body["source_snapshot_id"] == str(world.source_snapshot_id)
+        assert body["source_snapshot_label"] == f"{world.merchant_slug}-source@1"
+        assert body["baseline_run_id"] is None
+
+        stored = await session.get(BenchmarkEvaluationLaunch, uuid.UUID(body["launch_id"]))
+        assert stored is not None
+        assert stored.purpose is EvaluationPurpose.INITIAL
+        assert stored.representation_id is None
+        assert stored.compiler_run_id is None
+        assert stored.source_snapshot_id == world.source_snapshot_id
+        assert stored.baseline_run_id is None
+
+    async def test_a_first_evaluation_never_reports_a_comparison(
+        self,
+        settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+        issue_credential: CredentialIssuer,
+    ) -> None:
+        """Absence is absence. A first evaluation has no before and says so with null."""
+        world = await build_initial_world(session, "first-nocompare-shop")
+        token = await issue_credential(world.merchant_id)
+        http = client(settings, factory)
+        launched = http.post(
+            LAUNCH,
+            headers=bearer(token),
+            json=launch_body(http, token, request_key="first-nocompare"),
+        ).json()
+
+        detail = http.get(f"{LAUNCH}/{launched['launch_id']}", headers=bearer(token)).json()
+
+        assert detail["comparison"] is None
+        assert detail["baseline_run_id"] is None
+
+    async def test_a_repeated_first_evaluation_request_is_the_same_launch(
+        self,
+        settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+        issue_credential: CredentialIssuer,
+    ) -> None:
+        world = await build_initial_world(session, "first-retry-shop")
+        token = await issue_credential(world.merchant_id)
+        http = client(settings, factory)
+        body = launch_body(http, token, request_key="first-double-submit")
+
+        first = http.post(LAUNCH, headers=bearer(token), json=body)
+        second = http.post(LAUNCH, headers=bearer(token), json=body)
+
+        assert (first.status_code, second.status_code) == (201, 201)
+        assert first.json()["launch_id"] == second.json()["launch_id"]
+        assert len(http.get(LAUNCH, headers=bearer(token)).json()) == 1
+
+    async def test_a_first_evaluation_cannot_name_a_representation(
+        self,
+        settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+        issue_credential: CredentialIssuer,
+    ) -> None:
+        world = await build_initial_world(session, "first-names-ir-shop")
+        token = await issue_credential(world.merchant_id)
+        http = client(settings, factory)
+        body = launch_body(http, token, request_key="first-with-ir")
+        body["representation_id"] = str(uuid.uuid7())
+
+        refused = http.post(LAUNCH, headers=bearer(token), json=body)
+
+        assert refused.status_code == 422
+
+    async def test_a_page_that_predates_a_publication_is_refused(
+        self,
+        settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+        issue_credential: CredentialIssuer,
+    ) -> None:
+        """A merchant reading a first-evaluation page who publishes in another tab.
+
+        The command changed underneath them, so the submit is refused by name rather than
+        admitted as a measurement of a storefront they have just stopped presenting.
+        """
+        world = await build_initial_world(session, "first-superseded-shop")
+        token = await issue_credential(world.merchant_id)
+        http = client(settings, factory)
+        body = launch_body(http, token, request_key="first-superseded")
+        compiler = MerchantCompilerService(session)
+        compiler_run = await compiler.run(world.merchant_id, world.source_snapshot_id)
+        await compiler.publish(world.merchant_id, compiler_run.id)
+
+        refused = http.post(LAUNCH, headers=bearer(token), json=body)
+
+        assert refused.status_code == 409
+        assert refused.json()["error"] == "evaluation_purpose_superseded"
+        assert http.get(LAUNCH, headers=bearer(token)).json() == []
+
+    async def test_one_request_key_cannot_change_which_evaluation_it_made(
+        self,
+        settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+        issue_credential: CredentialIssuer,
+    ) -> None:
+        world = await build_initial_world(session, "first-reused-shop")
+        token = await issue_credential(world.merchant_id)
+        http = client(settings, factory)
+        http.post(
+            LAUNCH,
+            headers=bearer(token),
+            json=launch_body(http, token, request_key="first-reused"),
+        )
+
+        refused = http.post(
+            LAUNCH,
+            headers=bearer(token),
+            json={
+                "purpose": "REEVALUATION",
+                "representation_id": str(uuid.uuid7()),
+                "request_key": "first-reused",
+                "plan_digest": "sha256:" + "0" * 64,
+            },
+        )
+
+        assert refused.status_code == 409
+        assert refused.json()["error"] == "evaluation_request_key_reused"
+
+    async def test_an_initial_launch_holds_the_one_pending_slot(
+        self,
+        settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+        issue_credential: CredentialIssuer,
+    ) -> None:
+        """One pending launch per merchant, whichever kind is pending.
+
+        A merchant owns one benchmark world, so an initial evaluation waiting to run and a
+        re-evaluation waiting to run are two runs resetting each other's shelf rather than two
+        measurements. Publishing between the two is exactly how a merchant reaches this: the
+        pending index does not read the purpose, so the second command is refused for the reason
+        that is true rather than admitted as a different kind of launch.
+        """
+        world = await build_initial_world(session, "first-pending-shop")
+        token = await issue_credential(world.merchant_id)
+        http = client(settings, factory)
+        http.post(
+            LAUNCH,
+            headers=bearer(token),
+            json=launch_body(http, token, request_key="first-pending"),
+        )
+        compiler = MerchantCompilerService(session)
+        compiler_run = await compiler.run(world.merchant_id, world.source_snapshot_id)
+        published = await compiler.publish(world.merchant_id, compiler_run.id)
+
+        body = http.get(PREFLIGHT, headers=bearer(token)).json()
+        refused = http.post(
+            LAUNCH,
+            headers=bearer(token),
+            json={
+                "purpose": "REEVALUATION",
+                "representation_id": str(published.id),
+                "request_key": "pending-then-reevaluate",
+                "plan_digest": body["plan_digest"],
+            },
+        )
+
+        assert body["purpose"] == "REEVALUATION"
+        assert body["launchable"] is False
+        assert "evaluation_already_pending" in {blocker["code"] for blocker in body["blockers"]}
+        assert body["pending_launch_id"] is not None
+        assert refused.status_code == 409
+        assert refused.json()["error"] == "evaluation_already_pending"
+        assert len(http.get(LAUNCH, headers=bearer(token)).json()) == 1
 
 
 class TestBuyerResolution:
