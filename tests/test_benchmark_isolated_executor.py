@@ -52,6 +52,7 @@ from agentrank_api.benchmark.isolation import (
     ISOLATED_REFERENCE,
     WORKER_MODULE,
     IsolatedMissionExecutor,
+    reference_worker_environment,
 )
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
 from agentrank_api.benchmark.llm import GEMINI_PROVIDER
@@ -288,6 +289,40 @@ def test_the_allowlist_has_only_the_scoped_runtime_provider_credential() -> None
         "OPENAI_API_KEY",
         "GEMINI_API_KEY",
     } == PERMITTED_ENVIRONMENT
+
+
+def test_a_buyer_with_no_provider_is_given_no_provider_credential() -> None:
+    """A worker sees the credential it was given, and one given none sees none.
+
+    The allowlist carries the two provider names because the model buyer needs exactly one of
+    them, and `provider_worker_environment` is the one place a provider secret is put into a
+    worker's environment. The deterministic reference buyer calls no model at all, so a key
+    reaching it is a secret handed to a process with no use for it.
+    """
+    parent = {
+        "PATH": "/usr/bin",
+        "OPENAI_API_KEY": "secret",
+        "GEMINI_API_KEY": "secret",
+    }
+
+    built = reference_worker_environment(parent)
+
+    assert built == {"PATH": "/usr/bin"}
+    assert not any(value == "secret" for value in built.values())
+
+
+def test_an_executor_configured_with_no_environment_carries_no_provider_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The property on the executor itself, which is what actually starts the process."""
+    monkeypatch.setenv("OPENAI_API_KEY", "secret")
+    monkeypatch.setenv("GEMINI_API_KEY", "secret")
+    executor = IsolatedMissionExecutor(
+        base_url="http://127.0.0.1:1", token="t", served=RequestLedger()
+    )
+
+    assert "OPENAI_API_KEY" not in executor.environment
+    assert "GEMINI_API_KEY" not in executor.environment
 
 
 def test_nothing_that_decides_what_a_worker_can_import_is_inherited() -> None:

@@ -58,7 +58,7 @@ import os
 import sys
 import tempfile
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 
 from agentrank_api.benchmark.agent_trace import AgentExecutionEvidence
 from agentrank_api.benchmark.definitions import AgentMissionBrief
@@ -130,6 +130,23 @@ def provider_worker_environment(settings: Settings, provider: str) -> dict[str, 
         environment["GEMINI_API_KEY"] = settings.gemini.api_key.get_secret_value()
         return environment
     raise ValueError("LLM provider is not supported")
+
+
+def reference_worker_environment(parent: Mapping[str, str]) -> dict[str, str]:
+    """The environment a buyer with no provider is given: the allowlist, minus every credential.
+
+    The deterministic reference buyer calls no model and has no provider configuration to be
+    given one from, so a provider key in this process's environment is a secret handed to a
+    worker that has no use for it. The allowlist carries those two names because the model buyer
+    needs exactly one of them, and `provider_worker_environment` is where that one is put back.
+
+    A worker sees the credential it was given and nothing else, and a worker given none sees
+    none.
+    """
+    environment = worker_environment(parent)
+    environment.pop("OPENAI_API_KEY", None)
+    environment.pop("GEMINI_API_KEY", None)
+    return environment
 
 
 ISOLATED_REFERENCE = ExecutorIdentity(kind=REFERENCE_ISOLATED_KIND, version=1, revision=_revision())
@@ -360,8 +377,15 @@ class IsolatedMissionExecutor:
         A property rather than a private field so that a test can assert it without starting a
         process, and so that the assertion is about the thing actually used rather than about a
         copy of the rule.
+
+        An executor given no environment is one nobody configured a provider for, so the derived
+        one carries no provider credential either. The model buyer always arrives with an
+        explicit environment built by `provider_worker_environment`, which is the one place a
+        provider secret is put into a worker's environment at all.
         """
-        return worker_environment(os.environ if self._environment is None else self._environment)
+        if self._environment is None:
+            return reference_worker_environment(os.environ)
+        return worker_environment(self._environment)
 
     async def _reap(self, process: asyncio.subprocess.Process) -> None:
         """Make sure a worker that timed out is gone before anything else runs.
