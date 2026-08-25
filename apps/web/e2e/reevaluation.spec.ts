@@ -65,7 +65,7 @@ interface CapturedAction {
 /**
  * Record the real launch the console sends, so it can be replayed verbatim.
  *
- * Scoped to the re-evaluation pages: sign in is a server action too, and replaying that one
+ * Scoped to the evaluation pages: sign in is a server action too, and replaying that one
  * would be replaying a merchant API key rather than a benchmark write.
  */
 function captureLaunch(page: Page, captured: CapturedAction[]): void {
@@ -91,7 +91,7 @@ function nav(page: Page, name: string) {
 
 /** The newest launch in the history table. */
 function newestLaunch(page: Page) {
-  return page.locator('[aria-label="Re-evaluations"] a').first();
+  return page.locator('[aria-label="Evaluations"] a').first();
 }
 
 async function signIn(page: Page, context: BrowserContext): Promise<void> {
@@ -131,14 +131,14 @@ test("a merchant publishes, launches a re-evaluation and reads the result agains
   // Publishing said so itself, and the launch history proves it: nothing was started.
   await expect(page.getByText("Publishing did not run a benchmark")).toBeVisible();
   await nav(page, "Evaluation").click();
-  await expect(page.getByText("No re-evaluations yet")).toBeVisible();
+  await expect(page.getByText("No evaluations have run yet")).toBeVisible();
 
   await requestEvaluation(page);
 
   // Queued is an honest state and says exactly what has and has not happened. A second launch
   // is refused while it is pending, which the preflight says in place.
   await expect(page.getByText("Queued", { exact: true })).toBeVisible();
-  await expect(page.getByText("A re-evaluation is already queued or running")).toBeVisible();
+  await expect(page.getByText("An evaluation is already queued or running")).toBeVisible();
   await newestLaunch(page).click();
   await expect(page.getByText("Nothing has been executed yet")).toBeVisible();
   await expect(page.getByText("no model quota has been spent")).toBeVisible();
@@ -185,7 +185,7 @@ test("a merchant publishes, launches a re-evaluation and reads the result agains
   expect(crossOrigin.status()).not.toBe(200);
 
   await nav(page, "Evaluation").click();
-  await expect(page.locator('[aria-label="Re-evaluations"] tbody tr')).toHaveCount(2);
+  await expect(page.locator('[aria-label="Evaluations"] tbody tr')).toHaveCount(2);
 });
 
 test("the console shows nothing about a re-evaluation without a signed in session", async ({

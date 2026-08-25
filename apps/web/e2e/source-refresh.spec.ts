@@ -161,8 +161,8 @@ test("a merchant supplies newer source evidence, compiles it and publishes a sec
   // Measuring it again is still a command nobody here ran, and the launch history proves it
   // rather than the sentence beside the link.
   await expect(publication).toContainText("request a re-evaluation");
-  await nav(page).getByRole("link", { name: "Re-evaluation" }).click();
-  await expect(page.getByText("No re-evaluations yet")).toBeVisible();
+  await nav(page).getByRole("link", { name: "Evaluation" }).click();
+  await expect(page.getByText("No evaluations have run yet")).toBeVisible();
 
   // The first representation and the run behind it are exactly what they were.
   await nav(page).getByRole("link", { name: "Source" }).click();
