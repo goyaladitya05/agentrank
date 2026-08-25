@@ -50,7 +50,7 @@ from benchmark_support import VOLTEDGE, VOLTEDGE_DIRECTORY
 from conftest import administer
 
 from agentrank_api.auth.console import CONSOLE_SESSION_SCHEME
-from agentrank_api.config import Settings
+from agentrank_api.config import ENV_FILE, Settings
 
 # Not an anyio module. Everything here is a subprocess or a synchronous HTTP call, which is what
 # an operator and an orchestrator both are, and an async wrapper around blocking calls would be a
@@ -76,21 +76,37 @@ VERIFIER = f"{CONSOLE_SESSION_SCHEME}_{'5e' * 32}"
 # The smallest program that does what every process here does first: read its own configuration.
 BUILD_SETTINGS = "from agentrank_api.config import build_settings; build_settings()"
 
+# The same, plus what the process resolved, so a test can tell where a value came from.
+REPORT_CONFIGURATION = (
+    "import logging; logging.basicConfig(level='WARNING');"
+    " from agentrank_api.config import build_settings; s = build_settings();"
+    " print(f'database={s.postgres_db}');"
+    " print(f'openai={s.openai is not None}')"
+)
 
-def deployment_environment(settings: Settings, port: int) -> dict[str, str]:
+
+def deployment_environment(settings: Settings) -> dict[str, str]:
     """A deployment's environment, built rather than inherited.
 
-    `PATH` and the interpreter's own variables are carried through because a subprocess needs
-    them to be a subprocess at all. Everything this application reads is set here explicitly, so
-    a developer's provider key, Razorpay pair or database cannot reach the processes under test.
+    `PATH`, `HOME` and the interpreter's own variables are carried through because a subprocess
+    needs them to be a subprocess at all. Every variable this application reads is set here
+    explicitly, so a developer's provider key, Razorpay pair or database cannot reach the
+    processes under test.
+
+    Not a sandbox. `HOME` is still the developer's, so libpq's own file-based configuration is
+    still reachable; it changes nothing here because the password is stated, and it is worth
+    knowing that "nothing is inherited" is a claim about this application's variables rather
+    than about the driver's.
     """
-    del port
     return {
         "PATH": os.environ.get("PATH", ""),
         "HOME": os.environ.get("HOME", ""),
         "VIRTUAL_ENV": os.environ.get("VIRTUAL_ENV", ""),
         "AGENTRANK_ENV": "production",
-        "AGENTRANK_LOG_LEVEL": "warning",
+        # The documented default rather than something quieter. The line naming this process'
+        # capabilities is INFO, so a smoke test that raised the level to keep its output tidy
+        # would be a smoke test that could not see the thing the startup work added.
+        "AGENTRANK_LOG_LEVEL": "info",
         "POSTGRES_HOST": settings.postgres_host,
         "POSTGRES_PORT": str(settings.postgres_port),
         "POSTGRES_DB": SMOKE_DATABASE,
@@ -143,15 +159,28 @@ def wait_for(url: str, *, expect: int = 200) -> httpx2.Response:
 
 
 class Deployment:
-    """One API process, started and stopped as an orchestrator would."""
+    """One API process, started and stopped as an orchestrator would.
 
-    def __init__(self, environment: dict[str, str], port: int) -> None:
+    Its output is captured rather than discarded, for two reasons that pull the same way. A
+    process that fails to boot otherwise produces only "did not answer within the boot timeout",
+    with the reason it gave thrown away. And its startup log is itself under test: the line that
+    names this deployment's capabilities, and the absence of any configured value beside them,
+    are the things the configuration work added and the only place to read them is here.
+    """
+
+    def __init__(self, environment: dict[str, str], port: int, log: Path) -> None:
         self._environment = environment
         self.port = port
         self.base_url = f"http://127.0.0.1:{port}"
+        self._log = log
         self._process: subprocess.Popen[bytes] | None = None
 
+    def output(self) -> str:
+        """Everything this deployment's processes have written, across restarts."""
+        return self._log.read_text(errors="replace") if self._log.exists() else ""
+
     def start(self) -> None:
+        self._stream = self._log.open("ab")
         self._process = subprocess.Popen(  # noqa: S603  this repository's own module
             [
                 sys.executable,
@@ -166,17 +195,28 @@ class Deployment:
             ],
             cwd=REPOSITORY_ROOT,
             env=self._environment,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=self._stream,
+            stderr=subprocess.STDOUT,
         )
-        wait_for(f"{self.base_url}/health")
+        try:
+            wait_for(f"{self.base_url}/health")
+        except AssertionError as unhealthy:
+            # What the process said about why, rather than only that it never answered.
+            raise AssertionError(f"{unhealthy}\n--- process output ---\n{self.output()}") from None
 
     def stop(self) -> None:
         if self._process is None:
             return
         self._process.terminate()
-        self._process.wait(timeout=30)
+        try:
+            self._process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            # A process ignoring SIGTERM must not leak a listener on the port and take the next
+            # start down with it.
+            self._process.kill()
+            self._process.wait(timeout=30)
         self._process = None
+        self._stream.close()
 
     def restart(self) -> None:
         """A process boundary an orchestrator would create, made for real.
@@ -190,13 +230,17 @@ class Deployment:
 
 
 @pytest.fixture
-def deployment(settings: Settings, unused_port: int) -> Iterator[Deployment]:
-    """A clean database, migrated by the real command, and one API process over it."""
+def deployment(settings: Settings, unused_port: int, tmp_path: Path) -> Iterator[Deployment]:
+    """A clean database, migrated by the real command, and one API process over it.
 
+    A `.env` is planted in the repository root's place by pointing the processes at a working
+    directory that has one. It names a different database and a provider key, so a deployment
+    that read it would be visibly configured by it, and the assertions below would fail.
+    """
     administer(settings, f'DROP DATABASE IF EXISTS "{SMOKE_DATABASE}" WITH (FORCE)')
     administer(settings, f'CREATE DATABASE "{SMOKE_DATABASE}"')
-    environment = deployment_environment(settings, unused_port)
-    running = Deployment(environment, unused_port)
+    environment = deployment_environment(settings)
+    running = Deployment(environment, unused_port, tmp_path / "deployment.log")
     try:
         migrated = subprocess.run(
             [sys.executable, "-m", "alembic", "upgrade", "head"],
@@ -216,7 +260,7 @@ def deployment(settings: Settings, unused_port: int) -> Iterator[Deployment]:
 
 
 def test_the_supported_topology_starts_clean_and_completes_a_merchant_evaluation(
-    deployment: Deployment, settings: Settings, unused_port: int
+    deployment: Deployment, settings: Settings
 ) -> None:
     """Bootstrap, sign in, measure, read the result, restart, read it again.
 
@@ -224,7 +268,25 @@ def test_the_supported_topology_starts_clean_and_completes_a_merchant_evaluation
     a suite that started this deployment six times to assert six things would spend six times as
     long proving the same sequence.
     """
-    environment = deployment_environment(settings, unused_port)
+    environment = deployment_environment(settings)
+
+    # What the process said about itself on the way up. The capability line is the one the
+    # configuration work added, and what makes it worth asserting is the second half: no
+    # configured value appears beside it.
+    startup = deployment.output()
+    assert "agentrank api starting" in startup
+    assert "environment=production" in startup
+    assert "capabilities=none" in startup, "no provider is configured, and it should say so"
+    # This runs from the repository root, which on a developer machine has a `.env`. A deployment
+    # ignores it and says so, and that sentence appearing here is the rule working in a real
+    # process rather than in a test that constructed `Settings` itself.
+    if (REPOSITORY_ROOT / ENV_FILE).is_file():
+        assert f"ignoring {ENV_FILE}" in startup
+    # The database user is deliberately not in this list. It is `agentrank`, which is also this
+    # project's name and appears in every logger path, so asserting its absence would be
+    # asserting that the log does not mention the application.
+    for secret in (settings.postgres_password.get_secret_value(), SMOKE_DATABASE):
+        assert secret not in startup, "a startup log names variables and never values"
 
     # Readiness before anything else. A migrated database at the revision this build expects is
     # what the deploy procedure promises, and a process that answered ready without it would make
@@ -329,15 +391,48 @@ def test_the_supported_topology_starts_clean_and_completes_a_merchant_evaluation
         assert client.get("/api/v1/insights/runs", headers=session_headers).status_code == 401
 
 
+def test_a_deployment_process_ignores_an_env_file_in_its_working_directory(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """The headline claim, exercised where it can actually fail: in a real process.
+
+    CI checks out no `.env`, so on the machine this runs on in anger there is nothing to ignore
+    and the claim would be vacuous. One is planted here naming a database that does not exist and
+    a provider credential, so a process that read it would either fail to connect or report a
+    capability it does not have. It does neither.
+    """
+    environment = deployment_environment(settings)
+    (tmp_path / ENV_FILE).write_text(
+        "POSTGRES_DB=a-database-that-does-not-exist\nOPENAI_API_KEY=not-a-real-key\n"
+    )
+
+    finished = subprocess.run(  # noqa: S603  this repository's own module
+        [sys.executable, "-c", REPORT_CONFIGURATION],
+        cwd=tmp_path,
+        env={**environment, "PYTHONPATH": str(REPOSITORY_ROOT / "apps" / "api" / "src")},
+        capture_output=True,
+        text=True,
+        timeout=COMMAND_TIMEOUT_SECONDS,
+        check=False,
+    )
+
+    assert finished.returncode == 0, finished.stderr
+    assert f"database={SMOKE_DATABASE}" in finished.stdout
+    assert "openai=False" in finished.stdout
+    assert "a-database-that-does-not-exist" not in finished.stdout
+    # And it says it found one rather than ignoring it silently.
+    assert ENV_FILE in finished.stderr
+
+
 def test_a_deployment_process_refuses_to_start_without_its_database_configuration(
-    settings: Settings, unused_port: int
+    settings: Settings,
 ) -> None:
     """The other half of the promise: a deployment that states nothing does not come up.
 
     Run as a real process reading its own environment, because that is the code path a
     deployment takes and the one a constructed `Settings` in a test would not.
     """
-    environment = deployment_environment(settings, unused_port)
+    environment = deployment_environment(settings)
     del environment["POSTGRES_HOST"]
 
     finished = subprocess.run(
