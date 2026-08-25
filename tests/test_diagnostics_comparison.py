@@ -258,6 +258,29 @@ class TestMethodology:
         assert comparison.comparable is False
         assert comparison.conclusion.kind == "INCOMPLETE"
 
+    def test_two_different_representations_are_still_a_before_and_after(self) -> None:
+        """The ordinary re-evaluation pair, which the fatal surface rule must not catch.
+
+        Both buyers read an agent-ready surface, so the only thing that changed is which
+        document was on it. That is what a re-evaluation is for, and it stays comparable.
+        """
+        comparison = compare_runs(
+            facts(representation_id=uuid.uuid7()),
+            facts(representation_id=uuid.uuid7()),
+            engine_identity=ENGINE,
+        )
+
+        assert "REPRESENTATION_DELIVERY_DIFFERS" not in codes(comparison)
+        assert "REPRESENTATION_UNCHANGED" not in codes(comparison)
+        assert comparison.comparable is True
+
+    def test_two_storefront_runs_are_still_a_before_and_after(self) -> None:
+        """Neither buyer read a representation, so neither was shown a different kind of thing."""
+        comparison = compare_runs(facts(), facts(), engine_identity=ENGINE)
+
+        assert "REPRESENTATION_DELIVERY_DIFFERS" not in codes(comparison)
+        assert comparison.comparable is True
+
     def test_the_same_representation_on_both_sides_is_said_out_loud(self) -> None:
         """Re-running an unchanged artifact is variation, and the reader is told so."""
         representation = uuid.uuid7()

@@ -240,7 +240,7 @@ def worker(
             input=stdin,
             capture_output=True,
             text=True,
-            env=worker_environment(os.environ) if environment is None else environment,
+            env=reference_worker_environment(os.environ) if environment is None else environment,
             cwd=sandbox if cwd is None else cwd,
             timeout=120,
             check=False,
