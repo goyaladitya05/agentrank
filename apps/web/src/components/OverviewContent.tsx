@@ -111,10 +111,7 @@ export function OverviewContent({ data }: { data: MerchantOverview }) {
       </Section>
 
       <Section title="Representation state">
-        <RepresentationPanel
-          state={data.representation_state}
-          measured={data.runs.some((run) => run.status === "COMPLETED")}
-        />
+        <RepresentationPanel state={data.representation_state} />
       </Section>
 
       <Section title="Latest controlled experiment">
@@ -225,7 +222,7 @@ function RecentRuns({ runs }: { runs: readonly RunSummary[] }) {
           explanation="Every benchmark run against your merchant appears here once one has been started."
         >
           <Link className={styles.textLink} href="/evaluations">
-            Run your first evaluation
+            See what would be evaluated
           </Link>
         </EmptyState>
       </Panel>
@@ -293,20 +290,14 @@ function RecentRuns({ runs }: { runs: readonly RunSummary[] }) {
 }
 
 /**
- * What a merchant has compiled, and the one next step that is actually available to them.
+ * What a merchant has compiled, and where to go about it.
  *
- * `measured` is whether any run has completed, because that is what decides whether AgentRank
- * would still offer a first evaluation. Without it this panel invited a merchant with a finished
- * run and nothing published into an evaluation the server refuses, which is the console
- * contradicting the rule rather than reporting it.
+ * It says nothing about which evaluation a merchant could run. That is decided by the server
+ * from their whole history, and this page holds ten runs, so a panel guessing here would
+ * contradict the rule for a merchant whose only completed run had scrolled off the list. The
+ * evaluation page answers that question, and two sections above already link to it.
  */
-function RepresentationPanel({
-  state,
-  measured,
-}: {
-  state: RepresentationState;
-  measured: boolean;
-}) {
+function RepresentationPanel({ state }: { state: RepresentationState }) {
   if (state.source_snapshot_id === null && state.compiled_representation_id === null) {
     return (
       <Panel>
@@ -362,17 +353,6 @@ function RepresentationPanel({
           to measure this one.
         </p>
       )}
-      {!measured &&
-      state.source_snapshot_id !== null &&
-      state.compiled_representation_id === null ? (
-        <p className={styles.finePrintTight}>
-          Nothing is compiled yet. An evaluation can still measure your merchant as it is now.{" "}
-          <Link className={styles.textLink} href="/evaluations">
-            See what would be evaluated
-          </Link>
-          .
-        </p>
-      ) : null}
       <TechnicalDetails summary="Artifact identifiers">
         <IdRow label="Source snapshot id" value={state.source_snapshot_id} />
         <IdRow label="Compiled representation id" value={state.compiled_representation_id} />

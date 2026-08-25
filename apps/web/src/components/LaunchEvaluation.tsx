@@ -156,7 +156,10 @@ export function LaunchConfirmation({
             a controlled experiment is for.
           </li>
         ) : (
-          <li>The result will be shown beside your most recent completed run of this suite.</li>
+          <li>
+            The result will be read against your most recent completed run of this suite, if the two
+            turn out to have measured the same thing.
+          </li>
         )}
         <li>Running an evaluation does not change your prices, inventory or any payment.</li>
         {preflight.buyer_profile === "AI_BUYER" ? (

@@ -96,7 +96,7 @@ describe("<OverviewContent> product behavior", () => {
       }),
     );
     expect(html).toContain('href="/evaluations"');
-    expect(html).toContain("Run your first evaluation");
+    expect(html).toContain("See what would be evaluated");
     // No operator instruction where a merchant now has a button, and no invented numbers in
     // place of the measurement nobody has taken.
     expect(html).not.toContain("benchmark command line");

@@ -363,7 +363,7 @@ class MerchantEvaluationLaunchService:
             blockers.append(
                 LaunchBlocker(
                     "no_published_representation",
-                    "Publish an agent-ready representation before requesting a re-evaluation.",
+                    "Publish an agent-ready representation before requesting an evaluation of one.",
                 )
             )
         else:

@@ -78,7 +78,7 @@ export default async function CompilerRunPage({ params }: { params: Promise<{ ru
       </Section>
       <Section
         title="Publication"
-        hint="Publishing never runs a benchmark. Re-evaluation is a separate command."
+        hint="Publishing never runs a benchmark. An evaluation is a separate command."
       >
         <Panel>
           <Publication run={run} />

@@ -79,7 +79,9 @@ test("a merchant with no benchmark history reaches their first result from the c
   // The zero state is factual and carries the one action that changes it.
   await page.goto("/overview");
   await expect(page.getByText("No evaluations have run yet")).toBeVisible();
-  await expect(page.getByRole("link", { name: "Run your first evaluation" }).first()).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "See what would be evaluated" }).first(),
+  ).toBeVisible();
 
   // What would be evaluated, before anything is spent. No representation is named, because
   // none exists, and nothing claims there is a previous result.

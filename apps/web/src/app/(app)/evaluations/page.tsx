@@ -162,11 +162,10 @@ function comparisonSentence(preflight: EvaluationPreflight): string {
   if (preflight.baseline_run_id === null) {
     return "No earlier completed run of this suite";
   }
-  const completed = formatTimestamp(preflight.baseline_run_completed_at);
   if (preflight.baseline_surface_matches === false) {
-    return `Nothing. Your run completed ${completed} measured a different kind of surface, so the two are not read as a before and after.`;
+    return "Nothing. Your most recent completed run of this suite measured a different kind of surface, so the two are not read as a before and after.";
   }
-  return `Your run completed ${completed}`;
+  return `Your run completed ${formatTimestamp(preflight.baseline_run_completed_at)}`;
 }
 
 function Blockers({ preflight }: { preflight: EvaluationPreflight }) {

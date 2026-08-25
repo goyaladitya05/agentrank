@@ -36,7 +36,7 @@ import type { LaunchState } from "@/lib/evaluation-mutation";
 
 const REFUSALS: Record<string, string> = {
   no_published_representation:
-    "Publish an agent-ready representation before requesting a re-evaluation.",
+    "Publish an agent-ready representation before requesting an evaluation of one.",
   representation_lineage_unreadable:
     "AgentRank could not read the compiler run behind your published representation. Contact your operator; this is not something you can fix from here.",
   representation_superseded:
