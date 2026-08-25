@@ -241,12 +241,22 @@ class TestMethodology:
         assert "caused" not in message
         assert "different merchant data" in message
 
-    def test_only_one_run_seeing_a_representation_is_a_methodology_difference(self) -> None:
+    def test_only_one_run_seeing_a_representation_refuses_a_before_and_after(self) -> None:
+        """The two arms of the compiler's own treatment, outside the experiment that pairs them.
+
+        A merchant's first evaluation reads the ordinary storefront and a later re-evaluation
+        reads a published representation, so this pairing is the ordinary product path and not a
+        contrived one. Drawing deltas across it would be a compiler uplift reading taken from
+        one run on each side, which is what the predeclared counterbalanced experiment exists to
+        do properly.
+        """
         comparison = compare_runs(
             facts(), facts(representation_id=uuid.uuid7()), engine_identity=ENGINE
         )
 
         assert "REPRESENTATION_DELIVERY_DIFFERS" in codes(comparison)
+        assert comparison.comparable is False
+        assert comparison.conclusion.kind == "INCOMPLETE"
 
     def test_the_same_representation_on_both_sides_is_said_out_loud(self) -> None:
         """Re-running an unchanged artifact is variation, and the reader is told so."""

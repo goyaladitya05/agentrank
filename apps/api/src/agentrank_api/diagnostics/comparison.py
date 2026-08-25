@@ -404,10 +404,19 @@ def _token_usage(baseline: RunFacts, candidate: RunFacts) -> bool | None:
 
 # Differences that make a before and after meaningless rather than merely qualified.
 #
-# Four of them are the pins this benchmark has always required to match before two runs may be
+# Five of them are the pins this benchmark has always required to match before two runs may be
 # compared at all: the suite, the world, the catalog the run was measured against, the marking
 # rules, and what did the shopping. A delta across any of those is not about the merchant. The
-# fifth is a run that did not finish, whose counts describe part of a workload.
+# sixth is a run that did not finish, whose counts describe part of a workload.
+#
+# The seventh is which kind of surface the buyer read. A run measured against a published
+# agent-ready representation and a run measured against the ordinary storefront are the two arms
+# of the compiler's own treatment, and this repository already has one mechanism for reading a
+# difference between them: a predeclared, counterbalanced, pin-matched paired experiment.
+# Rendering deltas across that boundary here would be a second and weaker answer to the question
+# the experiment exists to answer, and the numbers would read as an uplift measurement. The
+# warning already said so; leaving it merely qualifying meant the tables were drawn underneath
+# it anyway. That the buyer changed is treated as fatal for a strictly weaker reason.
 _NOT_COMPARABLE_CODES = frozenset(
     {
         "SUITE_DIFFERS",
@@ -416,6 +425,7 @@ _NOT_COMPARABLE_CODES = frozenset(
         "EVALUATOR_DIFFERS",
         "EXECUTOR_DIFFERS",
         "RUN_NOT_COMPLETED",
+        "REPRESENTATION_DELIVERY_DIFFERS",
     }
 )
 
@@ -514,6 +524,8 @@ def _warnings(baseline: RunFacts, candidate: RunFacts) -> tuple[MethodologyWarni
                 message=(
                     "Only one of these runs was measured against a published agent-ready"
                     " representation, so the two buyers were not shown the same kind of surface."
+                    " Reading a difference between those two arms is what a controlled paired"
+                    " experiment is for, so no before and after reading is offered here."
                 ),
             )
         )
