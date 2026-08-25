@@ -171,6 +171,10 @@ async def execute_next_launch(
         # transaction open.
         await session.rollback()
         measured = await measured_documents(session, plan)
+        # Reading them opened a transaction of its own, and the server boot below is exactly
+        # what the claim was released to keep out of one. A commit rather than a rollback: a
+        # rollback would expire the two rows that were just read for the sake of reading them.
+        await session.commit()
     except LaunchDispatchError as refused:
         await worker.settle_failed(launch_id, failure_code=refused.failure_code)
         log.warning(
@@ -364,11 +368,11 @@ async def measured_documents(
         if plan.source_snapshot_id is None
         else await session.get(MerchantSourceSnapshot, plan.source_snapshot_id)
     )
-    if (plan.representation_id is None) != (representation is None):
+    if plan.representation_id is not None and representation is None:
         raise LaunchDispatchError(
             FAILURE_REPRESENTATION_MISSING, "the representation this launch froze is unreadable"
         )
-    if (plan.source_snapshot_id is None) != (source is None):
+    if plan.source_snapshot_id is not None and source is None:
         raise LaunchDispatchError(
             FAILURE_SOURCE_MISSING, "the merchant information this launch froze is unreadable"
         )
