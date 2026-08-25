@@ -78,6 +78,15 @@ CONFLICTS: dict[str, InvariantConflict] = {
         detail="an evaluation is already queued or running for this merchant",
         resource="benchmark_evaluation_launch",
     ),
+    # One evaluation workspace per merchant, source snapshot and bootstrap configuration. The
+    # bootstrap service takes the merchant's benchmark world lock and reads the existing
+    # workspace first, so this is reached only by a writer that somehow did not, and it is the
+    # layer that holds across processes.
+    "uq_merchant_evaluation_workspace_identity": InvariantConflict(
+        reason="workspace_already_built",
+        detail="this merchant already has an evaluation setup for this source and configuration",
+        resource="merchant_evaluation_workspace",
+    ),
     # A mandate is qualified once. The service refuses a second constraint set after reading
     # that one exists, and two creations racing can both read that none does.
     "uq_intent_constraint_set_mandate_id": InvariantConflict(
