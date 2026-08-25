@@ -7,8 +7,9 @@ identifies why they fail, compiles ordinary merchant catalogs and policies into 
 structured machine readable commerce representation, then reruns the identical benchmark
 to measure the change in conversion and simulated GMV.
 
-The project is being built in phases. Phase 0 is the repository and development
-foundation. No commerce functionality is implemented yet.
+The commerce runtime, the merchant compiler, the benchmark, the merchant console and the
+operator command line are implemented. What a deployment of this actually is, and what it
+does not claim to support, is written down before anything else is deployed.
 
 ## Requirements
 
@@ -157,7 +158,10 @@ make build-frontend
 
 `AGENTRANK_API_BASE_URL` selects the backend. It defaults to `http://localhost:8000`.
 
-`AGENTRANK_CONSOLE_SESSION_SECRET` is required and the console refuses to start without it. Every
+`AGENTRANK_CONSOLE_SESSION_SECRET` is required and the console refuses to start without it. Next.js
+reads `.env` from `apps/web` rather than from the repository root, so `make web` exports the root
+`.env` into the environment before starting it; a deployment sets these variables directly and
+ships no `.env` at all, which the console refuses to start with. Every
 browser session credential is derived from it, so every console process serving one deployment
 needs the same value, and changing it signs every merchant out at once. Generate one with
 `openssl rand -hex 32`. On plain HTTP localhost, also set `AGENTRANK_COOKIE_SECURE=false`, which
@@ -202,6 +206,19 @@ are indistinguishable.
 Every schema change is an Alembic migration. Schema is never created or altered as an
 application startup side effect.
 
+### Deployment configuration
+
+`AGENTRANK_ENV` decides which rules a process runs under. `development`, `ci` and `test` may be
+configured from a `.env`; anything else is a deployment, reads no file, and must state
+`POSTGRES_HOST`, `POSTGRES_DB`, `POSTGRES_USER` and `POSTGRES_PASSWORD` or it refuses to start
+naming the one that is missing. It is read from the process environment only: a `.env` that tried
+to set it is refused, because a file deciding which rules apply to it is a file deciding whether
+it gets read.
+
+A missing provider credential is a capability a process does not have rather than a failure. Each
+process logs one line at startup naming its environment, the schema revision it expects and which
+capabilities it holds, in names and never in values.
+
 ```bash
 uv run alembic upgrade head          # apply
 uv run alembic downgrade -1          # undo one revision
@@ -215,10 +232,17 @@ sure `downgrade` really reverses `upgrade`.
 
 ## Continuous integration
 
-GitHub Actions runs on pull requests and on pushes to `main`, in two jobs. Backend runs
+GitHub Actions runs on pull requests and on pushes to `main`, in three jobs. Backend runs
 against a real PostgreSQL 18 service container: dependency install from the lock file,
 Ruff, mypy, migrations up and down and up, pytest, the text style scanner and whitespace
 validation. Frontend runs ESLint, Prettier, TypeScript, Vitest and a production build.
+Browser workflow builds the console, starts a real API and a real console against the same
+PostgreSQL, drives Chromium through the critical merchant workflows, and scans every retained
+artifact for credential material.
+
+The deployment smoke test runs inside the backend job. It builds the supported topology from an
+empty database in a production-configured environment and runs one merchant evaluation through
+it, so a change that breaks starting this system is caught by CI rather than by a deploy.
 
 CI needs no secrets and calls no external services. Run `make check` locally first. CI is
 independent verification, not the debugging loop.

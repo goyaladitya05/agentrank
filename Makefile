@@ -48,12 +48,15 @@ test-frontend: ## Run frontend tests
 
 test: test-backend test-frontend test-browser ## Run all tests
 
-# The seeded keys reach the tests through the environment and never through an argument vector,
-# and the artifact scan runs whether the workflows passed or failed: a failing run is exactly when
-# a trace is retained, so it is exactly when a credential left in one would matter.
+# Already part of `make test-backend`, because it is an ordinary pytest module. Here as well so
+# it can be run alone: it starts real processes and takes about ninety seconds, which is a long
+# time to wait for it while iterating on it.
 test-smoke: ## Start the supported topology in a clean database and run one merchant evaluation
 	$(UV) run pytest tests/test_deployment_smoke.py
 
+# The seeded keys reach the tests through the environment and never through an argument vector,
+# and the artifact scan runs whether the workflows passed or failed: a failing run is exactly when
+# a trace is retained, so it is exactly when a credential left in one would matter.
 test-browser: migrate build-frontend ## Run critical browser workflows against local services
 	@compiler_key="$$($(UV) run python scripts/seed_compiler_e2e.py)"; \
 		reevaluation="$$($(UV) run python scripts/seed_reevaluation_e2e.py)"; \
@@ -113,8 +116,11 @@ seed-benchmark: ## Create or refresh the VoltEdge catalog and publish its benchm
 api: ## Run the API with reload
 	$(UV) run uvicorn $(API_APP) --factory --reload --port 8000
 
+# Next.js reads .env from apps/web, not from here, so the root .env every other command uses
+# would be invisible to the console. Exported into the environment instead, which is also the
+# shape a deployment uses: the console is configured by its environment and never by a file.
 web: ## Run the console with reload
-	$(PNPM) $(WEB) dev
+	set -a; [ -f .env ] && . ./.env; set +a; $(PNPM) $(WEB) dev
 
 payments: ## Run the payment operator CLI. Example: make payments ARGS="list-unresolved"
 	$(UV) run python -m $(OPERATOR_CLI) payments $(ARGS)

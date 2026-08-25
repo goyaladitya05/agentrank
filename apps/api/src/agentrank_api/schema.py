@@ -32,11 +32,23 @@ async def applied_revision(engine: AsyncEngine) -> str | None:
     state during a deploy and one a readiness probe has to be able to report rather than crash
     on. Anything else the driver raises propagates: a database that cannot answer this is a
     database that cannot answer anything, and the caller already handles that.
+
+    More than one row is an answer rather than a row to pick from. Alembic writes one per head,
+    so two rows is a branched history or a hand stamped database, and taking either of them
+    would let a probe report compatible while an unknown head is also applied, and would let two
+    consecutive probes disagree with no state change behind them. What comes back names the
+    count so a reader learns what is actually wrong.
     """
     async with engine.connect() as connection:
         present = await connection.execute(text("SELECT to_regclass('alembic_version')"))
         if present.scalar_one() is None:
             return None
-        found = await connection.execute(text("SELECT version_num FROM alembic_version"))
-        revision: str | None = found.scalars().first()
-        return revision
+        found = await connection.execute(
+            text("SELECT version_num FROM alembic_version ORDER BY version_num")
+        )
+        revisions: list[str] = [str(revision) for revision in found.scalars().all()]
+        if not revisions:
+            return None
+        if len(revisions) > 1:
+            return f"{len(revisions)} revisions applied"
+        return revisions[0]

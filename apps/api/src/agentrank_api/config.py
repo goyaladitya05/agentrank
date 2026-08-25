@@ -8,6 +8,14 @@ cannot quietly define how a real deployment behaves. A production process that f
 it and says so, because a `.env` baked into an image is worth knowing about even when it changed
 nothing.
 
+That rule is only worth anything if the file cannot also decide which environment this is.
+`AGENTRANK_ENV` is an ordinary field on the model below, so a `.env` containing
+`AGENTRANK_ENV=production` would otherwise produce the worst possible process: one that calls
+itself a deployment, reports that it read no file, was never asked to state its database, and
+took every value including its provider credentials from the file. The environment is therefore
+read from the process environment before the model exists and checked against the model
+afterwards, and a file that tried to move it is refused by name.
+
 **A production process states its database rather than defaulting into one.** The localhost
 defaults below are a convenience for a developer and a hazard for a deployment: a process that
 silently reached for `localhost` would come up healthy against nothing. In production every
@@ -25,7 +33,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Self
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import URL
 
@@ -233,6 +241,20 @@ class Settings(BaseSettings):
         )
 
 
+def _field_problems(invalid: ValidationError) -> list[str]:
+    """What was wrong with a settings load, as field names and reasons and never as values.
+
+    Pydantic names the alias in `loc` for an aliased field, which is the environment variable an
+    operator has to go and fix. `msg` is the validator's own sentence; every validator in this
+    module writes its own and none of them interpolates a configured value.
+    """
+    problems = []
+    for error in invalid.errors():
+        where = ".".join(str(part) for part in error.get("loc", ())) or "configuration"
+        problems.append(f"{where}: {error.get('msg', 'is not valid')}")
+    return problems
+
+
 def _deployment_gaps(environment: str) -> list[str]:
     """Database variables a deployment must state, and has not.
 
@@ -278,7 +300,28 @@ def build_settings() -> Settings:
     # pydantic-settings fills required fields from the environment, and a literal call would be
     # reported as missing the password it is going to find there.
     overrides: dict[str, Any] = {"_env_file": ENV_FILE if file_configured else None}
-    return Settings(**overrides)
+    try:
+        settings = Settings(**overrides)
+    except ValidationError as invalid:
+        # Re-raised without pydantic's rendering. Its message embeds a truncated repr of the
+        # whole input dictionary, and the truncation keeps the tail, so the last environment
+        # sourced value, a provider key or the database password, is printed verbatim into
+        # whatever reads a failed boot. What a caller needs is which fields were wrong.
+        raise ValueError(
+            "configuration is not usable: "
+            + "; ".join(sorted(_field_problems(invalid)))
+            + f". Values are not shown. See {ENV_FILE}.example for what each variable is."
+        ) from None
+
+    # The one field a file may not decide, checked after the fact because the model is where a
+    # file would have got at it.
+    if settings.environment != environment:
+        raise ValueError(
+            f"{ENVIRONMENT_VARIABLE} must come from the process environment, not from"
+            f" {ENV_FILE}. This process was started as {environment!r} and the file names"
+            " something else, so which rules apply to it would depend on which layer you read."
+        )
+    return settings
 
 
 @lru_cache
