@@ -319,7 +319,11 @@ class MerchantEvaluationWorkspaceService:
         if existing is not None:
             return BootstrapOutcome(workspace=existing, created=False)
 
-        for blocker in await self._state_blockers(merchant_id, snapshot=snapshot):
+        # The first blocker is the refusal the caller is given, for the same reason the launch
+        # preflight hands back the first of its own: which one a merchant reads should not
+        # depend on which read happened to run first.
+        blocker = next(iter(await self._state_blockers(merchant_id, snapshot=snapshot)), None)
+        if blocker is not None:
             raise ConflictError(
                 blocker.code, blocker.message, resource=RESOURCE, identifier=str(merchant_id)
             )
