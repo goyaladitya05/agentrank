@@ -1,12 +1,48 @@
-"""Application configuration, read from the environment and validated at startup."""
+"""Application configuration, read from the environment and validated at startup.
 
+Two rules a private-beta deployment depends on, and both live here.
+
+**A production process is configured by its environment and by nothing else.** `.env` is read
+only in the environments that are meant to have one, so a file left in a working directory
+cannot quietly define how a real deployment behaves. A production process that finds one ignores
+it and says so, because a `.env` baked into an image is worth knowing about even when it changed
+nothing.
+
+**A production process states its database rather than defaulting into one.** The localhost
+defaults below are a convenience for a developer and a hazard for a deployment: a process that
+silently reached for `localhost` would come up healthy against nothing. In production every
+connection variable has to be set.
+
+What is required and what is merely absent are different answers everywhere in this file. A
+missing provider credential is a capability this process does not have, and it starts. A missing
+database password is not.
+"""
+
+import logging
+import os
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Self
+from pathlib import Path
+from typing import Any, Self
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import URL
+
+log = logging.getLogger(__name__)
+
+# The environments that are allowed to be configured from a file on disk. Everything else is a
+# deployment, and a deployment is configured by its environment.
+FILE_CONFIGURED_ENVIRONMENTS = frozenset({"development", "ci", "test"})
+
+ENVIRONMENT_VARIABLE = "AGENTRANK_ENV"
+
+ENV_FILE = ".env"
+
+# The database variables a deployment has to state rather than inherit from a default written for
+# a developer's laptop. A process that came up against `localhost` because nobody set these would
+# be a process reporting itself healthy against the wrong database, or against none.
+REQUIRED_IN_DEPLOYMENT = ("POSTGRES_HOST", "POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD")
 
 # Razorpay marks the mode in the key identifier itself. Requiring the test marker is how this
 # project refuses live mode structurally rather than by intention: a live key cannot be loaded,
@@ -61,7 +97,9 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # Chosen per process by `get_settings` rather than fixed here, because whether this
+        # deployment may be configured from a file is itself a configuration question.
+        env_file=None,
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
@@ -159,6 +197,26 @@ class Settings(BaseSettings):
         return GeminiCredentials(api_key=self.gemini_api_key)
 
     @property
+    def file_configured(self) -> bool:
+        """Whether this environment is one that may be configured from a file on disk."""
+        return self.environment in FILE_CONFIGURED_ENVIRONMENTS
+
+    def capability_report(self) -> dict[str, bool]:
+        """Which optional capabilities this process holds, as presence and never as values.
+
+        Absence is an answer rather than a failure for every one of these. A process with no
+        OpenAI credential runs benchmark launches frozen to every other executor; a process with
+        no Razorpay pair serves every endpoint except the interactive checkout bridge, which
+        refuses by name. What this exists for is a startup line an operator can read to see
+        which of those a process is, without reading a single configured value.
+        """
+        return {
+            "openai": self.openai is not None,
+            "gemini": self.gemini is not None,
+            "razorpay_test_mode": self.razorpay is not None,
+        }
+
+    @property
     def database_url(self) -> URL:
         """Async SQLAlchemy URL.
 
@@ -175,9 +233,55 @@ class Settings(BaseSettings):
         )
 
 
+def _deployment_gaps(environment: str) -> list[str]:
+    """Database variables a deployment must state, and has not.
+
+    Read from the process environment rather than from a built `Settings`, because the whole
+    point is to catch a value that came from a default rather than from the deployment. Once the
+    model is built the two are indistinguishable.
+    """
+    if environment in FILE_CONFIGURED_ENVIRONMENTS:
+        return []
+    return [name for name in REQUIRED_IN_DEPLOYMENT if not os.environ.get(name, "").strip()]
+
+
+def build_settings() -> Settings:
+    """Load configuration for this process, from the sources this environment is allowed.
+
+    The environment name is read from the process environment directly, before the model exists,
+    because it decides where the rest of the configuration may come from. A deployment that named
+    itself in a `.env` would be deciding that question with the answer.
+
+    A `.env` present in a deployment is ignored and reported. Reported rather than refused: the
+    file may be a developer's checkout that somebody is running a one-off command in, and
+    refusing would make an operator's shell useless for a reason that changed nothing. What it
+    must not do is take effect.
+    """
+    environment = os.environ.get(ENVIRONMENT_VARIABLE, "development").strip() or "development"
+    file_configured = environment in FILE_CONFIGURED_ENVIRONMENTS
+    if not file_configured and Path(ENV_FILE).is_file():
+        log.warning(
+            "ignoring %s: %s=%s is a deployment and is configured by its environment",
+            ENV_FILE,
+            ENVIRONMENT_VARIABLE,
+            environment,
+        )
+
+    gaps = _deployment_gaps(environment)
+    if gaps:
+        raise ValueError(
+            f"{', '.join(gaps)} must be set when {ENVIRONMENT_VARIABLE}={environment}."
+            " A deployment states its database rather than inheriting a developer default."
+        )
+
+    # Passed as keyword arguments through a dict, which is also what keeps mypy quiet:
+    # pydantic-settings fills required fields from the environment, and a literal call would be
+    # reported as missing the password it is going to find there.
+    overrides: dict[str, Any] = {"_env_file": ENV_FILE if file_configured else None}
+    return Settings(**overrides)
+
+
 @lru_cache
 def get_settings() -> Settings:
     """Return the process wide settings, loaded once."""
-    # mypy cannot see that pydantic-settings supplies required fields from the
-    # environment, so it reports the required password as a missing argument.
-    return Settings()  # type: ignore[call-arg]
+    return build_settings()

@@ -43,6 +43,7 @@ from agentrank_api.routes import (
     sources,
     system,
 )
+from agentrank_api.schema import EXPECTED_REVISION
 
 # What a validation refusal may say about one field.
 #
@@ -96,6 +97,7 @@ def create_app(
     provider = payment_provider or build_payment_provider()
     transport = razorpay_client if razorpay_client is not None else build_razorpay_client(resolved)
     logging.basicConfig(level=resolved.log_level.upper())
+    _report_configuration(resolved)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -291,6 +293,26 @@ def create_app(
         },
     )
     return app
+
+
+def _report_configuration(settings: Settings) -> None:
+    """One startup line saying what this process is, in names and presence and never in values.
+
+    An operator looking at a process that is behaving unexpectedly has to be able to tell which
+    optional capabilities it holds without reading its environment, and a deployment reading its
+    own boot log is the cheapest place for that. Which schema this build expects is here for the
+    same reason: it is what a readiness probe will be comparing against.
+
+    Every value is a boolean or a name this repository chose. No credential, no host, no database
+    name and no URL passes through here.
+    """
+    capabilities = settings.capability_report()
+    logging.getLogger(__name__).info(
+        "agentrank api starting: environment=%s schema=%s capabilities=%s",
+        settings.environment,
+        EXPECTED_REVISION,
+        ",".join(sorted(name for name, present in capabilities.items() if present)) or "none",
+    )
 
 
 def _shortened(value: str, limit: int) -> str:
