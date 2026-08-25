@@ -7,10 +7,14 @@ import { decodePreflight, decodeEvaluationLaunchDetail } from "@/lib/evaluation"
 import { IDLE_LAUNCH, type LaunchState } from "@/lib/evaluation-mutation";
 import {
   COMPARISON_FIXTURE,
+  COMPLETED_INITIAL_FIXTURE,
   COMPLETED_REEVALUATION_FIXTURE,
   FAILED_REEVALUATION_FIXTURE,
   INCOMPARABLE_REEVALUATION_FIXTURE,
+  INITIAL_BLOCKED_PREFLIGHT_FIXTURE,
+  INITIAL_PREFLIGHT_FIXTURE,
   PREFLIGHT_FIXTURE,
+  QUEUED_INITIAL_FIXTURE,
   QUEUED_REEVALUATION_FIXTURE,
   REFERENCE_PREFLIGHT_FIXTURE,
   RUNNING_REEVALUATION_FIXTURE,
@@ -59,7 +63,7 @@ describe("<LaunchConfirmation>", () => {
     const html = confirmation(REFERENCE_PREFLIGHT_FIXTURE);
     expect(html).toContain("No AI model provider is configured");
     expect(html).toContain("It is not an AI agent");
-    expect(html).toContain("does not read your published representation");
+    expect(html).toContain("reads neither your storefront nor any published representation");
     expect(html).toContain("nothing to compare against yet");
     // A buyer with no model has no model bounds, and none are invented for it.
     expect(html).not.toContain("model turns per mission");
@@ -68,7 +72,7 @@ describe("<LaunchConfirmation>", () => {
   it("disables submission while a request is in flight", () => {
     const html = confirmation(PREFLIGHT_FIXTURE, IDLE_LAUNCH, true);
     expect(html).toContain("disabled");
-    expect(html).toContain("Requesting the re-evaluation");
+    expect(html).toContain("Requesting the evaluation");
   });
 
   it("distinguishes a refused launch from a response it never saw", () => {
@@ -108,7 +112,7 @@ describe("<LaunchAccepted>", () => {
         }}
       />,
     );
-    expect(html).toContain("Re-evaluation requested");
+    expect(html).toContain("Evaluation requested");
     expect(html).toContain("Nothing has been executed yet");
     expect(html).toContain("/evaluations/01a0cccc-cccc-7ccc-8ccc-ccccccccccc1");
   });
@@ -212,5 +216,74 @@ describe("<EvaluationLaunchDetailContent>", () => {
   it("offers the compiler facts behind the representation it tested", () => {
     const html = render(COMPLETED_REEVALUATION_FIXTURE);
     expect(html).toContain("/compiler/runs/01a0aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa1");
+  });
+});
+
+describe("a merchant's first evaluation", () => {
+  it("says what it measures without naming an artifact nobody has published", () => {
+    const html = confirmation(INITIAL_PREFLIGHT_FIXTURE);
+    expect(html).toContain("against your merchant as it is now");
+    expect(html).toContain("voltedge-source@1");
+    expect(html).toContain("The buyer reads the ordinary storefront");
+    expect(html).toContain("This creates your first benchmark result");
+    expect(html).toContain("Request first evaluation");
+    expect(html).not.toContain("representation compiler:");
+  });
+
+  it("states the absence of a before rather than a zero", () => {
+    const html = confirmation(INITIAL_PREFLIGHT_FIXTURE);
+    expect(html).toContain("You have no earlier result");
+    expect(html).toContain("does not report a change where there is nothing to change from");
+    expect(html).not.toContain("0%");
+    expect(html).not.toContain("No change");
+    expect(html).not.toContain("Baseline score");
+  });
+
+  it("says a run does not move merchant money or stock", () => {
+    expect(confirmation(INITIAL_PREFLIGHT_FIXTURE)).toContain(
+      "does not change your prices, inventory or any payment",
+    );
+  });
+
+  it("names no currency amount for the run itself", () => {
+    const html = confirmation(INITIAL_PREFLIGHT_FIXTURE);
+    expect(html).not.toMatch(/[$£€]\s?\d/);
+    expect(html).toContain("AgentRank does not estimate that amount");
+  });
+
+  it("carries a blocker a merchant can clear themselves", () => {
+    const preflight = decodePreflight(INITIAL_BLOCKED_PREFLIGHT_FIXTURE);
+    expect(preflight.launchable).toBe(false);
+    expect(preflight.blockers[0]?.code).toBe("merchant_source_unavailable");
+    expect(preflight.source_snapshot_id).toBeNull();
+  });
+
+  it("renders a queued first evaluation with no comparison section at all", () => {
+    const html = render(QUEUED_INITIAL_FIXTURE);
+    expect(html).toContain("First evaluation");
+    expect(html).toContain("Nothing has been executed yet");
+    expect(html).not.toContain("Compared with your previous run");
+    expect(html).not.toContain("No comparison yet");
+  });
+
+  it("names the merchant state it measured rather than a representation", () => {
+    const html = render(COMPLETED_INITIAL_FIXTURE);
+    expect(html).toContain("through the ordinary storefront");
+    expect(html).toContain("voltedge-source@1");
+    expect(html).toContain("14 of 14 missions finished");
+  });
+
+  it("offers ordinary product navigation and never a compiler run it did not have", () => {
+    const html = render(COMPLETED_INITIAL_FIXTURE);
+    expect(html).toContain("Review your merchant source");
+    expect(html).toContain('href="/sources"');
+    expect(html).not.toContain("/compiler/runs/");
+    expect(html).not.toContain("Review the compiler facts");
+  });
+
+  it("reaches the ordinary run surfaces once it completes", () => {
+    const html = render(COMPLETED_INITIAL_FIXTURE);
+    expect(html).toContain("Open the benchmark run and its findings");
+    expect(html).toContain("/runs/01a0dddd-dddd-7ddd-8ddd-ddddddddddd2");
   });
 });

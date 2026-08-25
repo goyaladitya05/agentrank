@@ -7,7 +7,7 @@ import { loadInsight } from "@/lib/insights/load";
 import { decodeEvaluationLaunchDetail } from "@/lib/evaluation";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Re-evaluation | AgentRank" };
+export const metadata = { title: "Evaluation | AgentRank" };
 
 const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

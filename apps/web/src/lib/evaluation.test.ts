@@ -10,7 +10,9 @@ import {
 import {
   BLOCKED_PREFLIGHT_FIXTURE,
   COMPLETED_REEVALUATION_FIXTURE,
+  INITIAL_PREFLIGHT_FIXTURE,
   PREFLIGHT_FIXTURE,
+  QUEUED_INITIAL_FIXTURE,
   QUEUED_REEVALUATION_FIXTURE,
   REFERENCE_PREFLIGHT_FIXTURE,
 } from "@/lib/evaluation-fixtures";
@@ -39,6 +41,23 @@ describe("preflight decoding", () => {
     expect(preflight.pending_launch_id).not.toBeNull();
   });
 
+  it("keeps a first evaluation free of any artifact it did not measure", () => {
+    const preflight = decodePreflight(INITIAL_PREFLIGHT_FIXTURE);
+    expect(preflight.purpose).toBe("INITIAL");
+    expect(preflight.representation_id).toBeNull();
+    expect(preflight.compiler_run_id).toBeNull();
+    expect(preflight.source_snapshot_label).toBe("voltedge-source@1");
+    // Absence, never a zero: there is no earlier run and no field standing in for one.
+    expect(preflight.baseline_run_id).toBeNull();
+    expect(preflight.baseline_run_completed_at).toBeNull();
+  });
+
+  it("refuses a purpose this console does not know", () => {
+    expect(() => decodePreflight({ ...PREFLIGHT_FIXTURE, purpose: "EXPERIMENT" })).toThrow(
+      DecodeError,
+    );
+  });
+
   it("refuses a buyer profile this console does not know", () => {
     expect(() => decodePreflight({ ...PREFLIGHT_FIXTURE, buyer_profile: "MAGIC" })).toThrow(
       DecodeError,
@@ -54,14 +73,26 @@ describe("launch decoding", () => {
     expect(launch.missions_completed).toBeNull();
   });
 
+  it("keeps a first evaluation launch distinguishable from a re-evaluation", () => {
+    const initial = decodeEvaluationLaunch(QUEUED_INITIAL_FIXTURE);
+    const again = decodeEvaluationLaunch(QUEUED_REEVALUATION_FIXTURE);
+    expect(initial.purpose).toBe("INITIAL");
+    expect(initial.representation_id).toBeNull();
+    expect(initial.source_snapshot_label).toBe("voltedge-source@1");
+    expect(initial.baseline_run_id).toBeNull();
+    expect(again.purpose).toBe("REEVALUATION");
+    expect(again.representation_id).not.toBeNull();
+    expect(again.source_snapshot_id).toBeNull();
+  });
+
   it("decodes a list", () => {
     expect(decodeEvaluationLaunchList([QUEUED_REEVALUATION_FIXTURE])).toHaveLength(1);
   });
 
   it("refuses an unknown status rather than passing it through", () => {
-    expect(() => decodeEvaluationLaunch({ ...QUEUED_REEVALUATION_FIXTURE, status: "DONE" })).toThrow(
-      DecodeError,
-    );
+    expect(() =>
+      decodeEvaluationLaunch({ ...QUEUED_REEVALUATION_FIXTURE, status: "DONE" }),
+    ).toThrow(DecodeError);
   });
 
   it("decodes a comparison with its caveats and per currency demand", () => {

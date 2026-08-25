@@ -1,5 +1,5 @@
 /**
- * Fixtures shaped exactly like the re-evaluation API's JSON responses.
+ * Fixtures shaped exactly like the evaluation API's JSON responses.
  *
  * They exist so decoder and component tests exercise the wire shapes the console will actually
  * receive rather than approximations of them. Nothing here is imported by a route or a shipped
@@ -8,11 +8,13 @@
 
 export const PREFLIGHT_FIXTURE = {
   launchable: true,
+  purpose: "REEVALUATION",
   plan_digest: "sha256:" + "9".repeat(64),
   representation_id: "01a00000-0000-7000-8000-000000000002",
   representation_label: "compiler:sha256:cfg000:sha256:ir0000",
   compiler_run_id: "01a0aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa1",
   source_snapshot_id: "01a00000-0000-7000-8000-000000000001",
+  source_snapshot_label: null,
   suite_id: "01a00000-0000-7000-8000-000000000003",
   suite_label: "voltedge-core@2",
   suite_definition_hash: "sha256:abc123",
@@ -45,6 +47,33 @@ export const REFERENCE_PREFLIGHT_FIXTURE = {
   baseline_run_completed_at: null,
 };
 
+/** A merchant AgentRank has never measured and who has published nothing. */
+export const INITIAL_PREFLIGHT_FIXTURE = {
+  ...PREFLIGHT_FIXTURE,
+  purpose: "INITIAL",
+  representation_id: null,
+  representation_label: null,
+  compiler_run_id: null,
+  source_snapshot_label: "voltedge-source@1",
+  baseline_run_id: null,
+  baseline_run_completed_at: null,
+};
+
+/** The same merchant before they have told AgentRank anything about themselves. */
+export const INITIAL_BLOCKED_PREFLIGHT_FIXTURE = {
+  ...INITIAL_PREFLIGHT_FIXTURE,
+  launchable: false,
+  source_snapshot_id: null,
+  source_snapshot_label: null,
+  blockers: [
+    {
+      code: "merchant_source_unavailable",
+      message:
+        "AgentRank has no record of your merchant information yet, so there is nothing to evaluate you against. Add your merchant source first.",
+    },
+  ],
+};
+
 export const BLOCKED_PREFLIGHT_FIXTURE = {
   ...PREFLIGHT_FIXTURE,
   launchable: false,
@@ -53,13 +82,14 @@ export const BLOCKED_PREFLIGHT_FIXTURE = {
     {
       code: "evaluation_already_pending",
       message:
-        "A re-evaluation is already queued or running for this merchant. Wait for it to finish before starting another.",
+        "An evaluation is already queued or running for this merchant. Wait for it to finish before starting another.",
     },
   ],
 };
 
 export const QUEUED_REEVALUATION_FIXTURE = {
   launch_id: "01a0cccc-cccc-7ccc-8ccc-ccccccccccc1",
+  purpose: "REEVALUATION",
   status: "QUEUED",
   failure_code: null,
   requested_at: "2026-08-25T09:00:00Z",
@@ -68,6 +98,8 @@ export const QUEUED_REEVALUATION_FIXTURE = {
   representation_id: "01a00000-0000-7000-8000-000000000002",
   representation_label: "compiler:sha256:cfg000:sha256:ir0000",
   compiler_run_id: "01a0aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa1",
+  source_snapshot_id: null,
+  source_snapshot_label: null,
   suite_id: "01a00000-0000-7000-8000-000000000003",
   suite_label: "voltedge-core@2",
   mission_count: 14,
@@ -99,6 +131,30 @@ export const FAILED_REEVALUATION_FIXTURE = {
   status: "FAILED",
   failure_code: "provider_credential_unavailable",
   settled_at: "2026-08-25T09:00:30Z",
+  comparison: null,
+};
+
+/** A merchant's first evaluation, which has no artifact and no before. */
+export const QUEUED_INITIAL_FIXTURE = {
+  ...QUEUED_REEVALUATION_FIXTURE,
+  launch_id: "01a0cccc-cccc-7ccc-8ccc-ccccccccccc2",
+  purpose: "INITIAL",
+  representation_id: null,
+  representation_label: null,
+  compiler_run_id: null,
+  source_snapshot_id: "01a00000-0000-7000-8000-000000000001",
+  source_snapshot_label: "voltedge-source@1",
+  baseline_run_id: null,
+};
+
+export const COMPLETED_INITIAL_FIXTURE = {
+  ...QUEUED_INITIAL_FIXTURE,
+  status: "COMPLETED",
+  started_at: "2026-08-25T09:00:20Z",
+  settled_at: "2026-08-25T09:04:34Z",
+  run_id: "01a0dddd-dddd-7ddd-8ddd-ddddddddddd2",
+  run_status: "COMPLETED",
+  missions_completed: 14,
   comparison: null,
 };
 

@@ -6,7 +6,12 @@
  * A launch spends model quota and takes as long as a suite takes, so this is the most expensive
  * thing a merchant can do here and it is treated accordingly.
  *
- * Three things are deliberate.
+ * Four things are deliberate.
+ *
+ * The purpose is carried rather than chosen. The server decides whether this merchant is asking
+ * for a first evaluation or a re-evaluation, and this sends back the answer the page was
+ * rendered from, so a merchant who published in another tab is refused rather than launching a
+ * measurement of something they have stopped presenting.
  *
  * The request key comes from the rendered form rather than from this action. One preflight
  * render is one launch: submitting the same form twice, or retrying after a lost response,
@@ -26,7 +31,7 @@ import { revalidatePath } from "next/cache";
 
 import { requireConsoleApiKey } from "@/lib/auth/credential";
 import { apiBaseUrl } from "@/lib/config";
-import { decodeEvaluationLaunch } from "@/lib/evaluation";
+import { decodeEvaluationLaunch, type EvaluationPurpose } from "@/lib/evaluation";
 import type { LaunchState } from "@/lib/evaluation-mutation";
 
 const REFUSALS: Record<string, string> = {
@@ -39,9 +44,15 @@ const REFUSALS: Record<string, string> = {
   preflight_superseded:
     "What this re-evaluation would run has changed since this page loaded. Reload to see what would be evaluated now.",
   evaluation_already_pending:
-    "A re-evaluation is already queued or running for your merchant. Wait for it to finish before starting another.",
+    "An evaluation is already queued or running for your merchant. Wait for it to finish before starting another.",
   evaluation_request_key_reused:
-    "This form has already launched a re-evaluation of a different representation. Reload and try again.",
+    "This form has already launched a different evaluation. Reload and try again.",
+  evaluation_purpose_superseded:
+    "What AgentRank would evaluate for your merchant has changed since this page loaded. Reload to see what would be evaluated now.",
+  initial_evaluation_names_no_representation:
+    "A first evaluation measures your merchant as it is now, so it cannot name a published representation. Reload and try again.",
+  merchant_source_unavailable:
+    "AgentRank has no record of your merchant information yet, so there is nothing to evaluate you against.",
   run_already_active:
     "A benchmark run is already executing against your world. Only one run may own it at a time.",
   benchmark_suite_unavailable:
@@ -49,7 +60,7 @@ const REFUSALS: Record<string, string> = {
   benchmark_world_unregistered:
     "Your merchant has no registered benchmark world, so a run has no catalog to be put back to.",
   not_found: "This representation is no longer available. Reload to see the current one.",
-  unauthenticated: "Your session has expired. Sign in again to request a re-evaluation.",
+  unauthenticated: "Your session has expired. Sign in again to request an evaluation.",
 };
 
 function refusal(status: number, payload: unknown): LaunchState {
@@ -78,7 +89,8 @@ function refusal(status: number, payload: unknown): LaunchState {
 }
 
 export async function requestEvaluation(
-  representationId: string,
+  purpose: EvaluationPurpose,
+  representationId: string | null,
   requestKey: string,
   planDigest: string,
   _: LaunchState,
@@ -93,6 +105,7 @@ export async function requestEvaluation(
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
+        purpose,
         representation_id: representationId,
         request_key: requestKey,
         plan_digest: planDigest,

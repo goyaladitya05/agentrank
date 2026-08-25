@@ -10,20 +10,25 @@ import { REFRESH_SECONDS } from "@/lib/evaluation-refresh";
 import type { EvaluationLaunchDetail } from "@/lib/evaluation";
 
 /**
- * One re-evaluation: what it froze, where it has got to, and what it can be read against.
+ * One evaluation launch: what it froze, where it has got to, and what it can be read against.
  *
  * Execution state is only what AgentRank actually knows. A queued launch says nothing has run,
  * a running one says how many missions have finished out of how many the suite holds, and
  * neither invents a percentage or a finish time. A launch that did not complete says why in
  * words rather than showing a code.
+ *
+ * A first evaluation renders the same page with the comparison section absent rather than
+ * empty. There is no prior run and no field standing in for one, so nothing here has a zero to
+ * put in its place.
  */
 export function EvaluationLaunchDetailContent({ launch }: { launch: EvaluationLaunchDetail }) {
   const status = launchStatusLabel(launch.status);
   const pending = launch.status === "QUEUED" || launch.status === "EXECUTING";
+  const initial = launch.purpose === "INITIAL";
   return (
     <>
       <div className={styles.pageHeader}>
-        <h1 className={styles.pageTitle}>Re-evaluation</h1>
+        <h1 className={styles.pageTitle}>{initial ? "First evaluation" : "Re-evaluation"}</h1>
         <StatusMark tone={status.tone} label={status.label} />
       </div>
 
@@ -42,7 +47,12 @@ export function EvaluationLaunchDetailContent({ launch }: { launch: EvaluationLa
         <Panel>
           <KeyValueList
             entries={[
-              { term: "Representation", value: launch.representation_label },
+              initial
+                ? {
+                    term: "Merchant state",
+                    value: `Your merchant through the ordinary storefront, from ${launch.source_snapshot_label ?? "your merchant information"}`,
+                  }
+                : { term: "Representation", value: launch.representation_label ?? "" },
               { term: "Benchmark suite", value: launch.suite_label },
               { term: "Missions", value: String(launch.mission_count) },
               { term: "Benchmark world", value: launch.environment_label },
@@ -53,7 +63,8 @@ export function EvaluationLaunchDetailContent({ launch }: { launch: EvaluationLa
             ]}
           />
           <TechnicalDetails summary="Frozen identifiers">
-            <IdRow label="Re-evaluation id" value={launch.launch_id} />
+            <IdRow label="Evaluation id" value={launch.launch_id} />
+            <IdRow label="Source snapshot id" value={launch.source_snapshot_id} />
             <IdRow label="Representation id" value={launch.representation_id} />
             <IdRow label="Compiler run id" value={launch.compiler_run_id} />
             <IdRow label="Suite id" value={launch.suite_id} />
@@ -62,30 +73,64 @@ export function EvaluationLaunchDetailContent({ launch }: { launch: EvaluationLa
             <IdRow label="Buyer configuration" value={launch.buyer_configuration_digest} />
             <IdRow label="Executor kind" value={launch.executor_kind} />
           </TechnicalDetails>
-          <p className={styles.reviewMeta}>
-            <Link
-              className={styles.rowLink}
-              href={`/compiler/runs/${encodeURIComponent(launch.compiler_run_id)}`}
-            >
-              Review the compiler facts behind this representation
-            </Link>
-          </p>
+          <NextStep launch={launch} />
         </Panel>
       </Section>
 
-      <Section
-        title="Compared with your previous run"
-        hint="A before and after over time, not a controlled experiment."
-      >
-        {launch.comparison === null ? (
-          <Panel>
-            <EmptyState title="No comparison yet" explanation={comparisonAbsence(launch)} />
-          </Panel>
-        ) : (
-          <RunComparisonPanel comparison={launch.comparison} />
-        )}
-      </Section>
+      {initial ? null : (
+        <Section
+          title="Compared with your previous run"
+          hint="A before and after over time, not a controlled experiment."
+        >
+          {launch.comparison === null ? (
+            <Panel>
+              <EmptyState title="No comparison yet" explanation={comparisonAbsence(launch)} />
+            </Panel>
+          ) : (
+            <RunComparisonPanel comparison={launch.comparison} />
+          )}
+        </Section>
+      )}
     </>
+  );
+}
+
+/**
+ * Where a merchant goes next, without inventing a reason to go there.
+ *
+ * A re-evaluation has one exact link: the compiler run that produced the artifact it measured.
+ * A first evaluation has no such lineage, so what it offers is ordinary product navigation and
+ * is worded as ordinary product navigation. Per-finding compiler links come from the
+ * diagnostics engine on the run page, where a link exists only when a finding actually has a
+ * candidate fact at that address.
+ */
+function NextStep({ launch }: { launch: EvaluationLaunchDetail }) {
+  if (launch.purpose === "INITIAL") {
+    if (launch.status !== "COMPLETED") {
+      return null;
+    }
+    return (
+      <p className={styles.reviewMeta}>
+        Your diagnostics are on the run above.{" "}
+        <Link className={styles.rowLink} href="/sources">
+          Review your merchant source
+        </Link>{" "}
+        when you want to compile an agent-ready representation from it.
+      </p>
+    );
+  }
+  if (launch.compiler_run_id === null) {
+    return null;
+  }
+  return (
+    <p className={styles.reviewMeta}>
+      <Link
+        className={styles.rowLink}
+        href={`/compiler/runs/${encodeURIComponent(launch.compiler_run_id)}`}
+      >
+        Review the compiler facts behind this representation
+      </Link>
+    </p>
   );
 }
 
@@ -152,7 +197,7 @@ function buyerSentence(launch: EvaluationLaunchDetail): string {
   if (launch.buyer_profile === "AI_BUYER") {
     return `${launch.provider ?? "model provider"}, requested model ${launch.requested_model ?? "unrecorded"}`;
   }
-  return "AgentRank's deterministic reference buyer, which is not an AI agent and did not read the representation";
+  return "AgentRank's deterministic reference buyer, which is not an AI agent and read neither your storefront nor a representation";
 }
 
 function comparisonAbsence(launch: EvaluationLaunchDetail): string {

@@ -18,13 +18,20 @@ import {
 } from "@/lib/evaluation";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Re-evaluation | AgentRank" };
+export const metadata = { title: "Evaluation | AgentRank" };
 
+/**
+ * The one page a merchant starts a benchmark from, whichever of the two commands they are
+ * making.
+ *
+ * Which one that is comes from the server. A merchant who has published an agent-ready
+ * representation is asking about that artifact; a merchant with nothing published and nothing
+ * measured is asking how well a buyer does against them as they are. Every heading, every
+ * sentence and the confirmation itself follow that answer rather than guessing from whichever
+ * fields came back filled.
+ */
 export default async function EvaluationsPage() {
-  const preflight = await loadInsight(
-    "/api/v1/benchmark/evaluations/preflight",
-    decodePreflight,
-  );
+  const preflight = await loadInsight("/api/v1/benchmark/evaluations/preflight", decodePreflight);
   if (!preflight.ok) return <InsightFailure failure={preflight.failure} />;
   const history = await loadInsight("/api/v1/benchmark/evaluations?limit=20", (value) =>
     decodeEvaluationLaunchList(value),
@@ -35,28 +42,34 @@ export default async function EvaluationsPage() {
   // or retrying after a lost response is the same request and produces the same launch; opening
   // the page again is a new key and therefore a deliberate second one.
   const requestKey = randomUUID();
+  const initial = preflight.data.purpose === "INITIAL";
   return (
     <>
       <div className={styles.pageHeader}>
-        <h1 className={styles.pageTitle}>Re-evaluation</h1>
+        <h1 className={styles.pageTitle}>Evaluation</h1>
       </div>
       <Section
-        title="Request a re-evaluation"
-        hint="Publishing a representation never starts a benchmark. This does."
+        title={initial ? "Run your first evaluation" : "Request a re-evaluation"}
+        hint={
+          initial
+            ? "AgentRank has not measured this merchant yet. This creates the first result."
+            : "Publishing a representation never starts a benchmark. This does."
+        }
       >
         <Panel>
           <Preflight
             preflight={preflight.data}
             action={requestEvaluation.bind(
               null,
-              preflight.data.representation_id ?? "",
+              preflight.data.purpose,
+              preflight.data.representation_id,
               requestKey,
               preflight.data.plan_digest,
             )}
           />
         </Panel>
       </Section>
-      <Section title="Your re-evaluations" hint="Newest first.">
+      <Section title="Your evaluations" hint="Newest first.">
         <History launches={history.data} />
       </Section>
     </>
@@ -70,13 +83,25 @@ function Preflight({
   preflight: EvaluationPreflight;
   action: Parameters<typeof LaunchEvaluation>[0]["action"];
 }) {
+  const initial = preflight.purpose === "INITIAL";
   return (
     <>
       <KeyValueList
         entries={[
+          initial
+            ? {
+                term: "What is evaluated",
+                value: "Your merchant as it is now, through the ordinary storefront",
+              }
+            : {
+                term: "Representation under test",
+                value: preflight.representation_label ?? "None published",
+              },
           {
-            term: "Representation under test",
-            value: preflight.representation_label ?? "None published",
+            term: "Merchant information",
+            value:
+              preflight.source_snapshot_label ??
+              (initial ? "Not recorded yet" : "From the representation under test"),
           },
           { term: "Benchmark suite", value: preflight.suite_label ?? "None published" },
           {
@@ -87,14 +112,11 @@ function Preflight({
           { term: "Buyer", value: buyerSentence(preflight) },
           {
             term: "Compared against",
-            value:
-              preflight.baseline_run_id === null
-                ? "No earlier completed run of this suite"
-                : `Your run completed ${formatTimestamp(preflight.baseline_run_completed_at)}`,
+            value: comparisonSentence(preflight),
           },
         ]}
       />
-      {preflight.launchable && preflight.representation_id !== null ? (
+      {launchable(preflight) ? (
         <LaunchEvaluation preflight={preflight} action={action} />
       ) : (
         <Blockers preflight={preflight} />
@@ -103,13 +125,48 @@ function Preflight({
   );
 }
 
+/**
+ * Whether the confirmation is reachable at all.
+ *
+ * The server's own answer, plus the one thing the form itself needs: a re-evaluation names the
+ * representation it measures, so a launchable plan that resolved none would render a button
+ * that could only be refused.
+ */
+function launchable(preflight: EvaluationPreflight): boolean {
+  if (!preflight.launchable) return false;
+  return preflight.purpose === "INITIAL" || preflight.representation_id !== null;
+}
+
+/**
+ * What this result will be read against, stated as the absence it is when there is none.
+ *
+ * Never a zero, never a percentage, and never "no change". A merchant with no earlier run has
+ * no before, and the only honest thing to publish is that sentence.
+ */
+function comparisonSentence(preflight: EvaluationPreflight): string {
+  if (preflight.purpose === "INITIAL") {
+    return "Nothing. This is your first evaluation, so there is no earlier result to read it against.";
+  }
+  if (preflight.baseline_run_id === null) {
+    return "No earlier completed run of this suite";
+  }
+  return `Your run completed ${formatTimestamp(preflight.baseline_run_completed_at)}`;
+}
+
 function Blockers({ preflight }: { preflight: EvaluationPreflight }) {
+  const initial = preflight.purpose === "INITIAL";
   return (
     <>
-      <p>A re-evaluation cannot be requested right now.</p>
+      <p>
+        {initial
+          ? "A first evaluation cannot be run yet."
+          : "A re-evaluation cannot be requested right now."}
+      </p>
       <ul className={styles.launchTerms}>
         {preflight.blockers.map((blocker) => (
-          <li key={blocker.code}>{blocker.message}</li>
+          <li key={blocker.code}>
+            {blocker.message} <BlockerAction code={blocker.code} />
+          </li>
         ))}
       </ul>
       {preflight.pending_launch_id === null ? null : (
@@ -118,12 +175,36 @@ function Blockers({ preflight }: { preflight: EvaluationPreflight }) {
             className={styles.rowLink}
             href={`/evaluations/${encodeURIComponent(preflight.pending_launch_id)}`}
           >
-            Open the re-evaluation already in progress
+            Open the evaluation already in progress
           </Link>
         </p>
       )}
     </>
   );
+}
+
+/**
+ * The one place in the console a blocker becomes a link.
+ *
+ * Only for the blockers a merchant can actually clear themselves. Everything else is an
+ * operator's job and a link would suggest otherwise.
+ */
+function BlockerAction({ code }: { code: string }) {
+  if (code === "merchant_source_unavailable") {
+    return (
+      <Link className={styles.rowLink} href="/sources/new">
+        Add your merchant source
+      </Link>
+    );
+  }
+  if (code === "no_published_representation") {
+    return (
+      <Link className={styles.rowLink} href="/compiler">
+        Open the compiler
+      </Link>
+    );
+  }
+  return null;
 }
 
 function buyerSentence(preflight: EvaluationPreflight): string {
@@ -133,24 +214,33 @@ function buyerSentence(preflight: EvaluationPreflight): string {
   return "AgentRank's deterministic reference buyer, which is not an AI agent";
 }
 
+/** What one launch measured, in the vocabulary of its own kind. */
+function measured(launch: EvaluationLaunch): string {
+  if (launch.purpose === "INITIAL") {
+    return launch.source_snapshot_label ?? "Your merchant information";
+  }
+  return launch.representation_label ?? "";
+}
+
 function History({ launches }: { launches: readonly EvaluationLaunch[] }) {
   if (launches.length === 0) {
     return (
       <Panel>
         <EmptyState
-          title="No re-evaluations yet"
+          title="No evaluations have run yet"
           explanation="When you request one, it appears here with what it froze and what became of it."
         />
       </Panel>
     );
   }
   return (
-    <div className={styles.tableScroll} tabIndex={0} aria-label="Re-evaluations">
+    <div className={styles.tableScroll} tabIndex={0} aria-label="Evaluations">
       <table className={styles.table}>
         <thead>
           <tr>
             <th scope="col">Requested</th>
-            <th scope="col">Representation</th>
+            <th scope="col">Kind</th>
+            <th scope="col">Measured</th>
             <th scope="col">Suite</th>
             <th scope="col">State</th>
             <th scope="col">Progress</th>
@@ -169,7 +259,8 @@ function History({ launches }: { launches: readonly EvaluationLaunch[] }) {
                     {formatTimestamp(launch.requested_at)}
                   </Link>
                 </td>
-                <td className={styles.mono}>{launch.representation_label}</td>
+                <td>{launch.purpose === "INITIAL" ? "First evaluation" : "Re-evaluation"}</td>
+                <td className={styles.mono}>{measured(launch)}</td>
                 <td>{launch.suite_label}</td>
                 <td>
                   <StatusMark tone={status.tone} label={status.label} />

@@ -8,11 +8,16 @@ import { IDLE_LAUNCH, type LaunchState } from "@/lib/evaluation-mutation";
 import type { EvaluationPreflight } from "@/lib/evaluation";
 
 /**
- * Asking AgentRank to measure a published representation again.
+ * Asking AgentRank to run one benchmark evaluation.
  *
  * The most expensive command in this console, so it is never one click away. The preflight is
  * shown first and states exactly what will be evaluated and what it will be evaluated with;
  * confirming is a second, deliberate act.
+ *
+ * Two commands share this form and the wording follows the purpose the server resolved. A first
+ * evaluation says it measures the merchant as they are and that there will be nothing to
+ * compare it with; a re-evaluation names the artifact under test. Neither is described in the
+ * other's words.
  *
  * What the confirmation says is as important as what it does. It says this is a new run, that
  * previous evidence is unchanged, that a model provider can fail and that the result reflects
@@ -38,10 +43,11 @@ export function LaunchEvaluation({
   if (state.ok) {
     return <LaunchAccepted state={state} />;
   }
+  const initial = preflight.purpose === "INITIAL";
   if (!confirming) {
     return (
       <button className={styles.button} type="button" onClick={() => setConfirming(true)}>
-        Review re-evaluation
+        {initial ? "Review first evaluation" : "Review re-evaluation"}
       </button>
     );
   }
@@ -66,14 +72,14 @@ export function LaunchEvaluation({
 export function LaunchAccepted({ state }: { state: LaunchState }) {
   return (
     <div role="status">
-      <p>Re-evaluation requested. Nothing has been executed yet.</p>
+      <p>Evaluation requested. Nothing has been executed yet.</p>
       {state.launchId === null ? null : (
         <p className={styles.reviewMeta}>
           <Link
             className={styles.rowLink}
             href={`/evaluations/${encodeURIComponent(state.launchId)}`}
           >
-            Follow this re-evaluation
+            Follow this evaluation
           </Link>
         </p>
       )}
@@ -94,27 +100,51 @@ export function LaunchConfirmation({
   pending: boolean;
   onCancel?: () => void;
 }) {
+  const initial = preflight.purpose === "INITIAL";
   const model =
     preflight.buyer_profile === "AI_BUYER"
       ? `${preflight.provider ?? "a model provider"} model ${preflight.requested_model ?? ""}`.trim()
       : "AgentRank's deterministic reference buyer";
   return (
-    <form action={action} aria-label="Confirm re-evaluation">
-      <p>
-        Run {preflight.suite_label ?? "the benchmark suite"} against representation{" "}
-        <span className={styles.mono}>{preflight.representation_label}</span> with {model}?
-      </p>
+    <form
+      action={action}
+      aria-label={initial ? "Confirm first evaluation" : "Confirm re-evaluation"}
+    >
+      {initial ? (
+        <p>
+          Run {preflight.suite_label ?? "the benchmark suite"} against your merchant as it is now,
+          using your merchant information{" "}
+          <span className={styles.mono}>{preflight.source_snapshot_label ?? ""}</span> with {model}?
+        </p>
+      ) : (
+        <p>
+          Run {preflight.suite_label ?? "the benchmark suite"} against representation{" "}
+          <span className={styles.mono}>{preflight.representation_label}</span> with {model}?
+        </p>
+      )}
       <ul className={styles.launchTerms}>
         <li>
           {preflight.mission_count === null
             ? "Every mission in the suite is executed."
             : `${String(preflight.mission_count)} missions are executed, one at a time.`}
         </li>
+        {initial ? (
+          <li>
+            The buyer reads the ordinary storefront. Nothing is compiled for this run, so it
+            measures how AgentRank finds your merchant today.
+          </li>
+        ) : null}
         <li>
-          This starts a new benchmark run. Every previous run and its findings stay exactly as they
-          are.
+          {initial
+            ? "This creates your first benchmark result."
+            : "This starts a new benchmark run. Every previous run and its findings stay exactly as they are."}
         </li>
-        {preflight.baseline_run_id === null ? (
+        {initial ? (
+          <li>
+            You have no earlier result, so this one will not be shown beside anything. AgentRank
+            does not report a change where there is nothing to change from.
+          </li>
+        ) : preflight.baseline_run_id === null ? (
           <li>
             You have no earlier completed run of this suite, so there will be nothing to compare
             against yet.
@@ -122,6 +152,7 @@ export function LaunchConfirmation({
         ) : (
           <li>The result will be shown beside your most recent completed run of this suite.</li>
         )}
+        <li>Running an evaluation does not change your prices, inventory or any payment.</li>
         {preflight.buyer_profile === "AI_BUYER" ? (
           <li>
             Launching sends requests to your model provider and can consume quota or incur cost
@@ -131,8 +162,9 @@ export function LaunchConfirmation({
           <li>
             No AI model provider is configured, so this run uses AgentRank&apos;s deterministic
             reference buyer. It is not an AI agent, it reads structured commerce fields a real
-            storefront does not publish, and it does not read your published representation. Its
-            result says whether the benchmark path works, and is not evidence about agents.
+            storefront does not publish, and it reads neither your storefront nor any published
+            representation. Its result says whether the benchmark path works, and is not evidence
+            about agents.
           </li>
         )}
         {preflight.buyer_profile === "AI_BUYER" ? (
@@ -145,7 +177,7 @@ export function LaunchConfirmation({
       </ul>
       <div className={styles.buttonRow}>
         <button className={styles.button} type="submit" disabled={pending}>
-          Request re-evaluation
+          {initial ? "Request first evaluation" : "Request re-evaluation"}
         </button>
         {onCancel === undefined ? null : (
           <button className={styles.textLink} type="button" onClick={onCancel} disabled={pending}>
@@ -155,7 +187,7 @@ export function LaunchConfirmation({
       </div>
       {pending ? (
         <p className={styles.mutationPending} role="status">
-          Requesting the re-evaluation
+          Requesting the evaluation
         </p>
       ) : null}
       {state.message !== null && !pending ? (

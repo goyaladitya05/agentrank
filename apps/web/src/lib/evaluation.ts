@@ -1,5 +1,5 @@
 /**
- * The shapes the re-evaluation API returns, restated for the console and validated by hand.
+ * The shapes the evaluation API returns, restated for the console and validated by hand.
  *
  * The same rule the insights decoders follow: these values decide what a merchant is told
  * before they spend a benchmark run, so nothing is cast and every field is checked by name.
@@ -11,6 +11,13 @@ import { DecodeError } from "@/lib/insights/decode";
 
 export type LaunchStatus = "QUEUED" | "EXECUTING" | "COMPLETED" | "FAILED";
 export type BuyerProfile = "AI_BUYER" | "REFERENCE_BUYER";
+/**
+ * Which command the server decided this merchant is making.
+ *
+ * INITIAL measures the merchant's current merchant-facing state and has no before.
+ * REEVALUATION measures a published agent-ready representation against a prior run.
+ */
+export type EvaluationPurpose = "INITIAL" | "REEVALUATION";
 
 export interface LaunchBlocker {
   readonly code: string;
@@ -19,6 +26,7 @@ export interface LaunchBlocker {
 
 export interface EvaluationPreflight {
   readonly launchable: boolean;
+  readonly purpose: EvaluationPurpose;
   /** Covers every identity field below. The launch carries it back so a plan that moved since
    * this page rendered is refused rather than frozen silently. */
   readonly plan_digest: string;
@@ -26,6 +34,8 @@ export interface EvaluationPreflight {
   readonly representation_label: string | null;
   readonly compiler_run_id: string | null;
   readonly source_snapshot_id: string | null;
+  /** Named only when the source is what is being measured. See the backend plan. */
+  readonly source_snapshot_label: string | null;
   readonly suite_id: string | null;
   readonly suite_label: string | null;
   readonly suite_definition_hash: string | null;
@@ -47,14 +57,17 @@ export interface EvaluationPreflight {
 
 export interface EvaluationLaunch {
   readonly launch_id: string;
+  readonly purpose: EvaluationPurpose;
   readonly status: LaunchStatus;
   readonly failure_code: string | null;
   readonly requested_at: string;
   readonly started_at: string | null;
   readonly settled_at: string | null;
-  readonly representation_id: string;
-  readonly representation_label: string;
-  readonly compiler_run_id: string;
+  readonly representation_id: string | null;
+  readonly representation_label: string | null;
+  readonly compiler_run_id: string | null;
+  readonly source_snapshot_id: string | null;
+  readonly source_snapshot_label: string | null;
   readonly suite_id: string;
   readonly suite_label: string;
   readonly mission_count: number;
@@ -192,6 +205,14 @@ function status(value: unknown): LaunchStatus {
   return decoded;
 }
 
+function purpose(value: unknown): EvaluationPurpose {
+  const decoded = string(value, "purpose");
+  if (decoded !== "INITIAL" && decoded !== "REEVALUATION") {
+    throw new DecodeError("purpose: unexpected value");
+  }
+  return decoded;
+}
+
 function profile(value: unknown): BuyerProfile {
   const decoded = string(value, "buyer_profile");
   if (decoded !== "AI_BUYER" && decoded !== "REFERENCE_BUYER") {
@@ -204,11 +225,13 @@ export function decodePreflight(value: unknown): EvaluationPreflight {
   const source = object(value, "re-evaluation preflight");
   return {
     launchable: bool(source.launchable, "launchable"),
+    purpose: purpose(source.purpose),
     plan_digest: string(source.plan_digest, "plan_digest"),
     representation_id: nullableString(source.representation_id, "representation_id"),
     representation_label: nullableString(source.representation_label, "representation_label"),
     compiler_run_id: nullableString(source.compiler_run_id, "compiler_run_id"),
     source_snapshot_id: nullableString(source.source_snapshot_id, "source_snapshot_id"),
+    source_snapshot_label: nullableString(source.source_snapshot_label, "source_snapshot_label"),
     suite_id: nullableString(source.suite_id, "suite_id"),
     suite_label: nullableString(source.suite_label, "suite_label"),
     suite_definition_hash: nullableString(source.suite_definition_hash, "suite_definition_hash"),
@@ -230,10 +253,7 @@ export function decodePreflight(value: unknown): EvaluationPreflight {
       source.baseline_run_completed_at,
       "baseline_run_completed_at",
     ),
-    pending_launch_id: nullableString(
-      source.pending_launch_id,
-      "pending_launch_id",
-    ),
+    pending_launch_id: nullableString(source.pending_launch_id, "pending_launch_id"),
     blockers: array(source.blockers, "blockers").map((item) => {
       const blocker = object(item, "blocker");
       return {
@@ -247,14 +267,17 @@ export function decodePreflight(value: unknown): EvaluationPreflight {
 function launchFields(source: Record<string, unknown>): EvaluationLaunch {
   return {
     launch_id: string(source.launch_id, "launch_id"),
+    purpose: purpose(source.purpose),
     status: status(source.status),
     failure_code: nullableString(source.failure_code, "failure_code"),
     requested_at: string(source.requested_at, "requested_at"),
     started_at: nullableString(source.started_at, "started_at"),
     settled_at: nullableString(source.settled_at, "settled_at"),
-    representation_id: string(source.representation_id, "representation_id"),
-    representation_label: string(source.representation_label, "representation_label"),
-    compiler_run_id: string(source.compiler_run_id, "compiler_run_id"),
+    representation_id: nullableString(source.representation_id, "representation_id"),
+    representation_label: nullableString(source.representation_label, "representation_label"),
+    compiler_run_id: nullableString(source.compiler_run_id, "compiler_run_id"),
+    source_snapshot_id: nullableString(source.source_snapshot_id, "source_snapshot_id"),
+    source_snapshot_label: nullableString(source.source_snapshot_label, "source_snapshot_label"),
     suite_id: string(source.suite_id, "suite_id"),
     suite_label: string(source.suite_label, "suite_label"),
     mission_count: integer(source.mission_count, "mission_count"),
