@@ -863,6 +863,12 @@ def _payment_rules(evidence: MissionDiagnosisInput) -> list[MissionFinding]:
 def _discovery_rule(evidence: MissionDiagnosisInput) -> list[MissionFinding]:
     if FailureReason.DISCOVERY_FAILURE not in evidence.failure_reasons:
         return []
+    if _provider_outage_terminated(evidence):
+        # An evaluator records discovery failure when a purchase-available mission reaches no
+        # selection. A provider outage that terminated the buyer before it could finish is
+        # stronger trusted evidence for why no selection exists, so asking a merchant to
+        # investigate discovery would turn an outage into an unsupported merchant prompt.
+        return []
     return [
         _finding(
             DiagnosticCode.DISCOVERY_FAILED,

@@ -153,6 +153,7 @@ class TestProviderFaultDiagnosis:
         assert diagnosis.primary.code is DiagnosticCode.PROVIDER_OUTAGE_TERMINATED_MISSION
         codes = {finding.code for finding in diagnosis.findings}
         assert DiagnosticCode.AGENT_EXECUTION_FAILURE not in codes
+        assert DiagnosticCode.DISCOVERY_FAILED not in codes
         assert diagnosis.primary.owner is DiagnosticOwner.MODEL_PROVIDER
         assert diagnosis.primary.actionability is Actionability.NO_MERCHANT_ACTION
         assert "model provider" in diagnosis.outcome
