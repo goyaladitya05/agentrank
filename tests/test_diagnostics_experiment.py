@@ -16,6 +16,7 @@ from agentrank_api.benchmark.metrics import MissionOutcome, compute_metrics
 from agentrank_api.diagnostics.codes import engine_identity
 from agentrank_api.diagnostics.experiment import (
     CONCLUSION_INCOMPLETE,
+    CONCLUSION_NOT_INTERPRETABLE,
     CONCLUSION_OUTCOME_DIFFERENCES,
     CONCLUSION_PARITY,
     TRANSITION_COMPILED_GAIN,
@@ -222,6 +223,48 @@ class TestWarnings:
         assert raw.terminated_provider_outages == 1
         assert diagnosis.arms["COMPILED"].terminated_provider_outages == 0
 
+    def test_provider_failed_pair_cannot_headline_as_parity(self) -> None:
+        """A synthetic equivalent of the real provider-failed pilot pair.
+
+        Both arms happen to fail identically, but the provider termination means the matching
+        metrics describe availability rather than buyer or representation behavior.
+        """
+        samples = [
+            sample(
+                "RAW",
+                1,
+                statuses=failed_status(),
+                provider_failures=8,
+                outages=8,
+            ),
+            sample(
+                "COMPILED",
+                1,
+                statuses=failed_status(),
+                provider_failures=8,
+                outages=8,
+            ),
+        ]
+        diagnosis = diagnose_experiment(facts(samples, pairs=1), engine_identity=engine_identity())
+        assert diagnosis.mission_transitions == ()
+        assert diagnosis.conclusion.kind is CONCLUSION_NOT_INTERPRETABLE
+        assert "descriptive only" in diagnosis.conclusion.statement
+
+    def test_provider_failures_hide_observed_outcome_differences_as_a_headline(self) -> None:
+        samples = [
+            sample("RAW", 1, statuses=failed_status(), provider_failures=1, outages=1),
+            sample(
+                "COMPILED",
+                1,
+                statuses=(("buy-a-charger", MissionRunStatus.SUCCEEDED),),
+                provider_failures=1,
+                outages=1,
+            ),
+        ]
+        diagnosis = diagnose_experiment(facts(samples, pairs=1), engine_identity=engine_identity())
+        assert diagnosis.mission_transitions
+        assert diagnosis.conclusion.kind is CONCLUSION_NOT_INTERPRETABLE
+
     def test_recovered_throttles_alone_do_not_flag_provider_confounding(self) -> None:
         samples = [
             sample("RAW", 1, statuses=saturated_statuses(), provider_failures=5),
@@ -387,6 +430,7 @@ class TestReviewRemediations:
                 run_status="COMPLETED",
                 metrics=raw_metrics,
                 mission_outcomes=outcome_facts(("buy-a-charger", MissionRunStatus.FAILED)),
+                agent_implementation_version=4,
             ),
             ExperimentSampleFacts(
                 sample_id=uuid.uuid4(),
@@ -396,6 +440,7 @@ class TestReviewRemediations:
                 run_status="COMPLETED",
                 metrics=compiled_metrics,
                 mission_outcomes=outcome_facts(*compiled_statuses),
+                agent_implementation_version=4,
             ),
         ]
         diagnosis = diagnose_experiment(facts(samples, pairs=1), engine_identity=engine_identity())

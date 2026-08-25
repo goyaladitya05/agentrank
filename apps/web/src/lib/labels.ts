@@ -152,6 +152,8 @@ export function conclusionKindLabel(kind: string): { label: string; tone: Tone }
       return { label: "Outcome differences", tone: "warn" };
     case "INCOMPLETE":
       return { label: "Incomplete", tone: "neutral" };
+    case "NOT_INTERPRETABLE":
+      return { label: "Not interpretable", tone: "warn" };
     default:
       return { label: humanize(kind), tone: "neutral" };
   }
