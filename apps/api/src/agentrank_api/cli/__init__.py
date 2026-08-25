@@ -57,6 +57,10 @@ uv run python -m agentrank_api.cli compiler publish --merchant-slug voltedge <ru
 uv run python -m agentrank_api.cli workspace show --merchant-slug voltedge
 uv run python -m agentrank_api.cli workspace bootstrap --merchant-slug voltedge
 uv run python -m agentrank_api.cli workspace history --merchant-slug voltedge
+uv run python -m agentrank_api.cli benchmark provider
+uv run python -m agentrank_api.cli benchmark provider-set google-gemini --pause
+uv run python -m agentrank_api.cli benchmark usage <launch-id>
+uv run python -m agentrank_api.cli migrations downgrade-check base
 ```
 
 Exit codes are meant to be acted on by a script as well as read by a person:
@@ -98,6 +102,7 @@ from agentrank_api.cli import (
     benchmark,
     compiler,
     credentials,
+    migrations,
     payments,
     representation,
     workspace,
@@ -144,6 +149,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     workspace.add_commands(
         groups.add_parser("workspace", help="merchant evaluation setup, built from source")
+    )
+    migrations.add_commands(
+        groups.add_parser("migrations", help="schema revision questions that run no migration")
     )
     return parser
 

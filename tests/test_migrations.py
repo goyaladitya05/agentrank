@@ -40,6 +40,7 @@ from agentrank_api.constraints.repository import IntentConstraintRepository
 from agentrank_api.constraints.rules import ConstraintOperator, IntentConstraintSpec
 from agentrank_api.database import create_engine as create_async_engine
 from agentrank_api.database import create_session_factory
+from agentrank_api.downgrade import BLOCKERS, ImpossibleDowngradeError, blockers_for
 from agentrank_api.inventory.models import InventoryReservation, InventoryReservationLine
 from agentrank_api.inventory.repository import InventoryReservationRepository
 from agentrank_api.mandates.models import SpendingMandate
@@ -65,6 +66,23 @@ BENCHMARK_DEFINITIONS_HEAD = "a9c07ae31e5e"
 # The revision before evaluation launches gained a purpose, and so the last one that has no
 # way to say what a first evaluation measured.
 BEFORE_LAUNCH_PURPOSE = "a4b7c1d9e2f5"
+
+# The revision whose downgrade refuses while an initial evaluation exists, and the statement it
+# refuses with. The statement is repeated here on purpose rather than imported from the migration
+# module: a test that ran the migration's own copy could not tell the guard being deleted from
+# the guard being renamed, and what is asserted is that the database still refuses this.
+BLOCKED_REVISION = "b6c2e9f4a7d1"
+LAUNCH_PURPOSE_GUARD = """
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM benchmark_evaluation_launch WHERE purpose = 'INITIAL'
+    ) THEN
+        RAISE EXCEPTION 'initial evaluation launches cannot be represented before this revision';
+    END IF;
+END
+$$
+"""
 
 HOUR = timedelta(hours=1)
 CHECKOUT_ID = uuid.uuid7()
@@ -960,31 +978,121 @@ async def test_downgrading_past_the_launch_purpose_refuses_rather_than_rewriting
     a merchant measured a Commerce IR document that did not exist, or drop the row, which would
     erase the command behind a benchmark run. Both falsify history, so the migration refuses.
 
-    Intentional rather than a constraint violation, and the whole run is one transaction, so
-    nothing is half applied and the database stays at head.
+    Refused before Alembic runs anything at all, which is the Phase 5D change. The migration's
+    own guard is what makes the refusal true however the SQL is run, and it is unweakened; what
+    the preflight adds is that an operator reads one sentence instead of watching a long
+    destructive-looking unwind abort.
     """
     config = alembic_config_factory(throwaway_database)
     command.upgrade(config, "head")
     head = ScriptDirectory.from_config(config).get_current_head()
+    await _queue_first_evaluation(throwaway_database, "downgrade-first-shop", "downgrade-first")
 
-    engine = create_async_engine(throwaway_database)
-    try:
-        async with create_session_factory(engine)() as session:
-            world = await build_initial_world(session, "downgrade-first-shop")
-            await queue_launch(
-                session,
-                without_providers(throwaway_database),
-                world,
-                request_key="downgrade-first",
-            )
-    finally:
-        await engine.dispose()
-
-    with pytest.raises(DBAPIError, match="cannot be represented before this revision"):
+    with pytest.raises(ImpossibleDowngradeError, match="before any migration runs"):
         command.downgrade(config, BEFORE_LAUNCH_PURPOSE)
 
     assert current_revision(throwaway_database) == head
     assert row_count(throwaway_database, BenchmarkEvaluationLaunch) == 1
+
+
+@pytest.mark.anyio
+async def test_downgrading_a_populated_database_to_base_changes_nothing_when_it_is_refused(
+    throwaway_database: Settings, alembic_config_factory: AlembicConfigFactory
+) -> None:
+    """The incident this phase investigated, asserted on the whole schema rather than one row.
+
+    `downgrade base` unwinds forty five revisions, and the one that refuses is not near the top.
+    What is asserted here is that nothing moves: the same tables, the same recorded revision, and
+    the same rows in the tables the revisions above the refusal would have dropped.
+
+    That is a property of `migrations/env.py` running the whole command in one transaction and of
+    PostgreSQL rolling DDL back like anything else, and it is pinned rather than assumed. A future
+    change to `transaction_per_migration` would turn a clean refusal into a half-unwound database
+    with no other symptom, and this is what would fail.
+    """
+    config = alembic_config_factory(throwaway_database)
+    command.upgrade(config, "head")
+    head = ScriptDirectory.from_config(config).get_current_head()
+    await _queue_first_evaluation(throwaway_database, "downgrade-base-shop", "downgrade-base")
+    before = table_names(throwaway_database)
+    launches = row_count(throwaway_database, BenchmarkEvaluationLaunch)
+    suites = row_count(throwaway_database, BenchmarkSuite)
+    merchants = row_count(throwaway_database, Merchant)
+
+    with pytest.raises(ImpossibleDowngradeError, match="Nothing has been changed"):
+        command.downgrade(config, "base")
+
+    assert current_revision(throwaway_database) == head
+    assert table_names(throwaway_database) == before
+    assert row_count(throwaway_database, BenchmarkEvaluationLaunch) == launches
+    assert row_count(throwaway_database, BenchmarkSuite) == suites
+    assert row_count(throwaway_database, Merchant) == merchants
+
+
+@pytest.mark.anyio
+async def test_the_migration_guard_still_refuses_when_the_preflight_is_not_consulted(
+    throwaway_database: Settings, alembic_config_factory: AlembicConfigFactory
+) -> None:
+    """The preflight is a warning, and the migration's own guard is the rule.
+
+    Asserted by running the guard's statement directly, which is what somebody applying the
+    downgrade SQL by hand would run. If this ever stops raising, the preflight is the only thing
+    standing between an initial evaluation and a schema that cannot describe it, and a preflight
+    is skippable.
+    """
+    config = alembic_config_factory(throwaway_database)
+    command.upgrade(config, "head")
+    await _queue_first_evaluation(throwaway_database, "guard-shop", "guard-key")
+
+    engine = create_engine(throwaway_database.database_url)
+    try:
+        with engine.connect() as connection, pytest.raises(DBAPIError, match="cannot be repre"):
+            connection.execute(text(LAUNCH_PURPOSE_GUARD))
+    finally:
+        engine.dispose()
+
+
+def test_the_downgrade_preflight_reports_nothing_in_the_way_of_a_possible_downgrade(
+    throwaway_database: Settings, alembic_config_factory: AlembicConfigFactory
+) -> None:
+    """A database with no initial evaluation has nothing declared standing in its way.
+
+    The negative case matters as much as the refusal. A preflight that refused everything would
+    be safe and useless, and the command an operator runs before a real downgrade has to be able
+    to answer yes.
+    """
+    command.upgrade(alembic_config_factory(throwaway_database), "head")
+    engine = create_engine(throwaway_database.database_url)
+    try:
+        with engine.connect() as connection:
+            blocked = blockers_for(connection, unwinding=[BLOCKED_REVISION])
+    finally:
+        engine.dispose()
+    assert blocked == []
+
+
+def test_every_declared_downgrade_blocker_names_a_revision_that_exists(
+    alembic_config_factory: AlembicConfigFactory, throwaway_database: Settings
+) -> None:
+    """A blocker whose revision was renamed would silently stop checking anything.
+
+    It reads as declared, it never matches the set being unwound, and the downgrade it exists to
+    warn about proceeds to the migration's own guard with no warning at all.
+    """
+    script = ScriptDirectory.from_config(alembic_config_factory(throwaway_database))
+    for blocker in BLOCKERS:
+        assert script.get_revision(blocker.revision) is not None
+
+
+async def _queue_first_evaluation(target: Settings, slug: str, request_key: str) -> None:
+    """One admitted first evaluation, which is the row no earlier schema can represent."""
+    engine = create_async_engine(target)
+    try:
+        async with create_session_factory(engine)() as session:
+            world = await build_initial_world(session, slug)
+            await queue_launch(session, without_providers(target), world, request_key=request_key)
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.anyio
