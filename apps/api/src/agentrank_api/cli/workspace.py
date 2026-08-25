@@ -232,7 +232,9 @@ async def history(
 
 def _render_preflight(out: TextIO, preflight: WorkspacePreflight) -> None:
     print(f"source      {preflight.current_source_snapshot_label or MISSING}", file=out)
-    if preflight.current is None:
+    if preflight.current is None and preflight.operator_world_label is not None:
+        print(f"world       {preflight.operator_world_label}  registered by an operator", file=out)
+    elif preflight.current is None:
         print("workspace   none built for this merchant", file=out)
     else:
         _render_summary(out, preflight.current)
@@ -285,6 +287,7 @@ def _preflight_payload(preflight: WorkspacePreflight) -> dict[str, Any]:
         "current_source_snapshot_id": _text(preflight.current_source_snapshot_id),
         "current_source_snapshot_label": preflight.current_source_snapshot_label,
         "workspace": None if preflight.current is None else _summary_payload(preflight.current),
+        "operator_world_label": preflight.operator_world_label,
         "source_is_newer_than_the_workspace": preflight.source_is_newer_than_the_workspace,
         "buildable": preflight.buildable,
         "planned": None

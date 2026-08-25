@@ -17,6 +17,7 @@ from workspace_support import awkward, catalogued, plain, product, source, varia
 
 from agentrank_api.auth.service import MerchantCredentialService
 from agentrank_api.auth.tokens import TokenMarker
+from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
 from agentrank_api.benchmark.execution import BenchmarkRunCapability
 from agentrank_api.benchmark.models import BenchmarkSuite
 from agentrank_api.benchmark.runner import BenchmarkRunService
@@ -28,6 +29,7 @@ from agentrank_api.payments.fake import FakePaymentProvider
 from agentrank_api.representation.definitions import MerchantSourceDefinition
 from agentrank_api.representation.models import MerchantSourceSnapshot
 from agentrank_api.representation.service import MerchantRepresentationService
+from agentrank_api.workspace.projection import project_catalog
 from agentrank_api.workspace.service import MerchantEvaluationWorkspaceService
 
 pytestmark = pytest.mark.anyio
@@ -194,6 +196,43 @@ class TestReadingTheSetup:
         assert "PURCHASE_AVAILABLE" not in text
         assert "simulated_value_amount_minor" not in text
         assert "objective" not in text
+
+    async def test_a_world_an_operator_registered_is_reported_rather_than_refused(
+        self,
+        settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+        issue_credential: CredentialIssuer,
+    ) -> None:
+        """A merchant set up from authored files is evaluable, so the setup read says so.
+
+        The refusal is still the right answer to a build command, because a second world beside
+        theirs would leave two answers to which one a launch should use. What the read must not
+        do is report a working merchant as broken.
+        """
+        merchant, snapshot = await merchant_with(session, "operator-world-shop")
+        catalog = project_catalog(
+            catalogued(merchant.slug),
+            merchant_slug=merchant.slug,
+            merchant_name=merchant.name,
+            version=7,
+        )
+        await BenchmarkEnvironmentService(session).register(catalog.fixture)
+        token = await issue_credential(merchant.id)
+        http = client(settings, factory)
+
+        body = http.get(SETUP, headers=bearer(token)).json()
+
+        assert body["operator_world_label"] == catalog.fixture.label
+        assert body["workspace"] is None
+        assert body["buildable"] is False
+        assert [entry["code"] for entry in body["blockers"]] == ["existing_benchmark_world"]
+
+        refused = http.post(
+            SETUP, headers=bearer(token), json={"source_snapshot_id": str(snapshot.id)}
+        )
+        assert refused.status_code == 409
+        assert refused.json()["error"] == "existing_benchmark_world"
 
     async def test_a_merchant_whose_data_supports_nothing_is_told_why(
         self,

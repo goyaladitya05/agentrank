@@ -348,6 +348,29 @@ export function demandBucketLabel(bucket: string): string {
 }
 
 /** Fallback that keeps an unexpected value readable without pretending to understand it. */
+/**
+ * What one generated mission kind is, in words rather than in the code the backend names it by.
+ *
+ * A merchant reading their evaluation setup should learn what the benchmark asks of them.
+ * `humanize` is the fallback rather than an omission: a setup built by an older generator may
+ * carry a kind this build has no sentence for, and rendering it readably beats hiding it.
+ */
+export function missionFamilyLabel(family: string): string {
+  return MISSION_FAMILY_LABELS[family] ?? humanize(family);
+}
+
+const MISSION_FAMILY_LABELS: Record<string, string> = {
+  CATEGORY_PURCHASE: "Buy something from a category",
+  BUDGET_CONSTRAINED_PURCHASE: "Buy the one that fits the budget",
+  MULTI_UNIT_PURCHASE: "Buy more than one",
+  SPECIFICATION_PURCHASE: "Buy one meeting a stated specification",
+  BUDGET_ABSTENTION: "Decline when nothing is affordable",
+  STOCK_ABSTENTION: "Decline when you cannot supply the quantity",
+  UNAVAILABLE_ABSTENTION: "Decline when a category is out of stock",
+  SPECIFICATION_ABSTENTION: "Decline when the stated specification is unavailable",
+  POLICY_CONSTRAINT: "Answer a policy question",
+};
+
 export function humanize(value: string): string {
   const words = value
     .toLowerCase()

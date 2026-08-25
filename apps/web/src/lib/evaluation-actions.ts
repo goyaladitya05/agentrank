@@ -56,9 +56,9 @@ const REFUSALS: Record<string, string> = {
   run_already_active:
     "A benchmark run is already executing against your world. Only one run may own it at a time.",
   benchmark_suite_unavailable:
-    "No benchmark suite is published for your merchant, so there is nothing to run.",
+    "AgentRank has no benchmark missions for your merchant yet. Prepare your evaluation setup first.",
   benchmark_world_unregistered:
-    "Your merchant has no registered benchmark world, so a run has no catalog to be put back to.",
+    "AgentRank has no evaluation catalog for your merchant yet. Prepare your evaluation setup first.",
   not_found: "What this evaluation named is no longer available. Reload to see the current state.",
   unauthenticated: "Your session has expired. Sign in again to request an evaluation.",
 };

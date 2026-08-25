@@ -162,6 +162,11 @@ class WorkspacePreflight:
     current_source_snapshot_id: uuid.UUID | None
     current_source_snapshot_label: str | None
     current: WorkspaceSummary | None
+    # The benchmark world this merchant has that no workspace generated, when they have one.
+    # A merchant an operator set up from authored files is not broken and is not missing a
+    # setup; they have one this mechanism did not build, and a console that reported that as a
+    # blocker would be telling a working merchant something is wrong with them.
+    operator_world_label: str | None
     planned: PlannedWorkspace | None
     blockers: tuple[BootstrapBlocker, ...]
 
@@ -217,6 +222,7 @@ class MerchantEvaluationWorkspaceService:
         merchant = await self._merchant(merchant_id)
         current = await self._workspaces.current(merchant_id)
         summary = None if current is None else await self._summary(current)
+        operator_world = await self._operator_world(merchant_id)
         snapshot = await self._sources.current(merchant_id)
 
         if snapshot is None:
@@ -224,6 +230,7 @@ class MerchantEvaluationWorkspaceService:
                 current_source_snapshot_id=None,
                 current_source_snapshot_label=None,
                 current=summary,
+                operator_world_label=operator_world,
                 planned=None,
                 blockers=(_NO_SOURCE,),
             )
@@ -247,6 +254,7 @@ class MerchantEvaluationWorkspaceService:
             current_source_snapshot_id=snapshot.id,
             current_source_snapshot_label=snapshot.label,
             current=summary,
+            operator_world_label=operator_world,
             planned=planned,
             blockers=tuple(blockers),
         )
@@ -448,6 +456,20 @@ class MerchantEvaluationWorkspaceService:
             suite_hash=workspace.suite_hash,
         )
 
+    async def _operator_world(self, merchant_id: uuid.UUID) -> str | None:
+        """The benchmark world this merchant has that no workspace generated, if they have one.
+
+        A merchant an operator registered from authored files. They are perfectly evaluable and
+        this mechanism is simply not what set them up, so the console reports that rather than
+        rendering the refusal `_FOREIGN_WORLD` carries. The refusal is still the right answer to
+        "may I build one", because a second world beside theirs would leave two answers to which
+        one a launch should use.
+        """
+        generated = await self._workspaces.environment_ids(merchant_id)
+        registered = await self._environments.list_for_merchant(merchant_id)
+        foreign = [entry for entry in registered if entry.id not in generated]
+        return foreign[-1].label if foreign else None
+
     async def _state_blockers(
         self, merchant_id: uuid.UUID, *, snapshot: MerchantSourceSnapshot
     ) -> tuple[BootstrapBlocker, ...]:
@@ -648,12 +670,12 @@ _EXISTING_CATALOG = BootstrapBlocker(
 
 _EVALUATION_PENDING = BootstrapBlocker(
     "evaluation_already_pending",
-    "An evaluation is already queued or running for this merchant. It is measuring the setup you"
-    " have now, so wait for it to finish before building a new one.",
+    "A new evaluation setup cannot be built while an evaluation is queued or running. That"
+    " evaluation is measuring the setup you have now, so it has to finish first.",
 )
 
 _RUN_ACTIVE = BootstrapBlocker(
     "run_already_active",
-    "A benchmark run is executing against this merchant's world. Wait for it to finish before"
-    " building a new evaluation setup.",
+    "A new evaluation setup cannot be built while a benchmark run is executing against this"
+    " merchant's world. That run has to finish first.",
 )

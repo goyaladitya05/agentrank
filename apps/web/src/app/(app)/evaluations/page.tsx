@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import Link from "next/link";
 
+import { EvaluationSetupPanel } from "@/components/EvaluationSetup";
 import { InsightFailure } from "@/components/InsightFailure";
 import { LaunchEvaluation } from "@/components/LaunchEvaluation";
 import { EmptyState, KeyValueList, Panel, Section, StatusMark } from "@/components/Primitives";
@@ -10,6 +11,8 @@ import { formatTimestamp } from "@/lib/format";
 import { launchStatusLabel } from "@/lib/labels";
 import { loadInsight } from "@/lib/insights/load";
 import { requestEvaluation } from "@/lib/evaluation-actions";
+import { decodeEvaluationSetup } from "@/lib/workspace";
+import { buildEvaluationSetup } from "@/lib/workspace-actions";
 import {
   decodePreflight,
   decodeEvaluationLaunchList,
@@ -31,6 +34,8 @@ export const metadata = { title: "Evaluation | AgentRank" };
  * fields came back filled.
  */
 export default async function EvaluationsPage() {
+  const setup = await loadInsight("/api/v1/benchmark/workspace", decodeEvaluationSetup);
+  if (!setup.ok) return <InsightFailure failure={setup.failure} />;
   const preflight = await loadInsight("/api/v1/benchmark/evaluations/preflight", decodePreflight);
   if (!preflight.ok) return <InsightFailure failure={preflight.failure} />;
   const history = await loadInsight("/api/v1/benchmark/evaluations?limit=20", (value) =>
@@ -48,6 +53,15 @@ export default async function EvaluationsPage() {
       <div className={styles.pageHeader}>
         <h1 className={styles.pageTitle}>Evaluation</h1>
       </div>
+      <Section
+        title="Evaluation setup"
+        hint="What AgentRank measures you against, built from your own merchant information."
+      >
+        <EvaluationSetupPanel
+          setup={setup.data}
+          action={buildEvaluationSetup.bind(null, setup.data.current_source_snapshot_id ?? "")}
+        />
+      </Section>
       <Section
         title={initial ? "Run your first evaluation" : "Request a re-evaluation"}
         hint={
@@ -203,6 +217,10 @@ function Blockers({ preflight }: { preflight: EvaluationPreflight }) {
  *
  * Only for the blockers a merchant can actually clear themselves. Everything else is an
  * operator's job and a link would suggest otherwise.
+ *
+ * The two benchmark setup blockers became merchant-clearable in Phase 5C: a merchant with
+ * source evidence and no evaluation world builds one from the panel at the top of this page,
+ * so they are pointed there rather than told their operator runs a command line.
  */
 function BlockerAction({ code }: { code: string }) {
   if (code === "merchant_source_unavailable") {
@@ -218,6 +236,9 @@ function BlockerAction({ code }: { code: string }) {
         Open the compiler
       </Link>
     );
+  }
+  if (code === "benchmark_suite_unavailable" || code === "benchmark_world_unregistered") {
+    return <span className={styles.finePrint}>See Evaluation setup above.</span>;
   }
   return null;
 }

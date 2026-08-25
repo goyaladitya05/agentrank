@@ -168,6 +168,10 @@ class EvaluationSetupView(BaseModel):
     current_source_snapshot_label: str | None
     source_is_newer_than_the_workspace: bool
     workspace: EvaluationWorkspaceView | None
+    # A benchmark world this merchant has that no setup here generated. Present for a merchant
+    # an operator registered from authored files, who is evaluable and simply was not set up by
+    # this mechanism. Never rendered as a problem.
+    operator_world_label: str | None
     planned: PlannedWorkspaceView | None
     blockers: list[WorkspaceBlockerView]
 
@@ -181,6 +185,7 @@ class EvaluationSetupView(BaseModel):
             workspace=None
             if preflight.current is None
             else EvaluationWorkspaceView.from_domain(preflight.current),
+            operator_world_label=preflight.operator_world_label,
             planned=None
             if preflight.planned is None
             else PlannedWorkspaceView.from_domain(preflight.planned),
