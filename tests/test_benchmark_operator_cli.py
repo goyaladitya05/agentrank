@@ -82,11 +82,12 @@ async def cli(settings: Settings, provider: FakePaymentProvider, *arguments: str
     tests that depended on that would be a suite that passes for a reason nobody chose. That the
     default resolves is asserted separately, once.
 
-    `queue` reads the launch table deployment wide and has no world, so it is not given one: a
-    flag added for uniformity would be a flag the command would have to accept and ignore.
+    `queue` reads the launch table deployment wide and `cancel` names one launch by identifier,
+    so neither has a world and neither is given one: a flag added for uniformity would be a flag
+    the command would have to accept and ignore.
     """
     named = list(arguments)
-    takes_world = named[:1] == ["benchmark"] and named[1:2] != ["queue"]
+    takes_world = named[:1] == ["benchmark"] and named[1:2] not in (["queue"], ["cancel"])
     if takes_world and "--world" not in named:
         named += ["--world", str(VOLTEDGE_DIRECTORY)]
     out, err = StringIO(), StringIO()
@@ -588,3 +589,53 @@ async def test_queue_reports_an_empty_deployment_without_inventing_work(
     assert run.json()["launches"] == []
     assert run.json()["queued"] == 0
     assert run.json()["unserviceable"] == 0
+
+
+async def test_cancel_closes_a_queued_launch_nothing_can_run(
+    catalog_settings: Settings, provider: FakePaymentProvider, session: AsyncSession
+) -> None:
+    """The operator remedy for a launch frozen to an executor no worker in this deployment has.
+
+    Without it, capability-aware claiming would trade a recoverable failure for an unrecoverable
+    one: the launch holds the merchant's one pending slot and nothing settles it.
+    """
+    await cli(catalog_settings, provider, "benchmark", "seed", "--json")
+    merchant = await MerchantRepository(session).get_by_slug(MERCHANT_SLUG)
+    assert merchant is not None
+    await MerchantRepresentationService(session).publish_source(
+        read_source(VOLTEDGE_DIRECTORY / "source.json")
+    )
+    service = MerchantEvaluationLaunchService(session, with_openai(catalog_settings))
+    plan = await service.plan(merchant.id)
+    launch = await service.request(
+        merchant.id,
+        purpose=plan.purpose,
+        representation_id=plan.representation_id,
+        request_key="cli-cancel",
+        plan_digest=plan.digest,
+    )
+    launch_id = launch.id
+
+    cancelled = await cli(
+        without_providers(catalog_settings), provider, "benchmark", "cancel", str(launch_id)
+    )
+
+    assert cancelled.code == ExitCode.OK
+    assert "cancelled_by_operator" in cancelled.out
+
+    # The queue is empty afterwards, which is what the operator was trying to achieve.
+    queued = await cli(
+        without_providers(catalog_settings), provider, "benchmark", "queue", "--json"
+    )
+    assert queued.json()["queued"] == 0
+    assert queued.json()["unserviceable"] == 0
+
+
+async def test_cancel_refuses_a_launch_that_does_not_exist(
+    catalog_settings: Settings, provider: FakePaymentProvider
+) -> None:
+    await cli(catalog_settings, provider, "benchmark", "seed", "--json")
+
+    missing = await cli(catalog_settings, provider, "benchmark", "cancel", str(uuid.uuid7()))
+
+    assert missing.code == ExitCode.NOT_FOUND

@@ -286,6 +286,23 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
     _add_json(queueing)
     queueing.set_defaults(command=queue)
 
+    cancelling = commands.add_parser(
+        "cancel",
+        help="close a queued launch nothing is configured to run, freeing the merchant's slot",
+        description=(
+            "Settle a queued evaluation launch as cancelled. The one case it exists for is a"
+            " launch frozen to an executor no worker in this deployment can run: it stays queued"
+            " rather than being destroyed by an incapable worker, and it holds the merchant's"
+            " one pending slot until somebody configures a capable worker or runs this. Queued"
+            " only; an executing launch has a run behind it and is closed with abort and settle."
+        ),
+    )
+    cancelling.add_argument(
+        "launch_id", type=uuid.UUID, help="the launch identifier, from benchmark queue"
+    )
+    _add_json(cancelling)
+    cancelling.set_defaults(command=cancel)
+
     settling = commands.add_parser(
         "settle",
         help="close the merchant launch behind a run that has already finished",
@@ -695,6 +712,35 @@ async def queue(
             f"  {'yes' if entry['serviceable'] else 'no'}",
             file=out,
         )
+    return ExitCode.OK
+
+
+async def cancel(
+    session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
+    provider: PaymentProvider,
+    arguments: argparse.Namespace,
+    out: TextIO,
+    settings: Settings,
+) -> int:
+    """Close one queued launch as cancelled, and say what it was.
+
+    Refused for anything but a queued launch, by the service, so an operator who reaches for this
+    when they meant abort is told rather than quietly closing a launch with a live run behind it.
+    """
+    del sessions, provider, settings
+    launch = await EvaluationLaunchWorkerService(session).cancel_queued(arguments.launch_id)
+    payload = {
+        "launch_id": str(launch.id),
+        "status": launch.status.value,
+        "failure_code": launch.failure_code,
+    }
+    if arguments.as_json:
+        write_json(out, payload)
+    else:
+        print(f"launch      {payload['launch_id']}", file=out)
+        print(f"status      {payload['status']}", file=out)
+        print(f"failure     {payload['failure_code']}", file=out)
     return ExitCode.OK
 
 

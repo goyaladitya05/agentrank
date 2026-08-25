@@ -49,6 +49,7 @@ from agentrank_api.benchmark.evaluation_launch import (
 )
 from agentrank_api.benchmark.execution import REFERENCE_ISOLATED_KIND
 from agentrank_api.benchmark.launch import (
+    CANCELLED_BY_OPERATOR,
     EvaluationLaunchWorkerService,
     MerchantEvaluationLaunchService,
     worker_executor_kinds,
@@ -663,6 +664,101 @@ class TestWorkerCapability:
             )
             is None
         )
+
+
+class TestCancellingWhatNobodyCanRun:
+    """The remedy the capability-aware claim needs, and why it needs one.
+
+    Leaving an unrunnable launch queued is right: a worker that settled it would destroy a
+    request a capable worker could serve. What that trades into is a launch nobody is configured
+    for sitting queued forever, holding the merchant's one pending slot and blocking every future
+    evaluation they could ask for. Without an operator remedy that is worse than what it replaced.
+    """
+
+    async def test_a_queued_launch_can_be_cancelled_and_frees_the_merchants_slot(
+        self,
+        catalog_settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        world = await build_launch_world(session, "stuck-shop")
+        launch_id = await queue_launch(
+            session, with_openai(catalog_settings), world, request_key="stuck-request"
+        )
+        settings = without_providers(catalog_settings)
+        # Nothing here can run it, which is the state this exists for.
+        outcome = await execute_next_launch(
+            session,
+            factory,
+            world=world.authored,
+            provider=FakePaymentProvider(),
+            settings=settings,
+        )
+        assert outcome is not None and outcome.status == UNSERVICEABLE
+        # And while it is queued the merchant cannot ask for anything else.
+        blocked = await MerchantEvaluationLaunchService(session, settings).plan(world.merchant_id)
+        assert blocked.launchable is False
+
+        cancelled = await EvaluationLaunchWorkerService(session).cancel_queued(launch_id)
+
+        assert cancelled.status is EvaluationLaunchStatus.FAILED
+        assert cancelled.failure_code == CANCELLED_BY_OPERATOR
+        assert cancelled.run_id is None
+        assert cancelled.settled_at is not None
+        settled = await reload(session, launch_id)
+        assert settled.status is EvaluationLaunchStatus.FAILED
+
+        # The slot is free and the merchant can ask again.
+        recovered = await MerchantEvaluationLaunchService(session, settings).plan(world.merchant_id)
+        assert recovered.launchable is True
+        runs = (
+            await session.execute(
+                select(BenchmarkRun).where(BenchmarkRun.merchant_id == world.merchant_id)
+            )
+        ).scalars()
+        assert list(runs) == [], "cancelling never invents or destroys a run"
+
+    async def test_an_executing_launch_is_refused_rather_than_closed_from_here(
+        self,
+        catalog_settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        """An executing launch has a run that may have moved money and consumed stock."""
+        settings = without_providers(catalog_settings)
+        world = await build_launch_world(session, "executing-shop")
+        launch_id = await queue_launch(session, settings, world, request_key="executing-request")
+        # Bound without claiming first: the claim only takes a row lock this test would then have
+        # to release, and what is under test is the state a bound launch is in.
+        run = await BenchmarkRunService(session).start_run(
+            suite_key=world.suite_key,
+            suite_version=world.suite_version,
+            merchant_slug=world.merchant_slug,
+            environment=world.environment,
+        )
+        worker = EvaluationLaunchWorkerService(session)
+        await worker.bind_run(launch_id, run.id)
+
+        with pytest.raises(ConflictError) as refused:
+            await worker.cancel_queued(launch_id)
+
+        assert refused.value.reason == "launch_not_queued"
+        still = await reload(session, launch_id)
+        assert still.status is EvaluationLaunchStatus.EXECUTING
+
+    async def test_a_settled_launch_cannot_be_cancelled_twice(
+        self,
+        catalog_settings: Settings,
+        session: AsyncSession,
+    ) -> None:
+        settings = without_providers(catalog_settings)
+        world = await build_launch_world(session, "twice-shop")
+        launch_id = await queue_launch(session, settings, world, request_key="twice-request")
+        worker = EvaluationLaunchWorkerService(session)
+        await worker.cancel_queued(launch_id)
+
+        with pytest.raises(ConflictError):
+            await worker.cancel_queued(launch_id)
 
 
 class TestRefusals:

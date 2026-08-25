@@ -103,6 +103,11 @@ GEMINI_MODEL = "gemini-3.7-flash"
 # from the console and a run launched from a shell are the same measurement.
 REFERENCE_EXECUTOR_KIND = REFERENCE_ISOLATED_KIND
 
+# Why a launch settled without ever executing. An operator's decision rather than a fact this
+# system discovered, and worded so a merchant reading it is not told their evaluation failed for
+# a reason nobody can act on.
+CANCELLED_BY_OPERATOR = "cancelled_by_operator"
+
 
 @dataclass(frozen=True, slots=True)
 class BuyerPlan:
@@ -1135,6 +1140,42 @@ class EvaluationLaunchWorkerService:
         launch.failure_code = failure_code
         launch.settled_at = await self._clock()
         await self._session.commit()
+
+    async def cancel_queued(self, launch_id: uuid.UUID) -> BenchmarkEvaluationLaunch:
+        """Close a queued launch nothing is ever going to run, on an operator's decision.
+
+        The counterpart the capability-aware claim needs, and the reason it needs one is worth
+        stating. A worker with no credential for a launch's frozen provider used to settle it
+        FAILED, which destroyed a request a capable worker could have served. It now leaves the
+        launch queued instead, which is right, and leaves a launch nobody is configured for
+        queued forever, which would be worse than what it replaced: the partial unique index
+        allows one pending launch per merchant, so such a launch holds that merchant's only slot
+        and blocks every future evaluation they could ask for.
+
+        Nothing automatic closes it, and that is deliberate rather than unfinished. A timeout
+        would be this system deciding that no capable worker is coming, which it cannot know: a
+        provider credential arriving an hour late is an ordinary deployment, and a launch failed
+        for waiting would be a measurement destroyed by a race with an operator.
+
+        Queued only. An executing launch has a run that may have moved money and consumed stock,
+        and closing it from here would leave that run orphaned; `benchmark abort` followed by
+        `benchmark settle` is the path for one, and it is a different path because the states are
+        genuinely different.
+        """
+        launch = await self._locked(launch_id)
+        if launch.status is not EvaluationLaunchStatus.QUEUED:
+            raise ConflictError(
+                "launch_not_queued",
+                f"this launch is {launch.status.value.lower()} and only a queued one can be"
+                " cancelled; abort its run and settle it instead",
+                resource=RESOURCE,
+                identifier=str(launch_id),
+            )
+        launch.status = EvaluationLaunchStatus.FAILED
+        launch.failure_code = CANCELLED_BY_OPERATOR
+        launch.settled_at = await self._clock()
+        await self._session.commit()
+        return launch
 
     async def settle_for_terminal_run(self, run_id: uuid.UUID) -> BenchmarkEvaluationLaunch | None:
         """Close the launch a finished run belonged to, if it belonged to one.
