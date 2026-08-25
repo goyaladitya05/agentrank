@@ -22,6 +22,8 @@ from launch_support import (
     build_initial_world,
     build_launch_world,
     queue_launch,
+    with_both_providers,
+    with_gemini,
     with_openai,
     without_providers,
 )
@@ -31,6 +33,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from agentrank_api.benchmark.authored import AuthoredWorld
 from agentrank_api.benchmark.dispatch import (
     FAILURE_NO_PROVIDER,
+    UNSERVICEABLE,
+    LaunchDispatchError,
     _dispatch_plan,
     _Plan,
     buyer_surface,
@@ -47,6 +51,7 @@ from agentrank_api.benchmark.execution import REFERENCE_ISOLATED_KIND
 from agentrank_api.benchmark.launch import (
     EvaluationLaunchWorkerService,
     MerchantEvaluationLaunchService,
+    worker_executor_kinds,
 )
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus
 from agentrank_api.benchmark.models import BenchmarkRun
@@ -410,7 +415,9 @@ class TestPlanSurvivesTheClaim:
     ) -> _Plan:
         environment = await BenchmarkEnvironmentService(session).require_registered(world.fixture)
         launch = await EvaluationLaunchWorkerService(session).claim_next(
-            world.merchant_id, environment_id=environment.id
+            world.merchant_id,
+            environment_id=environment.id,
+            executor_kinds=worker_executor_kinds(settings),
         )
         assert launch is not None
         return await _dispatch_plan(session, launch, environment=environment, settings=settings)
@@ -504,19 +511,52 @@ class TestBuyerSurface:
             buyer_surface(representation=None, source=None)
 
 
-class TestRefusals:
-    async def test_a_frozen_model_buyer_without_a_credential_fails_by_name(
+class TestWorkerCapability:
+    """What a worker may claim, when its configuration cannot run what a merchant asked for.
+
+    A settled launch is terminal and cannot be deleted, so the question is not academic: a
+    worker that claims a launch it can only refuse destroys a merchant's request that a
+    differently configured worker could have served.
+    """
+
+    async def test_capability_is_derived_from_configuration_and_nothing_else(
+        self, catalog_settings: Settings
+    ) -> None:
+        """The reference executor needs no credential, and each provider adds exactly its own."""
+        assert worker_executor_kinds(without_providers(catalog_settings)) == {
+            REFERENCE_ISOLATED_KIND
+        }
+        assert worker_executor_kinds(with_openai(catalog_settings)) == {
+            REFERENCE_ISOLATED_KIND,
+            "llm-openai",
+        }
+        assert worker_executor_kinds(with_gemini(catalog_settings)) == {
+            REFERENCE_ISOLATED_KIND,
+            "llm-gemini",
+        }
+        assert worker_executor_kinds(with_both_providers(catalog_settings)) == {
+            REFERENCE_ISOLATED_KIND,
+            "llm-openai",
+            "llm-gemini",
+        }
+
+    async def test_a_worker_without_the_frozen_provider_leaves_the_launch_queued(
         self,
         catalog_settings: Settings,
         session: AsyncSession,
         factory: async_sessionmaker[AsyncSession],
     ) -> None:
-        """No substitution. A launch the merchant was shown as an AI run is not quietly
-        downgraded to a deterministic one."""
+        """The launch survives a worker that cannot run it, and the worker says so.
+
+        No substitution either: nothing about the frozen identity moves, so the launch a
+        merchant was shown as an AI run is still an AI run when a capable worker takes it.
+        """
         world = await build_launch_world(session, "unconfigured-shop")
         launch_id = await queue_launch(
             session, with_openai(catalog_settings), world, request_key="model-request"
         )
+        frozen = await reload(session, launch_id)
+        kind, digest = frozen.executor_kind, frozen.buyer_configuration_digest
 
         outcome = await execute_next_launch(
             session,
@@ -527,18 +567,130 @@ class TestRefusals:
         )
 
         assert outcome is not None
-        assert outcome.status == "FAILED"
-        assert outcome.failure_code == FAILURE_NO_PROVIDER
+        assert outcome.status == UNSERVICEABLE
+        assert outcome.failure_code is None
         assert outcome.run_id is None
-        settled = await reload(session, launch_id)
-        assert settled.status is EvaluationLaunchStatus.FAILED
-        assert settled.failure_code == FAILURE_NO_PROVIDER
+        assert outcome.detail is not None
+        assert "llm-openai" in outcome.detail
+
+        untouched = await reload(session, launch_id)
+        assert untouched.status is EvaluationLaunchStatus.QUEUED
+        assert untouched.run_id is None
+        assert untouched.settled_at is None
+        assert untouched.executor_kind == kind
+        assert untouched.buyer_configuration_digest == digest
         runs = (
             await session.execute(
                 select(BenchmarkRun).where(BenchmarkRun.merchant_id == world.merchant_id)
             )
         ).scalars()
         assert list(runs) == []
+
+    async def test_a_worker_holding_the_frozen_provider_claims_what_the_other_left(
+        self,
+        catalog_settings: Settings,
+        session: AsyncSession,
+    ) -> None:
+        """The claim predicate itself, asserted without spending a model call.
+
+        Executing this launch end to end would call a provider, so what is checked is the one
+        thing that decides whether a capable worker ever gets it: the claim.
+        """
+        configured = with_openai(catalog_settings)
+        world = await build_launch_world(session, "capable-shop")
+        launch_id = await queue_launch(session, configured, world, request_key="capable-request")
+        registered = await BenchmarkEnvironmentService(session).require_registered(world.fixture)
+        # A plain value: the rollbacks below expire every loaded instance, and reading an
+        # attribute off one afterwards is database IO with no greenlet for it.
+        environment_id = registered.id
+        worker = EvaluationLaunchWorkerService(session)
+
+        incapable = worker_executor_kinds(without_providers(catalog_settings))
+        assert (
+            await worker.claim_next(
+                world.merchant_id, environment_id=environment_id, executor_kinds=incapable
+            )
+            is None
+        )
+        waiting = await worker.unclaimable_next(
+            world.merchant_id, environment_id=environment_id, executor_kinds=incapable
+        )
+        assert waiting is not None
+        assert waiting.id == launch_id
+        await session.rollback()
+
+        capable = worker_executor_kinds(configured)
+        claimed = await worker.claim_next(
+            world.merchant_id, environment_id=environment_id, executor_kinds=capable
+        )
+        assert claimed is not None
+        assert claimed.id == launch_id
+        assert (
+            await worker.unclaimable_next(
+                world.merchant_id, environment_id=environment_id, executor_kinds=capable
+            )
+            is None
+        )
+        await session.rollback()
+
+    async def test_a_capable_worker_is_not_told_work_is_unserviceable(
+        self,
+        catalog_settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        """Nothing queued stays the ordinary None, so the two answers cannot be confused."""
+        settings = without_providers(catalog_settings)
+        world = await build_launch_world(session, "quiet-capable-shop")
+        await queue_launch(session, settings, world, request_key="quiet-request")
+        served = await execute_next_launch(
+            session,
+            factory,
+            world=world.authored,
+            provider=FakePaymentProvider(),
+            settings=settings,
+        )
+        assert served is not None
+        assert served.status == "COMPLETED"
+
+        assert (
+            await execute_next_launch(
+                session,
+                factory,
+                world=world.authored,
+                provider=FakePaymentProvider(),
+                settings=settings,
+            )
+            is None
+        )
+
+
+class TestRefusals:
+    async def test_the_provider_credential_backstop_still_refuses_by_name(
+        self, catalog_settings: Settings, session: AsyncSession
+    ) -> None:
+        """The check under the claim predicate, exercised where the claim cannot reach it.
+
+        The claim is filtered by executor kind, so a worker never reaches this in a correct
+        build. It stays because a claim predicate and a capability derivation that disagreed
+        would otherwise run a launch with no credential for its frozen provider, and the
+        direction to fail in is closed.
+        """
+        world = await build_launch_world(session, "backstop-shop")
+        launch_id = await queue_launch(
+            session, with_openai(catalog_settings), world, request_key="backstop-request"
+        )
+        environment = await BenchmarkEnvironmentService(session).require_registered(world.fixture)
+        launch = await reload(session, launch_id)
+
+        with pytest.raises(LaunchDispatchError) as refused:
+            await _dispatch_plan(
+                session,
+                launch,
+                environment=environment,
+                settings=without_providers(catalog_settings),
+            )
+        assert refused.value.failure_code == FAILURE_NO_PROVIDER
 
     async def test_a_worker_holding_another_world_leaves_the_launch_alone(
         self,

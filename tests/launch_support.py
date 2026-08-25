@@ -277,6 +277,20 @@ def with_gemini(settings: Settings) -> Settings:
     )
 
 
+def with_both_providers(settings: Settings) -> Settings:
+    """Settings for a worker configured to run either provider.
+
+    Admission has to choose one and a worker does not, so this is the shape that separates what
+    may be admitted from what may be executed.
+    """
+    return settings.model_copy(
+        update={
+            "openai_api_key": SecretStr("test-openai-key"),
+            "gemini_api_key": SecretStr("test-gemini-key"),
+        }
+    )
+
+
 async def complete_run(session: AsyncSession, world: LaunchWorld | InitialWorld) -> uuid.UUID:
     """One completed benchmark run for this merchant, with every mission attempted and none won.
 

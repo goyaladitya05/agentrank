@@ -23,14 +23,20 @@ REEVALUATION   the frozen representation as an agent-ready discovery surface, an
 
 Every frozen value is verified rather than adapted. `AgentConfiguration.from_payload` refuses a
 configuration this build cannot reproduce exactly, its digest is checked against the frozen one,
-the executor kind this build would record is compared with the frozen kind, and a provider
-credential that is not present fails the launch by name. None of them is substituted, because a
-run whose identity does not match what the merchant was shown is a measurement of something
-nobody asked for.
+and the executor kind this build would record is compared with the frozen kind. None of them is
+substituted, because a run whose identity does not match what the merchant was shown is a
+measurement of something nobody asked for.
 
-A launch is claimed only for the world this process holds. A settled launch is terminal and
-cannot be deleted, so a worker that claimed one it could only refuse would destroy a merchant's
-request that a differently configured worker could have served.
+A launch is claimed only for the world this process holds and only for an executor this process
+is configured to run. A settled launch is terminal and cannot be deleted, so a worker that
+claimed one it could only refuse would destroy a merchant's request that a differently configured
+worker could have served. That is why the provider credential is a claim predicate rather than a
+refusal: a worker with no key for a launch's frozen provider leaves it queued for one that has
+it. The refusal below it stays as a fail closed backstop and is unreachable through the claim.
+
+A launch nobody is currently configured to run does not disappear into the queue silently. A
+dispatch that claimed nothing reports UNSERVICEABLE and names the executor being waited on, so
+"there is no work" and "there is work no worker here can do" are different answers.
 
 Execution reuses the same isolated boundary the operator command line uses: a loopback commerce
 endpoint, a short lived merchant credential bound to this run, and one worker process per
@@ -67,7 +73,10 @@ from agentrank_api.benchmark.isolation import (
     IsolatedMissionExecutor,
     provider_worker_environment,
 )
-from agentrank_api.benchmark.launch import EvaluationLaunchWorkerService
+from agentrank_api.benchmark.launch import (
+    EvaluationLaunchWorkerService,
+    worker_executor_kinds,
+)
 from agentrank_api.benchmark.llm import (
     GEMINI_PROVIDER,
     OPENAI_PROVIDER,
@@ -101,6 +110,13 @@ FAILURE_SOURCE_MISSING = "merchant_source_unavailable"
 RUN_ALREADY_ACTIVE = "run_already_active"
 
 
+# The status a dispatch reports when it claimed nothing because everything queued for this world
+# is frozen to an executor this process cannot run. Distinct from claiming nothing because there
+# is nothing queued, which stays the ordinary `None`: an operator who cannot tell those apart
+# cannot tell a quiet system from a misconfigured one.
+UNSERVICEABLE = "UNSERVICEABLE"
+
+
 @dataclass(frozen=True, slots=True)
 class DispatchOutcome:
     """What one dispatch did, for an operator reading the command's output."""
@@ -110,6 +126,25 @@ class DispatchOutcome:
     status: str
     failure_code: str | None
     detail: str | None = None
+
+
+def _unserviceable(launch: BenchmarkEvaluationLaunch) -> DispatchOutcome:
+    """Report a queued launch this worker is not configured to execute, without touching it.
+
+    No failure code, because nothing failed and nothing is settled. The launch is still queued
+    and a worker holding the right provider credential will claim it. What the operator gets is
+    the executor it is waiting for, which is the one fact that says what to configure.
+    """
+    return DispatchOutcome(
+        launch_id=launch.id,
+        run_id=None,
+        status=UNSERVICEABLE,
+        failure_code=None,
+        detail=(
+            f"this worker cannot run {launch.executor_kind};"
+            " the launch stays queued for a worker that can"
+        ),
+    )
 
 
 class LaunchDispatchError(Exception):
@@ -131,10 +166,14 @@ async def execute_next_launch(
 ) -> DispatchOutcome | None:
     """Claim the oldest queued launch for this world's merchant and carry it out.
 
-    None when nothing is queued, which is the ordinary answer and not an error.
+    None when nothing is queued, which is the ordinary answer and not an error. An UNSERVICEABLE
+    outcome when something is queued that this process is not configured to execute, which is
+    also not an error and is not the same answer: the launch stays queued and untouched, and the
+    operator is told which executor it is waiting for.
 
-    The claim is scoped to the world this process holds, so a worker that could only refuse a
-    launch never takes it away from one that could execute it. The claim's row lock is released
+    The claim is scoped to the world this process holds and to the executor kinds its settings
+    can honour, so a worker that could only refuse a launch never takes it away from one that
+    could execute it. The claim's row lock is released
     before anything long starts: the loopback server takes as long as an application boot, and
     holding a row lock across one would be an idle transaction bounded by a server start rather
     than by a query.
@@ -150,10 +189,17 @@ async def execute_next_launch(
         raise NotFoundError("merchant", world.merchant_slug)
     environment = await BenchmarkEnvironmentService(session).require_registered(world.fixture)
     worker = EvaluationLaunchWorkerService(session)
-    launch = await worker.claim_next(merchant.id, environment_id=environment.id)
+    kinds = worker_executor_kinds(settings)
+    launch = await worker.claim_next(
+        merchant.id, environment_id=environment.id, executor_kinds=kinds
+    )
     if launch is None:
+        waiting = await worker.unclaimable_next(
+            merchant.id, environment_id=environment.id, executor_kinds=kinds
+        )
+        outcome = None if waiting is None else _unserviceable(waiting)
         await session.rollback()
-        return None
+        return outcome
     launch_id = launch.id
     merchant_id = launch.merchant_id
 
@@ -265,8 +311,12 @@ async def _dispatch_plan(
 ) -> _Plan:
     """Verify that this process can execute exactly what was admitted, or refuse by name.
 
-    The claim is already scoped to this world, so the world check here is a fail closed backstop
-    rather than the thing that prevents a cross-world dispatch.
+    The claim is already scoped to this world and to the executors this process can run, so the
+    world check and the provider credential check here are fail closed backstops rather than the
+    things that prevent a cross-world or cross-provider dispatch. Reaching either means the claim
+    predicate and the capability derivation disagreed, which is a defect in this repository and
+    not a deployment an operator can fix, so it settles the launch rather than leaving it to be
+    claimed and refused again forever.
     """
     if environment.id != launch.environment_id:
         raise LaunchDispatchError(

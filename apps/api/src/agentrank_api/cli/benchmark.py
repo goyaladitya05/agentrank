@@ -62,7 +62,7 @@ from agentrank_api.benchmark.authored import AuthoredWorld, publish_world, read_
 from agentrank_api.benchmark.authorization import provision
 from agentrank_api.benchmark.buyer import MerchantBuyerSurface
 from agentrank_api.benchmark.discovery import buyer_discovery_view, to_payload
-from agentrank_api.benchmark.dispatch import execute_next_launch
+from agentrank_api.benchmark.dispatch import UNSERVICEABLE, execute_next_launch
 from agentrank_api.benchmark.endpoint import (
     LocalCommerceEndpoint,
     RequestLedger,
@@ -546,6 +546,11 @@ async def dispatch(
     One launch per invocation rather than a loop, because a benchmark run is the largest thing
     this system does and an operator should decide how many happen. Nothing queued is an
     ordinary answer and exits OK: there is no work, which is not a failure.
+
+    Queued work this process cannot run is a different answer and exits REFUSED. Nothing failed
+    and nothing was settled, so it is not FAILED; but a deployment where every worker keeps
+    reporting UNSERVICEABLE is a deployment nobody has configured to run what its merchants are
+    asking for, and an operator loop that read that as "nothing to do" would never find out.
     """
     world = read_world(arguments.world)
     outcome = await execute_next_launch(
@@ -576,7 +581,9 @@ async def dispatch(
             print(f"failure     {outcome.failure_code}", file=out)
         if outcome.detail is not None:
             print(f"detail      {outcome.detail}", file=out)
-    return ExitCode.OK if outcome.failure_code is None else ExitCode.REFUSED
+    if outcome.failure_code is not None or outcome.status == UNSERVICEABLE:
+        return ExitCode.REFUSED
+    return ExitCode.OK
 
 
 async def settle(

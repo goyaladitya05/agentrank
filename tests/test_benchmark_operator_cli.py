@@ -21,11 +21,18 @@ from typing import cast
 
 import pytest
 from benchmark_support import VOLTEDGE, VOLTEDGE_DIRECTORY
+from launch_support import with_openai, without_providers
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentrank_api.auth.models import MerchantApiCredential
+from agentrank_api.benchmark.dispatch import UNSERVICEABLE
 from agentrank_api.benchmark.endpoint import CREDENTIAL_LABEL
+from agentrank_api.benchmark.evaluation_launch import (
+    BenchmarkEvaluationLaunch,
+    EvaluationLaunchStatus,
+)
+from agentrank_api.benchmark.launch import MerchantEvaluationLaunchService
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
 from agentrank_api.benchmark.models import BenchmarkRun
 from agentrank_api.benchmark.runner import BenchmarkRunService
@@ -34,6 +41,8 @@ from agentrank_api.cli.benchmark import DISCLAIMER
 from agentrank_api.commerce.repository import MerchantRepository
 from agentrank_api.config import Settings
 from agentrank_api.payments.fake import FakeOutcome, FakePaymentProvider
+from agentrank_api.representation.fixtures import read_source
+from agentrank_api.representation.service import MerchantRepresentationService
 
 pytestmark = pytest.mark.anyio
 
@@ -443,3 +452,63 @@ async def test_settle_refuses_a_run_that_has_not_finished(
 
     assert result.code == ExitCode.REFUSED
     assert "has not finished" in result.out
+
+
+# Dispatch.
+
+
+async def test_dispatch_with_nothing_queued_is_an_ordinary_answer(
+    catalog_settings: Settings, provider: FakePaymentProvider
+) -> None:
+    """An empty work list is not a failure, and a script has to be able to tell."""
+    await cli(catalog_settings, provider, "benchmark", "seed", "--json")
+
+    run = await cli(catalog_settings, provider, "benchmark", "dispatch", "--json")
+
+    assert run.code == ExitCode.OK
+    assert run.json() == {"launch_id": None, "status": "NONE_QUEUED"}
+
+
+async def test_dispatch_says_when_queued_work_needs_a_worker_it_is_not(
+    catalog_settings: Settings, provider: FakePaymentProvider, session: AsyncSession
+) -> None:
+    """Queued work this process cannot run is neither "nothing to do" nor a failed launch.
+
+    The launch stays queued for a worker that holds the provider credential it froze, and this
+    process exits REFUSED so an operator loop reading exit codes finds out that its deployment
+    has work nobody it knows of is configured to execute.
+    """
+    await cli(catalog_settings, provider, "benchmark", "seed", "--json")
+    merchant = await MerchantRepository(session).get_by_slug(MERCHANT_SLUG)
+    assert merchant is not None
+    await MerchantRepresentationService(session).publish_source(
+        read_source(VOLTEDGE_DIRECTORY / "source.json")
+    )
+    configured = with_openai(catalog_settings)
+    service = MerchantEvaluationLaunchService(session, configured)
+    plan = await service.plan(merchant.id)
+    launch = await service.request(
+        merchant.id,
+        purpose=plan.purpose,
+        representation_id=plan.representation_id,
+        request_key="cli-unserviceable",
+        plan_digest=plan.digest,
+    )
+    launch_id = launch.id
+
+    run = await cli(
+        without_providers(catalog_settings), provider, "benchmark", "dispatch", "--json"
+    )
+
+    assert run.code == ExitCode.REFUSED
+    payload = run.json()
+    assert payload["status"] == UNSERVICEABLE
+    assert payload["launch_id"] == str(launch_id)
+    assert payload["failure_code"] is None
+    assert "llm-openai" in cast(str, payload["detail"])
+
+    still_queued = await session.get(BenchmarkEvaluationLaunch, launch_id)
+    assert still_queued is not None
+    await session.refresh(still_queued)
+    assert still_queued.status is EvaluationLaunchStatus.QUEUED
+    assert still_queued.run_id is None

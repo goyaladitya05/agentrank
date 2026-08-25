@@ -47,12 +47,12 @@ merchant this is, comes from the credential and from the database.
 
 import hashlib
 import uuid
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -144,6 +144,33 @@ def resolve_buyer(settings: Settings) -> BuyerPlan:
         configuration = AgentConfiguration(provider=GEMINI_PROVIDER, requested_model=GEMINI_MODEL)
         return BuyerPlan(BuyerProfile.AI_BUYER, executor_kind(configuration), configuration)
     return BuyerPlan(BuyerProfile.REFERENCE_BUYER, REFERENCE_EXECUTOR_KIND, None)
+
+
+def worker_executor_kinds(settings: Settings) -> frozenset[str]:
+    """Which frozen executors one worker process is configured to run.
+
+    The claim side of `resolve_buyer`. Admission asks that function what this deployment would
+    freeze; a worker asks this one what it can honour, and the two are derived from the same
+    settings through the same `executor_kind` so a launch admitted by a process cannot be
+    unrunnable by an identically configured one.
+
+    A set rather than a single answer, because a worker holding both provider credentials can
+    serve launches frozen to either, while admission has to pick one. That asymmetry is the
+    point: what may be admitted is a choice, what may be executed is a capability.
+
+    The reference executor is always present. It runs in an isolated worker with no provider and
+    no credential at all, so there is no configuration under which a process cannot run one.
+
+    Nothing here reads a credential's value. Whether one is configured is the whole question.
+    """
+    kinds = {REFERENCE_EXECUTOR_KIND}
+    if settings.openai is not None:
+        openai = AgentConfiguration(provider=OPENAI_PROVIDER, requested_model=OPENAI_MODEL)
+        kinds.add(executor_kind(openai))
+    if settings.gemini is not None:
+        gemini = AgentConfiguration(provider=GEMINI_PROVIDER, requested_model=GEMINI_MODEL)
+        kinds.add(executor_kind(gemini))
+    return frozenset(kinds)
 
 
 def _delivers_representation(purpose: EvaluationPurpose, buyer: BuyerPlan) -> bool:
@@ -985,15 +1012,30 @@ class EvaluationLaunchWorkerService:
         self._session = session
 
     async def claim_next(
-        self, merchant_id: uuid.UUID, *, environment_id: uuid.UUID
+        self,
+        merchant_id: uuid.UUID,
+        *,
+        environment_id: uuid.UUID,
+        executor_kinds: Collection[str],
     ) -> BenchmarkEvaluationLaunch | None:
-        """The oldest queued launch for one merchant's world, locked for this transaction.
+        """The oldest queued launch this worker can actually execute, locked for this transaction.
 
-        Scoped to the world the claiming worker holds, and that scope is load bearing rather
-        than an optimisation. A settled launch is terminal and cannot be deleted, so a worker
-        that claimed a launch it could only refuse would destroy a merchant's request that a
-        differently configured worker could have served. A launch this worker cannot serve is
-        never taken from one that can.
+        Scoped twice, and both scopes are load bearing rather than optimisations. A settled
+        launch is terminal and cannot be deleted, so a worker that claimed a launch it could only
+        refuse would destroy a merchant's request that a differently configured worker could have
+        served.
+
+        The world scope has always been here. The executor kind scope is what makes the same
+        promise hold for a heterogeneous worker pool: a launch freezes the executor its merchant
+        was shown, a worker knows which executors its own configuration can run, and a worker
+        with no credential for a frozen provider now leaves the launch for one that has it
+        instead of failing it by name. `executor_kind` is a frozen column on the launch, so the
+        comparison is a database predicate rather than something a worker decides after taking
+        the row away from everybody else.
+
+        A launch nobody can currently run stays QUEUED, which is the same shape a launch for a
+        world nobody holds has always had. That is not invisible: `unclaimable_next` below is
+        what an operator reads to tell "no work" from "work no worker here can do".
 
         `SKIP LOCKED` so a second worker takes the next one instead of waiting on a row it is
         never going to get. The launch is not transitioned here: it stays QUEUED until a run
@@ -1002,17 +1044,55 @@ class EvaluationLaunchWorkerService:
         """
         return (
             await self._session.execute(
-                select(BenchmarkEvaluationLaunch)
-                .where(
-                    BenchmarkEvaluationLaunch.merchant_id == merchant_id,
-                    BenchmarkEvaluationLaunch.environment_id == environment_id,
-                    BenchmarkEvaluationLaunch.status == EvaluationLaunchStatus.QUEUED,
-                )
-                .order_by(BenchmarkEvaluationLaunch.requested_at, BenchmarkEvaluationLaunch.id)
-                .limit(1)
+                self._queued(merchant_id, environment_id)
+                .where(BenchmarkEvaluationLaunch.executor_kind.in_(list(executor_kinds)))
                 .with_for_update(skip_locked=True)
             )
         ).scalar_one_or_none()
+
+    async def unclaimable_next(
+        self,
+        merchant_id: uuid.UUID,
+        *,
+        environment_id: uuid.UUID,
+        executor_kinds: Collection[str],
+    ) -> BenchmarkEvaluationLaunch | None:
+        """The oldest queued launch for this world that this worker's configuration cannot run.
+
+        The counterpart to the claim, and the reason filtering the claim does not turn a
+        misconfigured deployment into a silent one. A dispatcher that claims nothing can now say
+        which of the two happened: there is no queued work, or there is queued work frozen to an
+        executor this process has no credential for.
+
+        Read without a lock. Nothing is being taken and nothing is being changed; this is a
+        report, and locking a row to describe it would block the worker that can serve it.
+        """
+        return (
+            await self._session.execute(
+                self._queued(merchant_id, environment_id).where(
+                    BenchmarkEvaluationLaunch.executor_kind.not_in(list(executor_kinds))
+                )
+            )
+        ).scalar_one_or_none()
+
+    def _queued(
+        self, merchant_id: uuid.UUID, environment_id: uuid.UUID
+    ) -> Select[tuple[BenchmarkEvaluationLaunch]]:
+        """One merchant's queued launches for one world, oldest first.
+
+        Stated once so the claim and the report that explains an empty claim cannot disagree
+        about which launches exist or which of them is next.
+        """
+        return (
+            select(BenchmarkEvaluationLaunch)
+            .where(
+                BenchmarkEvaluationLaunch.merchant_id == merchant_id,
+                BenchmarkEvaluationLaunch.environment_id == environment_id,
+                BenchmarkEvaluationLaunch.status == EvaluationLaunchStatus.QUEUED,
+            )
+            .order_by(BenchmarkEvaluationLaunch.requested_at, BenchmarkEvaluationLaunch.id)
+            .limit(1)
+        )
 
     async def bind_run(self, launch_id: uuid.UUID, run_id: uuid.UUID) -> None:
         """Record that this launch produced exactly one benchmark run."""
