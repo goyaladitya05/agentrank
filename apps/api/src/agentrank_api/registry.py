@@ -12,6 +12,7 @@ and in every script, which meant a new package was registered wherever somebody 
 
 from agentrank_api.audit import models as audit_models  # noqa: F401
 from agentrank_api.auth import models as auth_models  # noqa: F401
+from agentrank_api.benchmark import capacity as benchmark_capacity  # noqa: F401
 from agentrank_api.benchmark import evaluation_launch as benchmark_evaluation_launch  # noqa: F401
 from agentrank_api.benchmark import experiment as benchmark_experiment  # noqa: F401
 from agentrank_api.benchmark import models as benchmark_models  # noqa: F401

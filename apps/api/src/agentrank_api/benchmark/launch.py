@@ -47,7 +47,7 @@ merchant this is, comes from the credential and from the database.
 
 import hashlib
 import uuid
-from collections.abc import Collection, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -56,6 +56,7 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from agentrank_api.benchmark.capacity import ExecutionBudget, frozen_budget
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
 from agentrank_api.benchmark.evaluation_launch import (
     BenchmarkEvaluationLaunch,
@@ -79,6 +80,7 @@ from agentrank_api.benchmark.models import (
     BenchmarkRun,
     BenchmarkSuite,
 )
+from agentrank_api.benchmark.permits import LaunchProviderUsage, ProviderExecutionService
 from agentrank_api.benchmark.repository import BenchmarkRunRepository, BenchmarkSuiteRepository
 from agentrank_api.commerce.models import Merchant
 from agentrank_api.compiler.models import CompilerRun
@@ -232,6 +234,17 @@ class EvaluationPlan:
     max_model_turns: int | None
     max_tool_calls: int | None
     mission_deadline_seconds: float | None
+    # The whole evaluation's provider request ceiling, and how much of it one mission may take.
+    # This is what makes the sentence a merchant reads before committing a checkable one: every
+    # request the model makes counts against the first number, and a request that is retried
+    # after a timeout or a throttle counts again. Null for the reference buyer, which calls no
+    # provider, and null when there is no suite to size an allowance against.
+    max_provider_requests: int | None
+    max_requests_per_mission: int | None
+    # Which capacity policy the two numbers above were computed under. Frozen on the launch, so
+    # widening or narrowing the policy afterwards leaves a historical evaluation describing the
+    # allowance it actually ran with rather than the one in force today.
+    execution_budget_version: int | None
     baseline_run_id: uuid.UUID | None
     baseline_run_completed_at: datetime | None
     # Whether the prior run's buyer read the same kind of surface this launch's will. False is
@@ -288,6 +301,9 @@ class EvaluationPlan:
             "max_model_turns": self.max_model_turns,
             "max_tool_calls": self.max_tool_calls,
             "mission_deadline_seconds": self.mission_deadline_seconds,
+            "max_provider_requests": self.max_provider_requests,
+            "max_requests_per_mission": self.max_requests_per_mission,
+            "execution_budget_version": self.execution_budget_version,
             "baseline_run_id": _text(self.baseline_run_id),
             "baseline_surface_matches": self.baseline_surface_matches,
         }
@@ -308,6 +324,9 @@ class _Labels:
     source_labels: dict[uuid.UUID, str]
     run_statuses: dict[uuid.UUID, str]
     missions_finished: dict[uuid.UUID, int]
+    # What each launch has actually consumed at its provider, read in the same batch as the
+    # labels rather than once per row. Absent for the reference buyer, which spends nothing.
+    execution: dict[uuid.UUID, LaunchProviderUsage]
 
 
 @dataclass(frozen=True, slots=True)
@@ -344,6 +363,20 @@ class EvaluationLaunchDetail:
     run_status: str | None
     missions_completed: int | None
     baseline_run_id: uuid.UUID | None
+    # What this evaluation was allowed to spend at its provider and what it has spent so far.
+    # Attempts rather than tokens, because an attempt is what AgentRank observes for itself
+    # before the call and a token count is what a provider chose to report afterwards.
+    max_provider_requests: int | None
+    provider_requests_charged: int | None
+    provider_requests_remaining: int | None
+    # How much of the charge above is an assumption rather than a measurement. Non zero means a
+    # worker's outcome was unknown and its whole reservation stayed charged, which is the safe
+    # direction and is said out loud rather than folded into the total silently.
+    provider_requests_assumed_spent: int | None
+    provider_responses: int | None
+    # Provider responses that carried no token counts at all. Reported rather than counted as
+    # zero: those requests happened and cost whatever they cost.
+    unknown_usage_invocations: int | None
 
 
 class MerchantEvaluationLaunchService:
@@ -463,6 +496,7 @@ class MerchantEvaluationLaunchService:
             else await self._baseline(merchant_id, suite.id)
         )
         configuration = buyer.configuration
+        budget = await self._budget(buyer, missions=None if suite is None else len(suite.missions))
         return EvaluationPlan(
             purpose=purpose,
             representation_id=None if representation is None else representation.id,
@@ -489,6 +523,9 @@ class MerchantEvaluationLaunchService:
             mission_deadline_seconds=(
                 None if configuration is None else configuration.deadline_seconds
             ),
+            max_provider_requests=None if budget is None else budget.max_provider_requests,
+            max_requests_per_mission=None if budget is None else budget.max_requests_per_mission,
+            execution_budget_version=None if budget is None else budget.policy_version,
             baseline_run_id=None if baseline is None else baseline.id,
             baseline_run_completed_at=None if baseline is None else baseline.completed_at,
             baseline_surface_matches=(
@@ -499,6 +536,27 @@ class MerchantEvaluationLaunchService:
             ),
             blockers=tuple(blockers),
             pending_launch_id=None if pending is None else pending.id,
+        )
+
+    async def _budget(self, buyer: BuyerPlan, *, missions: int | None) -> ExecutionBudget | None:
+        """The execution budget a launch would be admitted with, from the server's own policy.
+
+        Resolved here rather than accepted from anywhere: there is no request field, no header
+        and no query parameter that reaches this, and the browser's only involvement is carrying
+        back the digest of the numbers it was shown. A page that wanted a larger allowance would
+        have to change the deployment's capacity policy, which is an operator's command.
+
+        None where there is nothing to bound. The reference buyer makes no provider call, and a
+        merchant with no published suite has no mission count to size an allowance against; both
+        are ordinary states and the preflight says so by publishing nothing rather than a zero.
+        """
+        if buyer.configuration is None or missions is None or missions < 1:
+            return None
+        policy = await ProviderExecutionService(self._session).policy(buyer.configuration.provider)
+        return frozen_budget(
+            policy,
+            mission_count=missions,
+            max_model_turns=buyer.configuration.max_model_turns,
         )
 
     async def request(
@@ -567,6 +625,12 @@ class MerchantEvaluationLaunchService:
                 None if buyer.configuration is None else buyer.configuration.configuration_digest
             ),
             executor_kind=buyer.executor_kind,
+            # Exactly the numbers the digest above proved the merchant read. Recomputing them
+            # here from the policy would open a window in which a policy change between the
+            # render and the submit silently moved the bound a merchant committed to.
+            execution_budget_version=plan.execution_budget_version,
+            max_provider_requests=plan.max_provider_requests,
+            max_requests_per_mission=plan.max_requests_per_mission,
             status=EvaluationLaunchStatus.QUEUED,
             baseline_run_id=plan.baseline_run_id,
         )
@@ -675,7 +739,7 @@ class MerchantEvaluationLaunchService:
         results to produce two integers is the same defect one level down.
         """
         if not launches:
-            return _Labels({}, {}, {}, {}, {}, {}, {})
+            return _Labels({}, {}, {}, {}, {}, {}, {}, {})
         merchant_ids = {launch.merchant_id for launch in launches}
         suite_ids = {launch.suite_id for launch in launches}
         environment_ids = {launch.environment_id for launch in launches}
@@ -756,6 +820,9 @@ class MerchantEvaluationLaunchService:
             source_labels=source_labels,
             run_statuses=run_statuses,
             missions_finished=finished,
+            execution=await ProviderExecutionService(self._session).launch_usages(
+                [launch for launch in launches if launch.max_provider_requests is not None]
+            ),
         )
 
     def _detail(self, launch: BenchmarkEvaluationLaunch, labels: _Labels) -> EvaluationLaunchDetail:
@@ -764,6 +831,10 @@ class MerchantEvaluationLaunchService:
             if launch.buyer_configuration is None
             else AgentConfiguration.from_payload(launch.buyer_configuration)
         )
+        # Absent rather than zeroed for a launch with no execution budget: the reference buyer
+        # spends nothing at a provider, and a row of zeros beside it would read as a model buyer
+        # that happened to make no requests.
+        usage = labels.execution.get(launch.id)
         return EvaluationLaunchDetail(
             launch_id=launch.id,
             purpose=launch.purpose,
@@ -802,6 +873,14 @@ class MerchantEvaluationLaunchService:
                 None if launch.run_id is None else labels.missions_finished.get(launch.run_id, 0)
             ),
             baseline_run_id=launch.baseline_run_id,
+            max_provider_requests=launch.max_provider_requests,
+            provider_requests_charged=None if usage is None else usage.requests_charged,
+            provider_requests_remaining=None if usage is None else usage.requests_remaining,
+            provider_requests_assumed_spent=(
+                None if usage is None else usage.requests_assumed_spent
+            ),
+            provider_responses=None if usage is None else usage.provider_responses,
+            unknown_usage_invocations=(None if usage is None else usage.unknown_usage_invocations),
         )
 
     async def get(self, merchant_id: uuid.UUID, launch_id: uuid.UUID) -> BenchmarkEvaluationLaunch:
@@ -1119,8 +1198,22 @@ class EvaluationLaunchWorkerService:
             .limit(1)
         )
 
-    async def bind_run(self, launch_id: uuid.UUID, run_id: uuid.UUID) -> None:
-        """Record that this launch produced exactly one benchmark run."""
+    async def bind_run(
+        self,
+        launch_id: uuid.UUID,
+        run_id: uuid.UUID,
+        *,
+        admit: Callable[[BenchmarkEvaluationLaunch], Awaitable[None]] | None = None,
+    ) -> None:
+        """Record that this launch produced exactly one benchmark run.
+
+        `admit` is the last gate before a launch becomes one of the executing ones, and it runs
+        inside this transaction rather than before it. That placement is the whole of provider
+        concurrency coordination: how many evaluations are running against a provider is a count
+        of EXECUTING rows, so a check that ran outside the transaction that writes one would let
+        two dispatchers each believe they had taken the last free slot. It raises rather than
+        returning a decision, and a raise leaves the launch queued for whoever comes next.
+        """
         launch = await self._locked(launch_id)
         if launch.status is not EvaluationLaunchStatus.QUEUED:
             raise ConflictError(
@@ -1129,6 +1222,8 @@ class EvaluationLaunchWorkerService:
                 resource=RESOURCE,
                 identifier=str(launch.id),
             )
+        if admit is not None:
+            await admit(launch)
         launch.run_id = run_id
         launch.started_at = await self._clock()
         launch.status = EvaluationLaunchStatus.EXECUTING

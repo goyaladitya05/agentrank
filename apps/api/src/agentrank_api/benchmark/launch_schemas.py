@@ -63,6 +63,13 @@ class EvaluationPreflightView(BaseModel):
     max_model_turns: int | None
     max_tool_calls: int | None
     mission_deadline_seconds: float | None
+    # The provider request ceiling this evaluation would be admitted with, and the share of it
+    # one mission may take. Published as a bound rather than a prediction: what a run actually
+    # uses is measured afterwards, and a retried request counts against this the same as a first
+    # attempt. Still no currency figure, for the reason at the top of this module.
+    max_provider_requests: int | None
+    max_requests_per_mission: int | None
+    execution_budget_version: int | None
     baseline_run_id: uuid.UUID | None
     baseline_run_completed_at: datetime | None
     # Null when there is no prior run. False means the two would not be read as a before and
@@ -95,6 +102,9 @@ class EvaluationPreflightView(BaseModel):
             max_model_turns=plan.max_model_turns,
             max_tool_calls=plan.max_tool_calls,
             mission_deadline_seconds=plan.mission_deadline_seconds,
+            max_provider_requests=plan.max_provider_requests,
+            max_requests_per_mission=plan.max_requests_per_mission,
+            execution_budget_version=plan.execution_budget_version,
             baseline_run_id=plan.baseline_run_id,
             baseline_run_completed_at=plan.baseline_run_completed_at,
             baseline_surface_matches=plan.baseline_surface_matches,
@@ -178,6 +188,15 @@ class EvaluationLaunchView(BaseModel):
     run_status: str | None
     missions_completed: int | None
     baseline_run_id: uuid.UUID | None
+    # What this evaluation was allowed to spend at its provider, and what it has spent. All null
+    # for the reference buyer, which calls no provider: zeros there would read as a model buyer
+    # that made no requests, which is a different statement.
+    max_provider_requests: int | None
+    provider_requests_charged: int | None
+    provider_requests_remaining: int | None
+    provider_requests_assumed_spent: int | None
+    provider_responses: int | None
+    unknown_usage_invocations: int | None
 
     @classmethod
     def from_domain(cls, detail: EvaluationLaunchDetail) -> Self:
@@ -207,6 +226,12 @@ class EvaluationLaunchView(BaseModel):
             run_status=detail.run_status,
             missions_completed=detail.missions_completed,
             baseline_run_id=detail.baseline_run_id,
+            max_provider_requests=detail.max_provider_requests,
+            provider_requests_charged=detail.provider_requests_charged,
+            provider_requests_remaining=detail.provider_requests_remaining,
+            provider_requests_assumed_spent=detail.provider_requests_assumed_spent,
+            provider_responses=detail.provider_responses,
+            unknown_usage_invocations=detail.unknown_usage_invocations,
         )
 
 

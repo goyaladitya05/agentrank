@@ -528,6 +528,7 @@ def test_merchant_information_reaches_the_model_without_an_oracle() -> None:
             ).payload(),
             merchant_information={"products": [], "expected_outcome": "PURCHASE_AVAILABLE"},
             discovery={"kind": "STOREFRONT"},
+            provider_request_grant=8,
         )
 
 

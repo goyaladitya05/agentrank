@@ -50,6 +50,30 @@ A worker that dies after the payment route was reached is different and is refus
 recorded. Money may have moved, and a mission whose payment is unknown must never be replayed or
 tidied away. The run stops with that mission RUNNING, which is exactly the state an operator
 resolves through `agentrank_api.cli payments`.
+
+The model buyer costs money in a second way, and this object is where that is governed too. A
+mission's provider requests are reserved durably before the process is started and settled after
+it has exited, and the two are separated by exactly the window in which a provider call can
+happen. The settlement rule is asymmetric on purpose:
+
+```text
+worker exited cleanly and reported        charge what it reported, release the rest
+worker refused before reading a mission   release the whole reservation, no call was possible
+worker could not be started at all        release the whole reservation, no call was possible
+worker spent its allowance and said so    charge the whole reservation, which is what it spent
+anything else at all                      charge the whole reservation and mark it an assumption
+```
+
+A mission that spent its whole allowance is the harness's own failure rather than the buyer's,
+so it is ERRORED and its value is reported as not measured. That ends the mission and not the
+suite: what ran out is this mission's share, and the next mission is reserved from whatever the
+launch has left. The launch's own allowance running out is refused before a mission is recorded
+as started at all, and that one does stop the run.
+
+The last line is the default rather than a branch. Settlement runs in a `finally`, and a path
+that reaches the end without having settled charges the full grant, so a failure mode nobody
+anticipated overcounts rather than silently restoring allowance for a request that may already
+have been paid for.
 """
 
 import asyncio
@@ -59,6 +83,7 @@ import sys
 import tempfile
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
+from typing import Protocol
 
 from agentrank_api.benchmark.agent_trace import AgentExecutionEvidence
 from agentrank_api.benchmark.definitions import AgentMissionBrief
@@ -71,15 +96,19 @@ from agentrank_api.benchmark.execution import (
 )
 from agentrank_api.benchmark.faults import ExecutionFault, FaultOrigin
 from agentrank_api.benchmark.llm import GEMINI_PROVIDER, OPENAI_PROVIDER
+from agentrank_api.benchmark.permits import ProviderGrant
 from agentrank_api.benchmark.report import ExecutorReport
 from agentrank_api.benchmark.wire import (
+    LLM_STRATEGY,
     REFERENCE_STRATEGY,
     MissionRequest,
     ProtocolError,
     agent_evidence_from_payload,
+    provider_attempts_from_payload,
     report_from_payload,
 )
 from agentrank_api.benchmark.worker import (
+    EXIT_ALLOWANCE_EXHAUSTED,
     EXIT_NOT_ISOLATED,
     EXIT_PROTOCOL,
     worker_environment,
@@ -162,6 +191,28 @@ DEFAULT_TIMEOUT = 120.0
 REAPING_TIMEOUT = 10.0
 
 
+class ProviderPermitBroker(Protocol):
+    """How this executor reserves and settles the money one mission is allowed to spend.
+
+    A protocol rather than a service reference, so the object that starts worker processes stays
+    free of the launch, the run and the session those reservations are written against. The one
+    implementation lives beside the dispatcher, which is the only place that knows which launch
+    is executing.
+
+    `reserve` raises rather than returning a smaller grant when nothing may be spent, because
+    "carry this mission out with no provider requests" is not a mission and running one would
+    produce a measurement of nothing.
+    """
+
+    async def reserve(self, mission_key: str) -> ProviderGrant: ...
+
+    async def reconcile(self, permit_id: uuid.UUID, *, consumed_requests: int) -> None: ...
+
+    async def assume_spent(self, permit_id: uuid.UUID) -> None: ...
+
+    async def release(self, permit_id: uuid.UUID) -> None: ...
+
+
 class IsolatedMissionExecutor:
     """A buyer in another process, and the trusted witness for what that process did.
 
@@ -187,6 +238,7 @@ class IsolatedMissionExecutor:
         timeout: float = DEFAULT_TIMEOUT,
         environment: dict[str, str] | None = None,
         interpreter: str | None = None,
+        permits: ProviderPermitBroker | None = None,
     ) -> None:
         self._base_url = base_url
         self._token = token
@@ -199,6 +251,17 @@ class IsolatedMissionExecutor:
         self._timeout = timeout
         self._environment = environment
         self._interpreter = sys.executable if interpreter is None else interpreter
+        if strategy == LLM_STRATEGY and permits is None:
+            # The invariant this whole layer exists for, refused where it is cheapest to refuse.
+            # A model buyer built without somewhere to reserve provider requests is a buyer whose
+            # calls nothing has agreed to pay for, and a constructor that allowed one would leave
+            # that discoverable only by reading every call site.
+            raise ValueError(
+                "a model buyer executor needs somewhere to reserve its provider requests"
+            )
+        self._permits = permits
+        self._grant: ProviderGrant | None = None
+        self._settled = True
         self._fault: ExecutionFault | None = None
         self._agent_evidence: AgentExecutionEvidence | None = None
 
@@ -210,10 +273,33 @@ class IsolatedMissionExecutor:
         One call rather than two, because a witness whose two halves can be reset separately is
         a witness that can be half stale, and the stale half would be the one attributing a
         fault to the wrong mission.
+
+        The reservation is deliberately not forgotten here. It is settled where the process it
+        paid for ended, and a reset that dropped an unsettled one would be this object losing
+        track of money it had already committed.
         """
         self._fault = None
         self._agent_evidence = None
         self._served.begin()
+
+    # The spending half.
+
+    async def admit(self, mission_key: str) -> None:
+        """Reserve this mission's provider requests before anything can be spent on it.
+
+        Called by the runner before the mission run row exists, so a reservation that cannot be
+        made stops the suite without leaving a mission recorded as started and never carried
+        out. A buyer with no provider has nothing to reserve and this does nothing.
+
+        It does not catch `ProviderExecutionHaltedError`. That exception is the answer, and the
+        runner and the dispatcher above it are written to let it through: turning it into a
+        fault here would record AgentRank's own spending decision as something the buyer or the
+        merchant did.
+        """
+        if self._permits is None:
+            return
+        self._grant = await self._permits.reserve(mission_key)
+        self._settled = False
 
     def fault(self) -> ExecutionFault | None:
         """What went wrong, decided from the process and the server and never from the report.
@@ -263,6 +349,11 @@ class IsolatedMissionExecutor:
         The runner substantiates any payment or authorization response before deciding whether
         the mission can be recorded. It leaves a mission RUNNING only when the trusted payment
         state is genuinely unresolved, not merely because the worker died after a known denial.
+
+        Two blocks rather than one, and the split is where the money is. Everything in the first
+        happens entirely on this side of the boundary and before any process exists, so a
+        failure there provably spent nothing and releases the reservation. Everything in the
+        second may have reached a provider, so a failure there charges it.
         """
         try:
             mandate_id = (
@@ -278,7 +369,19 @@ class IsolatedMissionExecutor:
                 agent_configuration=self._agent_configuration,
                 merchant_information=self._merchant_information,
                 discovery=self._discovery,
+                provider_request_grant=(
+                    None if self._grant is None else self._grant.granted_requests
+                ),
             )
+        except Exception as failed:
+            await self._settle(release=True)
+            self._fault = ExecutionFault(
+                origin=FaultOrigin.HARNESS,
+                detail=f"trusted mission provisioning failed: {type(failed).__name__}",
+            )
+            return ExecutorReport(merchant_id=merchant_id)
+
+        try:
             return await self._carry_out(request)
         except _WorkerFailureError as failed:
             self._fault = ExecutionFault(origin=failed.origin, detail=failed.detail)
@@ -286,9 +389,15 @@ class IsolatedMissionExecutor:
         except Exception as failed:
             self._fault = ExecutionFault(
                 origin=FaultOrigin.HARNESS,
-                detail=f"trusted mission provisioning failed: {type(failed).__name__}",
+                detail=f"the isolated boundary failed: {type(failed).__name__}",
             )
             return ExecutorReport(merchant_id=merchant_id)
+        finally:
+            # The default, and the reason it is a `finally` rather than a branch: a path that
+            # reaches here without having settled charges the whole reservation. Overcounting a
+            # request nobody can account for is the safe direction, and every path that knows
+            # better has already settled by now.
+            await self._settle()
 
     async def _carry_out(self, request: MissionRequest) -> ExecutorReport:
         # An empty directory of its own, and this is load bearing rather than tidy. `Settings`
@@ -307,6 +416,9 @@ class IsolatedMissionExecutor:
             )
         except TimeoutError as expired:
             await self._reap(process)
+            # Charged in full, because a process that stopped answering may have been waiting on
+            # a provider that had already been paid.
+            await self._settle()
             # The buyer's, and this is the one attribution a poorly performing model would most
             # like to have the other way. A mission it never finished is a mission it failed.
             raise _WorkerFailureError(
@@ -314,6 +426,7 @@ class IsolatedMissionExecutor:
                 FaultOrigin.AGENT,
             ) from expired
         if process.returncode != 0:
+            await self._settle_exit(process.returncode)
             # The worker's own words, not its classification. It has no way to say whose fault
             # anything was and this does not read one out of the text: the exit code is what is
             # believed and the text is only for a person reading a failure.
@@ -324,20 +437,60 @@ class IsolatedMissionExecutor:
         try:
             document = json.loads(stdout.decode("utf-8"))
             self._agent_evidence = agent_evidence_from_payload(document)
-            return report_from_payload(document)
+            attempts = provider_attempts_from_payload(document)
+            report = report_from_payload(document)
         except (UnicodeDecodeError, json.JSONDecodeError) as unreadable:
+            await self._settle()
             raise _WorkerFailureError(
                 "the executor process did not report JSON", FaultOrigin.AGENT
             ) from unreadable
         except (ProtocolError, ValueError) as malformed:
+            await self._settle()
             raise _WorkerFailureError(
                 f"the executor process reported {malformed}", FaultOrigin.AGENT
             ) from malformed
+        # A clean exit with a number is the one outcome this side can settle exactly. A clean
+        # exit that reported no number is not: null is unknown rather than zero, and unknown is
+        # charged in full.
+        await self._settle(consumed=attempts)
+        return report
 
     def take_agent_evidence(self) -> AgentExecutionEvidence | None:
         """Return this mission's validated worker evidence to trusted orchestration once."""
         evidence, self._agent_evidence = self._agent_evidence, None
         return evidence
+
+    async def _settle(self, *, consumed: int | None = None, release: bool = False) -> None:
+        """Close this mission's reservation exactly once, defaulting to charging all of it.
+
+        Idempotent, so the `finally` that guarantees settlement cannot undo a settlement a
+        branch already made. Releasing and reconciling are both narrower than the default and
+        both are only reached where this side knows something specific.
+        """
+        if self._permits is None or self._grant is None or self._settled:
+            return
+        self._settled = True
+        permit_id = self._grant.permit_id
+        if release:
+            await self._permits.release(permit_id)
+        elif consumed is None:
+            await self._permits.assume_spent(permit_id)
+        else:
+            await self._permits.reconcile(permit_id, consumed_requests=consumed)
+
+    async def _settle_exit(self, code: int | None) -> None:
+        """Settle a reservation from what a non zero exit establishes about provider calls.
+
+        Two exits happen before a mission is read at all, so no provider call was possible and
+        the reservation is released. One says the allowance was spent to the last request, which
+        is a measurement rather than an assumption. Everything else is unknown and charged.
+        """
+        if code in {EXIT_NOT_ISOLATED, EXIT_PROTOCOL}:
+            await self._settle(release=True)
+        elif code == EXIT_ALLOWANCE_EXHAUSTED and self._grant is not None:
+            await self._settle(consumed=self._grant.granted_requests)
+        else:
+            await self._settle()
 
     async def _spawn(self, sandbox: str) -> asyncio.subprocess.Process:
         """Start the worker with an environment built by allowlist and a directory of its own.
@@ -364,6 +517,9 @@ class IsolatedMissionExecutor:
                 cwd=sandbox,
             )
         except OSError as unstartable:
+            # Ours, and nothing was spent: a process that never started never reached a
+            # provider, so the reservation is released rather than charged.
+            await self._settle(release=True)
             # Ours. Nothing about the buyer was involved in failing to start it.
             raise _WorkerFailureError(
                 f"the executor process could not be started: {unstartable}",
@@ -437,11 +593,23 @@ def _exited(code: int | None) -> FaultOrigin:
     not be able to see, and a request this side wrote that it could not read. Both are the
     harness's own doing and neither is anything a buyer decided.
 
+    A third is AgentRank refusing to buy this mission another provider request. It is the
+    harness's for the same reason: the buyer did not fail and the provider did not fail, this
+    deployment declined to spend, and marking the mission as the buyer's failure would publish an
+    agent performance finding about a decision the agent had no part in. It is not a way for a
+    poor model to be excused either, because the turn budget already caps what a model's own
+    choices can consume; only retries, which a provider drives, can reach this ceiling.
+
+    A mission ends here rather than a run. The bound this reached is the mission's share of the
+    allowance, so what is unaffordable is this mission, and the suite goes on to the next one
+    with whatever the launch has left. The launch's own allowance running out is a different
+    thing, refused before a mission is recorded as started, and that one stops the run.
+
     Everything else is the buyer. The exit code is trusted because the code that produces it is
     this repository's and runs before any model output is involved, and because an unrecognised
     code is attributed to the buyer rather than excused.
     """
-    if code in {EXIT_NOT_ISOLATED, EXIT_PROTOCOL}:
+    if code in {EXIT_NOT_ISOLATED, EXIT_PROTOCOL, EXIT_ALLOWANCE_EXHAUSTED}:
         return FaultOrigin.HARNESS
     return FaultOrigin.AGENT
 

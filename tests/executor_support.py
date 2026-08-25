@@ -14,13 +14,19 @@ model takes: it acts, and then it describes what it did in flattering terms. Eve
 asserts a lie does not work uses this, so what is being asserted is that trusted state wins over
 a claim rather than that a claim was refused at construction.
 
+`GrantedPermits` is the third, and it is about money rather than commerce. A model buyer cannot
+be constructed without somewhere to reserve its provider requests, which is the point of the
+constructor refusing one, so a test about what a buyer reads or what it reports needs a place for
+those reservations to go. This records them in memory instead of a database and grants whatever
+it is asked for, so a test about a discovery view is not also a test about a budget.
+
 Nothing here inserts a row directly. Every piece of commerce comes out of the service that owns
 it, so a benchmark result built on this is a result about the application.
 """
 
 import uuid
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -28,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from agentrank_api.benchmark.buyer import BuyerCommerceSurface, MerchantBuyerSurface
 from agentrank_api.benchmark.definitions import AgentMissionBrief
 from agentrank_api.benchmark.execution import BenchmarkRunCapability, ExecutorIdentity
+from agentrank_api.benchmark.permits import ProviderGrant
 from agentrank_api.benchmark.report import (
     AbstentionCode,
     CheckoutRefusal,
@@ -277,3 +284,41 @@ def scripted(
         ledger,
     )
     return ScriptedBuyer(surface, script, lie=lie), ledger
+
+
+@dataclass
+class GrantedPermits:
+    """An in-memory stand-in for the provider permit ledger, for tests that are not about it.
+
+    It grants what it is asked for and records how each reservation was settled, so a test can
+    still assert the settlement a path chose without opening a database. Every test that is
+    actually about the ledger uses the real service against real PostgreSQL, because the
+    interesting properties of the real one are its locking and its constraints.
+    """
+
+    granted: int = 8
+    reserved: list[str] = field(default_factory=list)
+    settled: list[tuple[uuid.UUID, str, int | None]] = field(default_factory=list)
+
+    async def reserve(self, mission_key: str) -> ProviderGrant:
+        self.reserved.append(mission_key)
+        return ProviderGrant(
+            permit_id=uuid.uuid7(),
+            granted_requests=self.granted,
+            provider="google-gemini",
+            requested_model="test-model",
+        )
+
+    async def reconcile(self, permit_id: uuid.UUID, *, consumed_requests: int) -> None:
+        self.settled.append((permit_id, "RECONCILED", consumed_requests))
+
+    async def assume_spent(self, permit_id: uuid.UUID) -> None:
+        self.settled.append((permit_id, "ASSUMED_SPENT", None))
+
+    async def release(self, permit_id: uuid.UUID) -> None:
+        self.settled.append((permit_id, "RELEASED", None))
+
+    @property
+    def states(self) -> list[str]:
+        """How each reservation was closed, in the order they were closed."""
+        return [state for _permit, state, _consumed in self.settled]

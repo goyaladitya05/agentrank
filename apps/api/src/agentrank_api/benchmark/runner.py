@@ -79,6 +79,7 @@ from agentrank_api.benchmark.models import (
     BenchmarkRun,
 )
 from agentrank_api.benchmark.observation import ObservedResult
+from agentrank_api.benchmark.permits import ProviderExecutionHaltedError
 from agentrank_api.benchmark.report import ExecutorReport
 from agentrank_api.benchmark.repository import (
     AgentEvidenceRepository,
@@ -347,6 +348,12 @@ class BenchmarkRunService:
         _bind_benchmark_run(executor, BenchmarkRunCapability(merchant_id, run.id))
 
         for mission in suite.missions:
+            # Before anything is prepared and before the mission run row exists, because a
+            # mission this deployment will not pay for is a mission that should never be
+            # recorded as started. `admit` raises `ProviderExecutionHaltedError`, which is
+            # deliberately not caught anywhere in this loop: the caller closes the run honestly
+            # and settles the launch under AgentRank's own vocabulary.
+            await _admit_mission(executor, mission.mission_key)
             await self._environments.prepare(fixture, for_run=run_id)
             entries = await self.catalog(merchant_id)
             brief = mission.to_brief()
@@ -368,6 +375,11 @@ class BenchmarkRunService:
             fault: ExecutionFault | None = None
             try:
                 report = await executor(brief, merchant_id=merchant_id)
+            except ProviderExecutionHaltedError:
+                # AgentRank declined to spend more. Neither a merchant finding nor an agent
+                # failure, so it is not turned into one: it leaves this loop with the mission
+                # still RUNNING and the caller closes the run as the incomplete thing it is.
+                raise
             except Exception as failed:
                 if witness is None:
                     raise
@@ -1008,6 +1020,19 @@ def executor_from(results: dict[str, ExecutorReport]) -> ReplayExecutor:
     claiming a payment nothing produced is marked exactly as an executor claiming one would be.
     """
     return ReplayExecutor(results)
+
+
+async def _admit_mission(executor: MissionExecutor, mission_key: str) -> None:
+    """Ask an executor that has spending to reserve for this mission to reserve it.
+
+    The optional method is intentionally absent from `MissionExecutor`, exactly as the run
+    capability binding is. An executor that calls no model provider has nothing to reserve, and
+    a protocol that demanded one would make the reference buyer implement a method about money
+    it never spends.
+    """
+    admit = getattr(executor, "admit", None)
+    if admit is not None:
+        await admit(mission_key)
 
 
 def _bind_benchmark_run(executor: MissionExecutor, capability: BenchmarkRunCapability) -> None:

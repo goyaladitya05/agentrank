@@ -31,11 +31,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.benchmark.authored import AuthoredWorld
+from agentrank_api.benchmark.capacity import ProviderExecutionPermit
 from agentrank_api.benchmark.dispatch import (
     FAILURE_NO_PROVIDER,
     UNSERVICEABLE,
     LaunchDispatchError,
     _dispatch_plan,
+    _halted,
     _Plan,
     buyer_surface,
     execute_next_launch,
@@ -47,15 +49,21 @@ from agentrank_api.benchmark.evaluation_launch import (
     EvaluationLaunchStatus,
     EvaluationPurpose,
 )
-from agentrank_api.benchmark.execution import REFERENCE_ISOLATED_KIND
+from agentrank_api.benchmark.execution import REFERENCE_ISOLATED_KIND, ExecutorIdentity
 from agentrank_api.benchmark.launch import (
     CANCELLED_BY_OPERATOR,
     EvaluationLaunchWorkerService,
     MerchantEvaluationLaunchService,
     worker_executor_kinds,
 )
-from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus
+from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
+from agentrank_api.benchmark.llm import GEMINI_PROVIDER, OPENAI_PROVIDER
 from agentrank_api.benchmark.models import BenchmarkRun
+from agentrank_api.benchmark.permits import (
+    ExecutionWaitReason,
+    ProviderExecutionHaltedError,
+    ProviderExecutionService,
+)
 from agentrank_api.benchmark.report import ExecutorReport
 from agentrank_api.benchmark.runner import BenchmarkRunService
 from agentrank_api.config import Settings
@@ -1027,3 +1035,279 @@ class TestOperatorRecovery:
         assert (
             await MerchantEvaluationLaunchService(session, settings).plan(world.merchant_id)
         ).pending_launch_id is not None
+
+
+class TestProviderExecutionGovernance:
+    """A dispatch that stops before spending, and says whose decision that was.
+
+    Nothing here executes a model mission. That is the point: every one of these is about a
+    decision AgentRank makes before a provider could have been reached, so the assertion is on
+    what the launch row says afterwards and on the fact that no run was created at all.
+    """
+
+    async def test_a_paused_provider_leaves_the_launch_queued_and_says_so(
+        self,
+        catalog_settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        """Pausing destroys nothing. The work waits and the reason is AgentRank's own."""
+        configured = with_openai(catalog_settings)
+        world = await build_launch_world(session, "paused-dispatch-shop")
+        launch_id = await queue_launch(session, configured, world, request_key="paused-request")
+        await ProviderExecutionService(session).set_policy(OPENAI_PROVIDER, enabled=False)
+
+        outcome = await execute_next_launch(
+            session,
+            factory,
+            world=world.authored,
+            provider=FakePaymentProvider(),
+            settings=configured,
+        )
+
+        assert outcome is not None
+        assert outcome.status == "QUEUED"
+        assert outcome.wait_reason is ExecutionWaitReason.PROVIDER_PAUSED
+        assert outcome.failure_code is None
+        waiting = await reload(session, launch_id)
+        assert waiting.status is EvaluationLaunchStatus.QUEUED
+        runs = (
+            await session.execute(
+                select(BenchmarkRun).where(BenchmarkRun.merchant_id == world.merchant_id)
+            )
+        ).scalars()
+        assert list(runs) == []
+
+    async def test_a_provider_with_no_free_slot_leaves_the_launch_queued(
+        self,
+        catalog_settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        """Ordinary contention rather than a failure, and the launch keeps its place.
+
+        The other evaluation here is a real EXECUTING launch for a different merchant, because
+        that is what the capacity count actually reads.
+        """
+        configured = with_openai(catalog_settings)
+        busy = await build_launch_world(session, "busy-shop")
+        busy_launch = await queue_launch(session, configured, busy, request_key="busy-request")
+        frozen = await reload(session, busy_launch)
+        started = await BenchmarkRunService(session).start_suite(
+            suite_key=busy.suite_key,
+            suite_version=busy.suite_version,
+            fixture=busy.fixture,
+            executor=ExecutorIdentity(
+                kind=frozen.executor_kind,
+                version=1,
+                revision=frozen.buyer_configuration_digest,
+            ),
+            agent_configuration=frozen.buyer_configuration,
+        )
+        await EvaluationLaunchWorkerService(session).bind_run(busy_launch, started.id)
+
+        waiting_world = await build_launch_world(session, "waiting-shop")
+        waiting_launch = await queue_launch(
+            session, configured, waiting_world, request_key="waiting-request"
+        )
+
+        outcome = await execute_next_launch(
+            session,
+            factory,
+            world=waiting_world.authored,
+            provider=FakePaymentProvider(),
+            settings=configured,
+        )
+
+        assert outcome is not None
+        assert outcome.status == "QUEUED"
+        assert outcome.wait_reason is ExecutionWaitReason.PROVIDER_CAPACITY_OCCUPIED
+        still_queued = await reload(session, waiting_launch)
+        assert still_queued.status is EvaluationLaunchStatus.QUEUED
+
+    async def test_a_reference_buyer_never_waits_on_a_paused_model_provider(
+        self,
+        catalog_settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        """The deterministic buyer calls no provider, so a provider's policy is not about it."""
+        world = await build_launch_world(session, "reference-shop")
+        await queue_launch(
+            session,
+            without_providers(catalog_settings),
+            world,
+            request_key="reference-request",
+        )
+        await ProviderExecutionService(session).set_policy(OPENAI_PROVIDER, enabled=False)
+        await ProviderExecutionService(session).set_policy(GEMINI_PROVIDER, enabled=False)
+
+        outcome = await execute_next_launch(
+            session,
+            factory,
+            world=world.authored,
+            provider=FakePaymentProvider(),
+            settings=without_providers(catalog_settings),
+        )
+
+        assert outcome is not None
+        assert outcome.status == "COMPLETED"
+        assert outcome.wait_reason is None
+
+    async def test_a_reference_launch_reserves_no_provider_requests_at_all(
+        self,
+        catalog_settings: Settings,
+        session: AsyncSession,
+        factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        """A permit for a buyer that calls no provider would be a row describing work that never
+        touched one, and an execution ledger that described it would be wrong about what ran."""
+        world = await build_launch_world(session, "unspent-shop")
+        await queue_launch(
+            session, without_providers(catalog_settings), world, request_key="unspent-request"
+        )
+
+        await execute_next_launch(
+            session,
+            factory,
+            world=world.authored,
+            provider=FakePaymentProvider(),
+            settings=without_providers(catalog_settings),
+        )
+
+        permits = (
+            await session.execute(
+                select(ProviderExecutionPermit).where(
+                    ProviderExecutionPermit.merchant_id == world.merchant_id
+                )
+            )
+        ).scalars()
+        assert list(permits) == []
+
+
+class TestASettledGovernanceHalt:
+    """What a launch looks like after a suite stopped part way through for want of allowance."""
+
+    async def test_a_launch_stopped_mid_suite_settles_failed_against_its_aborted_run(
+        self, catalog_settings: Settings, session: AsyncSession
+    ) -> None:
+        """The database only accepts this settlement when the run already agrees, which is the
+        whole reason the run is aborted before the launch is settled rather than after.
+
+        Asserted on the state a halt actually produces rather than by spending a real allowance:
+        an executing launch, its run closed as incomplete, and the settlement that follows.
+        """
+        configured = with_openai(catalog_settings)
+        world = await build_launch_world(session, "stopped-launch-shop")
+        launch_id = await queue_launch(session, configured, world, request_key="stopped-request")
+        frozen = await reload(session, launch_id)
+        runs = BenchmarkRunService(session)
+        started = await runs.start_suite(
+            suite_key=world.suite_key,
+            suite_version=world.suite_version,
+            fixture=world.fixture,
+            executor=ExecutorIdentity(
+                kind=frozen.executor_kind,
+                version=1,
+                revision=frozen.buyer_configuration_digest,
+            ),
+            agent_configuration=frozen.buyer_configuration,
+        )
+        worker = EvaluationLaunchWorkerService(session)
+        await worker.bind_run(launch_id, started.id)
+        await runs.abort_run(started.id, merchant_id=world.merchant_id)
+
+        outcome = await _halted(
+            session,
+            worker,
+            launch_id=launch_id,
+            halted=ProviderExecutionHaltedError(ExecutionWaitReason.LAUNCH_BUDGET_EXHAUSTED),
+        )
+
+        assert outcome.status == "FAILED"
+        assert outcome.failure_code == "provider_budget_exhausted"
+        assert outcome.wait_reason is ExecutionWaitReason.LAUNCH_BUDGET_EXHAUSTED
+        settled = await reload(session, launch_id)
+        assert settled.status is EvaluationLaunchStatus.FAILED
+        assert settled.failure_code == "provider_budget_exhausted"
+        assert settled.run_id == started.id
+
+    async def test_a_launch_stopped_before_it_was_bound_stays_queued_and_settles_nothing(
+        self, catalog_settings: Settings, session: AsyncSession
+    ) -> None:
+        """Capacity frees, a worker comes back, and the merchant's evaluation still runs."""
+        configured = with_openai(catalog_settings)
+        world = await build_launch_world(session, "unbound-shop")
+        launch_id = await queue_launch(session, configured, world, request_key="unbound-request")
+
+        outcome = await _halted(
+            session,
+            EvaluationLaunchWorkerService(session),
+            launch_id=launch_id,
+            halted=ProviderExecutionHaltedError(ExecutionWaitReason.PROVIDER_CAPACITY_OCCUPIED),
+        )
+
+        assert outcome.status == "QUEUED"
+        assert outcome.failure_code is None
+        assert (await reload(session, launch_id)).status is EvaluationLaunchStatus.QUEUED
+
+
+class TestProviderBudgetStopsARun:
+    """What happens to a suite when AgentRank declines to pay for the next mission.
+
+    Driven through the run service with an executor whose admission refuses, because that is
+    exactly the shape a real exhaustion takes and because producing a real one would mean
+    spending until a provider allowance ran out.
+    """
+
+    async def test_a_refused_mission_stops_the_suite_before_it_is_recorded_as_started(
+        self, session: AsyncSession
+    ) -> None:
+        """A mission nobody will pay for must never be left RUNNING and never be marked failed.
+
+        Admission happens before the mission run row exists, so the suite stops with nothing
+        recorded about a mission that was never attempted, and the run is closed as the
+        incomplete thing it is.
+        """
+        world = await build_initial_world(session, "halted-suite-shop")
+        runs = BenchmarkRunService(session)
+        started = await runs.start_suite(
+            suite_key=world.suite_key,
+            suite_version=world.suite_version,
+            fixture=world.fixture,
+            executor=ExecutorIdentity(kind=REFERENCE_ISOLATED_KIND, version=1),
+        )
+
+        with pytest.raises(ProviderExecutionHaltedError) as halted:
+            await runs.execute_started_suite(
+                started.id,
+                _HaltingExecutor(),
+                merchant_id=world.merchant_id,
+                fixture=world.fixture,
+            )
+
+        assert halted.value.reason is ExecutionWaitReason.LAUNCH_BUDGET_EXHAUSTED
+        assert halted.value.failure_code == "provider_budget_exhausted"
+        aborted = await runs.abort_run(started.id, merchant_id=world.merchant_id)
+        assert aborted.status is BenchmarkRunStatus.ABORTED
+        # Every mission still PENDING, which is the honest record of a suite that stopped before
+        # its first one: nothing was attempted, so nothing is marked failed and nothing is left
+        # RUNNING for an operator to resolve.
+        assert {result.status for result in aborted.mission_runs} == {MissionRunStatus.PENDING}
+
+
+class _HaltingExecutor:
+    """An executor whose provider requests nobody will pay for.
+
+    It has an `admit` and deliberately nothing else that works: if the runner ever called it
+    after admission refused, this would fail loudly rather than quietly measure something.
+    """
+
+    identity = ExecutorIdentity(kind=REFERENCE_ISOLATED_KIND, version=1)
+
+    async def admit(self, mission_key: str) -> None:
+        del mission_key
+        raise ProviderExecutionHaltedError(ExecutionWaitReason.LAUNCH_BUDGET_EXHAUSTED)
+
+    async def __call__(self, brief: object, *, merchant_id: uuid.UUID) -> ExecutorReport:
+        raise AssertionError("a mission nothing would pay for must never be executed")

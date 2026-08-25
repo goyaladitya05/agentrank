@@ -13,7 +13,14 @@ base_url      where that shop's commerce API is
 token         one merchant credential, scoped to that shop, revoked when the run ends
 strategy      which buyer to be
 discovery     which buyer-facing discovery surface this mission sees (LLM strategy only)
+grant         how many provider requests were reserved for this mission (LLM strategy only)
 ```
+
+The grant is the one number on this document that is about money. The trusted side reserved it
+durably before this process existed, and the worker cannot exceed it: every path to the provider
+goes through an allowance built from exactly this value. It travels here rather than being
+inferred on the far side because the far side has no database and therefore no way to know what
+was reserved on its behalf.
 
 What is deliberately not in it is the whole point of the boundary. No database URL, no session,
 no suite, no run identifier, no other mission, no expected outcome, no simulated value, no
@@ -21,10 +28,13 @@ evaluator, no payment provider secret and nothing about what any earlier mission
 field here that could carry one, so an executor process cannot be handed the oracle by a caller
 that meant well and got the arguments wrong.
 
-What comes back is an `ExecutorReport` and nothing else: which variant it selected, which quote
-it created, which payment it dispatched, whether it declined, and what stopped it. There is no
-field for a status, no field for a failure reason, no field for an error origin, and since Phase
-2B-R2 no field for a price, a quoted total, an authorization decision or a payment status either.
+What comes back is an `ExecutorReport`, and beside it the two things a worker may report about
+its own runtime rather than about the mission: its bounded execution evidence, and how many
+provider requests it made. The report itself is unchanged: which variant it selected, which
+quote it created, which payment it dispatched, whether it declined, and what stopped it. There
+is no field for a status, no field for a failure reason, no field for an error origin, and since
+Phase 2B-R2 no field for a price, a quoted total, an authorization decision or a payment status
+either.
 A worker cannot mark its own mission, cannot say whose fault an interruption was, and cannot
 state a commerce fact. What those identifiers came to is established on the trusted side from the
 merchant's own rows, and attribution is decided from the process exit, the transport and the tool
@@ -58,7 +68,7 @@ from agentrank_api.benchmark.report import (
     ReportedSelection,
 )
 
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 
 # The one buyer that exists. A second becomes another entry here and a branch in the worker, and
 # an unknown name is refused rather than defaulted, because defaulting would silently run a
@@ -93,6 +103,7 @@ class MissionRequest:
     agent_configuration: dict[str, Any] | None = None
     merchant_information: dict[str, Any] | None = None
     discovery: dict[str, Any] | None = None
+    provider_request_grant: int | None = None
 
     def __post_init__(self) -> None:
         if self.strategy not in STRATEGIES:
@@ -109,6 +120,15 @@ class MissionRequest:
             raise ValueError("an LLM mission request requires merchant information")
         if self.strategy == LLM_STRATEGY and self.discovery is None:
             raise ValueError("an LLM mission request requires its discovery view")
+        # Fail closed on the allowance as well as on the surface. A model mission with no
+        # reserved grant is one nothing has agreed to pay for, and defaulting it to any number
+        # here would be this side inventing a budget the trusted side never committed.
+        if self.strategy == LLM_STRATEGY and (
+            type(self.provider_request_grant) is not int or self.provider_request_grant < 1
+        ):
+            raise ValueError("an LLM mission request requires a reserved provider request grant")
+        if self.strategy != LLM_STRATEGY and self.provider_request_grant is not None:
+            raise ValueError("only an LLM mission request may carry a provider request grant")
         # Fail closed on shape as well as presence: a discovery view this build cannot
         # interpret is a protocol refusal, never an arm run with whatever view arrived.
         if self.strategy == LLM_STRATEGY:
@@ -132,6 +152,7 @@ class MissionRequest:
             "agent_configuration": self.agent_configuration,
             "merchant_information": self.merchant_information,
             "discovery": self.discovery,
+            "provider_request_grant": self.provider_request_grant,
         }
 
     @classmethod
@@ -150,6 +171,7 @@ class MissionRequest:
                     "agent_configuration",
                     "merchant_information",
                     "discovery",
+                    "provider_request_grant",
                 }
             ),
         )
@@ -163,6 +185,7 @@ class MissionRequest:
             agent_configuration=_optional_object(document, "agent_configuration"),
             merchant_information=_optional_object(document, "merchant_information"),
             discovery=_optional_object(document, "discovery"),
+            provider_request_grant=_optional_integer(document, "provider_request_grant"),
         )
 
     def redacted(self) -> dict[str, Any]:
@@ -183,26 +206,62 @@ def report_payload(report: ExecutorReport) -> dict[str, Any]:
 
 
 def worker_result_payload(
-    report: ExecutorReport, evidence: AgentExecutionEvidence | None = None
+    report: ExecutorReport,
+    evidence: AgentExecutionEvidence | None = None,
+    provider_attempts: int | None = None,
 ) -> dict[str, Any]:
-    """The worker result, with LLM runtime evidence kept separate from its untrusted report."""
+    """The worker result, with LLM runtime evidence kept separate from its untrusted report.
+
+    `provider_attempts` is how many provider requests the mission's allowance let through. It is
+    a runtime observation rather than a benchmark fact, and it is what the trusted side settles
+    a reservation against: a permit whose worker reported nothing stays charged for its whole
+    grant, and a permit whose worker came back cleanly is charged for what it reports.
+    """
     payload = report_payload(report)
     if evidence is not None:
         payload["agent_evidence"] = evidence.to_payload()
+    if provider_attempts is not None:
+        payload["provider_attempts"] = provider_attempts
     return payload
 
 
 def report_from_payload(payload: Any) -> ExecutorReport:
     """Read a worker's report, refusing anything that is not one."""
-    document = _document(payload, fields=frozenset({"protocol", "observed", "agent_evidence"}))
+    document = _document(
+        payload,
+        fields=frozenset({"protocol", "observed", "agent_evidence", "provider_attempts"}),
+    )
     return executor_report_from_payload(_object(document, "observed"))
 
 
 def agent_evidence_from_payload(payload: Any) -> AgentExecutionEvidence | None:
     """Validate the bounded runtime evidence returned beside a worker result."""
-    document = _document(payload, fields=frozenset({"protocol", "observed", "agent_evidence"}))
+    document = _document(
+        payload,
+        fields=frozenset({"protocol", "observed", "agent_evidence", "provider_attempts"}),
+    )
     raw = document.get("agent_evidence")
     return None if raw is None else AgentExecutionEvidence.from_payload(raw)
+
+
+def provider_attempts_from_payload(payload: Any) -> int | None:
+    """How many provider requests the worker reported, or None when it reported none.
+
+    None is not zero and the difference decides money. A worker that never said is a worker
+    whose consumption is unknown, and the trusted side charges the whole reservation for it;
+    a worker that said zero is a worker that made no call, and its reservation is released
+    down to nothing.
+    """
+    document = _document(
+        payload,
+        fields=frozenset({"protocol", "observed", "agent_evidence", "provider_attempts"}),
+    )
+    attempts = document.get("provider_attempts")
+    if attempts is None:
+        return None
+    if type(attempts) is not int or attempts < 0:
+        raise ProtocolError("provider_attempts must be a non negative integer")
+    return attempts
 
 
 def executor_report_payload(report: ExecutorReport) -> dict[str, Any]:

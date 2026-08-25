@@ -69,6 +69,7 @@ from sqlalchemy import (
     ForeignKey,
     ForeignKeyConstraint,
     Index,
+    Integer,
     String,
     UniqueConstraint,
     Uuid,
@@ -326,6 +327,42 @@ class BenchmarkEvaluationLaunch(Base):
             f"buyer_configuration_digest IS NULL OR buyer_configuration_digest ~ '{HASH_PATTERN}'",
             name="buyer_digest_format",
         ),
+        # The execution budget is frozen with everything else the merchant was shown. Three
+        # columns that arrive together or not at all: a launch either was admitted with an
+        # allowance or predates the idea, and there is no half-stated budget in between.
+        #
+        # That a model buyer must have one is an insert rule on the guard trigger rather than a
+        # check constraint, and the difference is history. Launches admitted before this phase
+        # ran under no execution budget at all, and backfilling them with one this revision
+        # invented would tell a reader they ran under a bound nothing enforced. They keep null,
+        # which is the true statement, and every launch admitted from here carries a budget
+        # because the trigger refuses an insert without one.
+        CheckConstraint(
+            "(max_provider_requests IS NULL) = (max_requests_per_mission IS NULL)"
+            " AND (max_provider_requests IS NULL) = (execution_budget_version IS NULL)",
+            name="budget_shape",
+        ),
+        CheckConstraint(
+            "max_provider_requests IS NULL OR max_provider_requests >= 1",
+            name="budget_total_positive",
+        ),
+        CheckConstraint(
+            "max_requests_per_mission IS NULL OR max_requests_per_mission >= 1",
+            name="budget_mission_positive",
+        ),
+        # One mission may never be allowed more than the whole launch is. A per-mission ceiling
+        # above the total would be a bound that reads as a bound and is not one.
+        CheckConstraint(
+            "max_requests_per_mission IS NULL OR max_requests_per_mission <= max_provider_requests",
+            name="budget_mission_within_total",
+        ),
+        CheckConstraint(
+            "execution_budget_version IS NULL OR execution_budget_version >= 1",
+            name="budget_version_positive",
+        ),
+        # The one unique the provider execution permit points at, so a permit can never name one
+        # merchant's launch while claiming to belong to another's.
+        UniqueConstraint("id", "merchant_id", name="uq_benchmark_evaluation_launch_tenant"),
         # One pending launch per merchant, structurally. A merchant owns one benchmark world, so
         # a second queued launch is two runs resetting each other's shelf rather than two
         # measurements. Frontend button state is not where this is decided.
@@ -392,6 +429,15 @@ class BenchmarkEvaluationLaunch(Base):
         String(HASH_LENGTH), nullable=True
     )
     executor_kind: Mapped[str] = mapped_column(String(MAX_KEY_LENGTH), nullable=False)
+    # What this launch is allowed to spend at its provider, resolved by the server from the
+    # capacity policy and then frozen. The browser never supplies these and cannot raise them:
+    # the preflight digest covers them, admission recomputes them from the policy, and a
+    # database trigger refuses to let them move afterwards. `execution_budget_version` is the
+    # policy identity they were computed under, so widening the policy later leaves every
+    # historical launch describing the allowance it actually ran with.
+    execution_budget_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_provider_requests: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_requests_per_mission: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[EvaluationLaunchStatus] = mapped_column(EVALUATION_LAUNCH_STATUS, nullable=False)
     failure_code: Mapped[str | None] = mapped_column(String(MAX_FAILURE_CODE_LENGTH), nullable=True)
     run_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)

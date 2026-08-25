@@ -269,7 +269,22 @@ def executor_kind(configuration: AgentConfiguration) -> str:
     from the console and one launched from a shell are the same measurement and a comparison
     across them is not silently comparing two executors.
     """
-    return "llm-openai" if configuration.provider == OPENAI_PROVIDER else "llm-gemini"
+    return executor_kind_for(configuration.provider)
+
+
+def executor_kind_for(provider: str) -> str:
+    """The executor kind one provider produces, without needing a whole configuration to ask.
+
+    The same mapping the function above uses and deliberately the only one. Provider execution
+    governance counts how many evaluations are running against a provider, and the launch table
+    records an executor kind rather than a provider, so that count is only correct while the two
+    directions of this mapping cannot disagree.
+    """
+    if provider == OPENAI_PROVIDER:
+        return "llm-openai"
+    if provider == GEMINI_PROVIDER:
+        return "llm-gemini"
+    raise ValueError(f"the LLM provider {provider!r} is not supported")
 
 
 @dataclass(frozen=True, slots=True)
@@ -572,6 +587,90 @@ def _gemini_text(content: Any) -> list[str]:
     ]
 
 
+class ProviderAllowanceExhaustedError(RuntimeError):
+    """This mission has spent every provider request that was reserved for it.
+
+    Deliberately not a `ProviderUnavailableError`. The provider is fine; AgentRank decided not
+    to pay for another call, and a buyer loop that caught this alongside a provider outage would
+    report an outage that never happened and attribute it to whichever provider was configured.
+
+    It carries the numbers rather than a sentence, because the trusted side reconciles against
+    them and a person reading a stopped evaluation wants to know what the bound was.
+    """
+
+    def __init__(self, *, granted: int, attempted: int) -> None:
+        super().__init__(
+            f"this mission reserved {granted} provider requests and has made {attempted}"
+        )
+        self.granted = granted
+        self.attempted = attempted
+
+
+class ProviderRequestAllowance:
+    """One mission's reserved provider requests, wrapped around the provider that spends them.
+
+    This is the mechanism that makes a reservation true. The trusted side, which has a database,
+    decides how many provider requests one mission may pay for and commits that decision before
+    this process exists. This object is what that number means once it gets here: a grant of six
+    is six invocations of `respond`, whether they are six turns, three turns each retried once,
+    or any other mixture.
+
+    It is an `AgentProvider` itself, and the buyer is handed one of these and never the vendor
+    client underneath. That is the whole enforcement. There is no second reference to the inner
+    provider anywhere the buyer can reach, so a retry path added to this module later cannot
+    route around the bound by accident, and one that tried to would have to be written to.
+
+    Counted before the call rather than after it, and that ordering is the only interesting
+    thing about the counter. A request whose response never arrives still reached the provider
+    and still costs whatever the provider charges for it, so an allowance that decremented on
+    success would be one a timing-out provider could drain without limit.
+
+    There is no way to raise an allowance. The number arrives on the mission request the trusted
+    side wrote, the constructor is the only place it is read, and there is no setter, no reset
+    and no refund.
+    """
+
+    def __init__(self, provider: AgentProvider, *, granted_requests: int) -> None:
+        if type(granted_requests) is not int or granted_requests < 1:
+            raise ValueError("a provider request allowance is a positive number of requests")
+        self._provider = provider
+        self._granted = granted_requests
+        self._attempts = 0
+
+    @property
+    def granted(self) -> int:
+        return self._granted
+
+    @property
+    def attempts(self) -> int:
+        """How many calls this object has let through, which is never an undercount."""
+        return self._attempts
+
+    @property
+    def remaining(self) -> int:
+        return max(0, self._granted - self._attempts)
+
+    def require(self) -> None:
+        """Refuse before anything is recorded as having been asked for.
+
+        Called by the buyer before it writes the request into its own evidence, so a trace never
+        shows a model request that was not made. `respond` refuses on the same condition and is
+        what actually guarantees the bound; this is the honest ordering in front of it.
+        """
+        if self._attempts >= self._granted:
+            raise ProviderAllowanceExhaustedError(granted=self._granted, attempted=self._attempts)
+
+    async def respond(
+        self, *, previous_response_id: str | None, input_items: list[dict[str, Any]]
+    ) -> ProviderResponse:
+        """Spend one reserved request, or refuse before anything leaves this process."""
+        self.require()
+        self._attempts += 1
+        return await self._provider.respond(
+            previous_response_id=previous_response_id, input_items=input_items
+        )
+
+
 class ProviderUnavailableError(RuntimeError):
     pass
 
@@ -639,7 +738,7 @@ class LLMBuyer:
 
     def __init__(
         self,
-        provider: AgentProvider,
+        provider: ProviderRequestAllowance,
         surface: HttpBuyerCommerceSurface,
         *,
         mandate_id: uuid.UUID,
@@ -839,6 +938,10 @@ class LLMBuyer:
         """
         for attempt in range(1, THROTTLE_RETRY_LIMIT + 1):
             remaining = self._configuration.deadline_seconds - (time.monotonic() - started)
+            # Asked before the request is written down, so a trace never records a model request
+            # that was never sent. The allowance refuses on the same condition inside `respond`,
+            # which is what actually guarantees the bound whatever this loop is rewritten into.
+            self._provider.require()
             self.evidence.add(
                 "MODEL_REQUEST",
                 {

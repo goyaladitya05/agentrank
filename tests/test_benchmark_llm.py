@@ -28,6 +28,7 @@ from agentrank_api.benchmark.llm import (
     AgentConfiguration,
     GeminiInteractionsProvider,
     LLMBuyer,
+    ProviderRequestAllowance,
     ProviderResponse,
     ProviderThrottledError,
     ProviderToolCall,
@@ -47,6 +48,10 @@ from agentrank_api.commerce.schemas import (
     VariantView,
 )
 from agentrank_api.config import Settings
+
+# Larger than any mission in this module can reach, so a test about tool calls, turns or
+# throttling is never quietly also a test about the provider request allowance.
+GENEROUS_ALLOWANCE = 64
 
 pytestmark = pytest.mark.anyio
 
@@ -234,7 +239,7 @@ async def test_structured_abstention_is_the_only_model_end_signal() -> None:
         ]
     )
     buyer = LLMBuyer(
-        provider,
+        allowed(provider),
         cast(HttpBuyerCommerceSurface, object()),
         mandate_id=uuid.uuid7(),
         configuration=AgentConfiguration(
@@ -258,7 +263,7 @@ async def test_structured_abstention_is_the_only_model_end_signal() -> None:
 async def test_provider_failure_trace_retains_the_safe_failure_detail() -> None:
     provider = ScriptedAgentProvider([ProviderUnavailableError("http_429")])
     buyer = LLMBuyer(
-        provider,
+        allowed(provider),
         cast(HttpBuyerCommerceSurface, object()),
         mandate_id=uuid.uuid7(),
         configuration=AgentConfiguration(
@@ -282,7 +287,7 @@ async def test_an_invalid_provider_response_cannot_reach_a_tool() -> None:
         [ProviderResponse(None, "gpt-5.6-terra", (ProviderToolCall("call", "abstain", "{}"),))]
     )
     buyer = LLMBuyer(
-        provider,
+        allowed(provider),
         cast(HttpBuyerCommerceSurface, object()),
         mandate_id=uuid.uuid7(),
         configuration=AgentConfiguration(
@@ -313,7 +318,7 @@ async def test_unknown_tool_is_returned_to_the_model_and_cannot_execute() -> Non
         ]
     )
     buyer = LLMBuyer(
-        provider,
+        allowed(provider),
         cast(HttpBuyerCommerceSurface, object()),
         mandate_id=uuid.uuid7(),
         configuration=AgentConfiguration(
@@ -362,6 +367,7 @@ async def test_worker_uses_the_frozen_configuration_delivered_over_the_wire(
             agent_configuration=frozen.payload(),
             merchant_information={"products": []},
             discovery={"kind": "STOREFRONT"},
+            provider_request_grant=GENEROUS_ALLOWANCE,
         ).to_payload()
     )
     report = await benchmark_worker.execute(request)
@@ -401,10 +407,24 @@ async def test_worker_selects_gemini_from_the_frozen_configuration(
         agent_configuration=frozen.payload(),
         merchant_information={"products": []},
         discovery={"kind": "STOREFRONT"},
+        provider_request_grant=GENEROUS_ALLOWANCE,
     )
     report = await benchmark_worker.execute(request)
     assert observed == [frozen]
     assert report.error is not None
+
+
+def allowed(
+    provider: ScriptedAgentProvider, granted: int = GENEROUS_ALLOWANCE
+) -> ProviderRequestAllowance:
+    """The allowance every model buyer is constructed with, sized not to be the thing under test.
+
+    A buyer cannot be built without one, which is the point of the type: the trusted side
+    reserves provider requests before the worker exists, and there is no path to a provider that
+    does not go through the object holding that reservation. Tests about what a buyer does give
+    it more than it needs; the tests about the bound itself set the number deliberately.
+    """
+    return ProviderRequestAllowance(provider, granted_requests=granted)
 
 
 def _buyer(provider: ScriptedAgentProvider, **overrides: object) -> LLMBuyer:
@@ -414,7 +434,7 @@ def _buyer(provider: ScriptedAgentProvider, **overrides: object) -> LLMBuyer:
         **overrides,  # type: ignore[arg-type]
     )
     return LLMBuyer(
-        provider,
+        allowed(provider),
         cast(HttpBuyerCommerceSurface, object()),
         mandate_id=uuid.uuid7(),
         configuration=configuration,
@@ -608,7 +628,7 @@ async def test_a_storefront_buyer_cannot_read_typed_attributes_from_discovery_to
         ]
     )
     buyer = LLMBuyer(
-        provider,
+        allowed(provider),
         cast(HttpBuyerCommerceSurface, _search_surface(search)),
         mandate_id=uuid.uuid7(),
         configuration=AgentConfiguration(
@@ -685,7 +705,7 @@ async def test_an_agent_ready_buyer_reads_only_the_representation_facts() -> Non
         ]
     )
     buyer = LLMBuyer(
-        provider,
+        allowed(provider),
         cast(HttpBuyerCommerceSurface, StubSurface()),
         mandate_id=uuid.uuid7(),
         configuration=AgentConfiguration(
@@ -778,7 +798,7 @@ async def test_the_quote_channel_hides_attribute_snapshots_for_both_arms_alike()
             ]
         )
         buyer = LLMBuyer(
-            provider,
+            allowed(provider),
             cast(HttpBuyerCommerceSurface, StubSurface()),
             mandate_id=uuid.uuid7(),
             configuration=AgentConfiguration(
@@ -844,6 +864,7 @@ async def test_the_worker_binds_exactly_the_discovery_view_it_was_sent(
         agent_configuration=frozen.payload(),
         merchant_information={"products": []},
         discovery=sent,
+        provider_request_grant=GENEROUS_ALLOWANCE,
     )
     await benchmark_worker.execute(request)
 
@@ -899,7 +920,7 @@ async def test_a_storefront_buyer_cannot_read_typed_attributes_from_product_deta
         ]
     )
     buyer = LLMBuyer(
-        provider,
+        allowed(provider),
         cast(HttpBuyerCommerceSurface, StubSurface()),
         mandate_id=uuid.uuid7(),
         configuration=AgentConfiguration(
@@ -979,7 +1000,7 @@ async def test_authorization_answers_never_name_the_catalog_values_they_compared
             ]
         )
         buyer = LLMBuyer(
-            provider,
+            allowed(provider),
             cast(HttpBuyerCommerceSurface, StubSurface()),
             mandate_id=uuid.uuid7(),
             configuration=AgentConfiguration(

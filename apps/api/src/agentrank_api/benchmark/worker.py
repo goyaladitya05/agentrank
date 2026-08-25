@@ -67,6 +67,8 @@ from agentrank_api.benchmark.llm import (
     GeminiInteractionsProvider,
     LLMBuyer,
     OpenAIResponsesProvider,
+    ProviderAllowanceExhaustedError,
+    ProviderRequestAllowance,
 )
 from agentrank_api.benchmark.reference_executor import ReferenceMissionExecutor
 from agentrank_api.benchmark.report import ExecutorReport
@@ -104,6 +106,13 @@ from agentrank_api.config import get_settings
 EXIT_NOT_ISOLATED = 2
 EXIT_PROTOCOL = 3
 EXIT_FAILED = 4
+
+# The fourth, and it is not a failure of the buyer. This mission spent every provider request
+# that was reserved for it, and the process stopped rather than making one nobody had agreed to
+# pay for. The trusted side reads the number rather than the text here as everywhere else, and
+# what it means is "AgentRank's own execution governance stopped this", which is not the same
+# statement as "the buyer could not shop" and must never be recorded as one.
+EXIT_ALLOWANCE_EXHAUSTED = 5
 
 PERMITTED_ENVIRONMENT = frozenset(
     {
@@ -185,7 +194,7 @@ def worker_environment(parent: Mapping[str, str]) -> dict[str, str]:
 
 async def execute_with_evidence(
     request: MissionRequest,
-) -> tuple[ExecutorReport, AgentExecutionEvidence | None]:
+) -> tuple[ExecutorReport, AgentExecutionEvidence | None, int | None]:
     """Carry out one mission over the merchant's own commerce API.
 
     The strategy is named by the request and refused if it is not one this build has, because a
@@ -207,9 +216,17 @@ async def execute_with_evidence(
                     "the LLM worker received invalid frozen configuration"
                 ) from malformed
             provider = _provider(configuration, os.environ)
+            # The reserved grant becomes the only route to the provider this process has. It is
+            # built here, from the number the trusted side committed, and the buyer is handed it
+            # rather than the vendor client: there is no other reference to `provider` after
+            # this line except the one that closes it.
+            assert request.provider_request_grant is not None  # the wire refuses an LLM one
+            allowance = ProviderRequestAllowance(
+                provider, granted_requests=request.provider_request_grant
+            )
             try:
                 buyer = LLMBuyer(
-                    provider,
+                    allowance,
                     surface,
                     mandate_id=request.mandate_id,  # type: ignore[arg-type]
                     configuration=configuration,
@@ -220,13 +237,18 @@ async def execute_with_evidence(
                     merchant_id=request.merchant_id,
                     merchant_information=request.merchant_information,
                 )
-                return report, buyer.evidence
+                return report, buyer.evidence, allowance.attempts
+            except ProviderAllowanceExhaustedError:
+                # Nothing is reported. This process has no way to say what its allowance was
+                # spent on that the trusted side would believe, and the exit code is the whole
+                # message: what was actually spent is the grant the trusted side already holds.
+                raise
             finally:
                 await provider.aclose()
         report = await ReferenceMissionExecutor(surface)(
             request.brief, merchant_id=request.merchant_id
         )
-        return report, None
+        return report, None, None
 
 
 def _provider(
@@ -247,7 +269,7 @@ def _provider(
 
 async def execute(request: MissionRequest) -> ExecutorReport:
     """Public execution seam retained for reference-worker tests."""
-    report, _evidence = await execute_with_evidence(request)
+    report, _evidence, _attempts = await execute_with_evidence(request)
     return report
 
 
@@ -286,20 +308,29 @@ def main(
         require_isolated_environment(os.environ if environment is None else environment)
         require_no_database_configuration()
         request = read_request(sys.stdin if stdin is None else stdin)
-        observed, evidence = asyncio.run(execute_with_evidence(request))
+        observed, evidence, attempts = asyncio.run(execute_with_evidence(request))
     except EnvironmentNotIsolatedError as leaked:
         print(f"refused: {leaked}", file=errors)
         return EXIT_NOT_ISOLATED
     except ProtocolError as malformed:
         print(f"refused: {malformed}", file=errors)
         return EXIT_PROTOCOL
+    except ProviderAllowanceExhaustedError as spent:
+        # Its own exit code because it is its own thing. The buyer did not fail to shop and the
+        # provider did not fail to answer: this deployment declined to buy another request. A
+        # code shared with an ordinary failure would have this recorded against the model.
+        print(f"stopped: {spent}", file=errors)
+        return EXIT_ALLOWANCE_EXHAUSTED
     except Exception as failed:  # the exit code is the report, not this
         # The type and nothing else. A traceback from a buyer process can carry a request body,
         # and a request body carries the credential this process was given.
         print(f"failed: {type(failed).__name__}", file=errors)
         return EXIT_FAILED
 
-    json.dump(worker_result_payload(observed, evidence), sys.stdout if stdout is None else stdout)
+    json.dump(
+        worker_result_payload(observed, evidence, attempts),
+        sys.stdout if stdout is None else stdout,
+    )
     return 0
 
 

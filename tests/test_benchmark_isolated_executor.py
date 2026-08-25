@@ -23,6 +23,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
+from executor_support import GrantedPermits
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentrank_api.auth.service import MerchantCredentialService
@@ -52,16 +53,21 @@ from agentrank_api.benchmark.isolation import (
     ISOLATED_REFERENCE,
     WORKER_MODULE,
     IsolatedMissionExecutor,
+    _exited,
     reference_worker_environment,
 )
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus, MissionRunStatus
-from agentrank_api.benchmark.llm import GEMINI_PROVIDER
+from agentrank_api.benchmark.llm import GEMINI_PROVIDER, AgentConfiguration
 from agentrank_api.benchmark.models import BenchmarkRun
 from agentrank_api.benchmark.reference_executor import REFERENCE_EXECUTOR
 from agentrank_api.benchmark.runner import BenchmarkRunService
 from agentrank_api.benchmark.suites import BenchmarkSuiteService
-from agentrank_api.benchmark.wire import MissionRequest
+from agentrank_api.benchmark.wire import LLM_STRATEGY, MissionRequest
 from agentrank_api.benchmark.worker import (
+    EXIT_ALLOWANCE_EXHAUSTED,
+    EXIT_FAILED,
+    EXIT_NOT_ISOLATED,
+    EXIT_PROTOCOL,
     PERMITTED_ENVIRONMENT,
     EnvironmentNotIsolatedError,
     require_isolated_environment,
@@ -544,6 +550,7 @@ async def test_a_mission_request_carries_no_oracle_and_has_nowhere_to_put_one(
         "agent_configuration",
         "merchant_information",
         "discovery",
+        "provider_request_grant",
     }
     document = json.dumps(payload)
     for forbidden in (
@@ -936,9 +943,6 @@ async def test_the_executor_hands_the_worker_exactly_its_discovery_view(
     monkeypatch: pytest.MonkeyPatch, served: RequestLedger
 ) -> None:
     """The arm's surface travels to the worker untouched, or the mission does not run."""
-    from agentrank_api.benchmark.llm import AgentConfiguration
-    from agentrank_api.benchmark.wire import LLM_STRATEGY
-
     captured: list[MissionRequest] = []
 
     async def record_through(self: object, request: object, sandbox: object) -> object:
@@ -957,8 +961,155 @@ async def test_the_executor_hands_the_worker_exactly_its_discovery_view(
         agent_configuration=configuration.payload(),
         merchant_information={"products": []},
         discovery=discovery,
+        permits=GrantedPermits(),
     )
+    await executor.admit("mission")
     await executor(brief(), merchant_id=uuid.uuid7())
 
     assert len(captured) == 1
     assert captured[0].discovery == discovery
+
+
+# How a mission's provider reservation is settled, which is decided from what this side observed
+# and never from what the worker said about itself.
+
+
+async def test_a_worker_that_reported_its_spending_settles_the_reservation_to_that_number(
+    session: AsyncSession, endpoint: LocalCommerceEndpoint, served: RequestLedger
+) -> None:
+    """The one outcome the trusted side can settle exactly, and the only one it reconciles."""
+    permits = GrantedPermits(granted=6)
+    executor = _reference_executor_with(endpoint, served, permits)
+    executor._grant = await permits.reserve("m-1")
+    executor._settled = False
+
+    await executor._settle(consumed=2)
+
+    assert permits.settled[-1][1:] == ("RECONCILED", 2)
+
+
+async def test_a_worker_whose_outcome_is_unknown_charges_its_whole_reservation(
+    session: AsyncSession, endpoint: LocalCommerceEndpoint, served: RequestLedger
+) -> None:
+    """Crash boundary B, at the boundary that observes it.
+
+    A process that stopped answering may have been waiting on a provider that had already been
+    paid, so the reservation stays charged and is marked an assumption rather than a measurement.
+    """
+    permits = GrantedPermits(granted=6)
+    executor = _reference_executor_with(endpoint, served, permits)
+    executor._grant = await permits.reserve("m-1")
+    executor._settled = False
+
+    await executor._settle()
+
+    assert permits.states == ["ASSUMED_SPENT"]
+
+
+async def test_settling_twice_settles_once(
+    session: AsyncSession, endpoint: LocalCommerceEndpoint, served: RequestLedger
+) -> None:
+    """The `finally` that guarantees settlement must not undo a settlement a branch already made."""
+    permits = GrantedPermits(granted=6)
+    executor = _reference_executor_with(endpoint, served, permits)
+    executor._grant = await permits.reserve("m-1")
+    executor._settled = False
+
+    await executor._settle(consumed=1)
+    await executor._settle()
+
+    assert permits.states == ["RECONCILED"]
+
+
+async def test_an_exit_that_happened_before_a_mission_was_read_releases_the_reservation(
+    session: AsyncSession, endpoint: LocalCommerceEndpoint, served: RequestLedger
+) -> None:
+    """Crash boundary A. Two exits happen before the worker has a mission, so no provider call
+    was possible and the allowance is genuinely given back."""
+    for code in (EXIT_NOT_ISOLATED, EXIT_PROTOCOL):
+        permits = GrantedPermits(granted=6)
+        executor = _reference_executor_with(endpoint, served, permits)
+        executor._grant = await permits.reserve("m-1")
+        executor._settled = False
+
+        await executor._settle_exit(code)
+
+        assert permits.states == ["RELEASED"]
+
+
+async def test_an_unrecognised_exit_charges_the_whole_reservation(
+    session: AsyncSession, endpoint: LocalCommerceEndpoint, served: RequestLedger
+) -> None:
+    """Fail closed on spending as well as on attribution: an exit nobody classified is charged."""
+    permits = GrantedPermits(granted=6)
+    executor = _reference_executor_with(endpoint, served, permits)
+    executor._grant = await permits.reserve("m-1")
+    executor._settled = False
+
+    await executor._settle_exit(37)
+
+    assert permits.states == ["ASSUMED_SPENT"]
+
+
+async def test_a_worker_that_spent_its_allowance_is_charged_for_all_of_it_as_a_measurement(
+    session: AsyncSession, endpoint: LocalCommerceEndpoint, served: RequestLedger
+) -> None:
+    """Exhaustion is the one non zero exit whose spending is known exactly: all of it."""
+    permits = GrantedPermits(granted=6)
+    executor = _reference_executor_with(endpoint, served, permits)
+    executor._grant = await permits.reserve("m-1")
+    executor._settled = False
+
+    await executor._settle_exit(EXIT_ALLOWANCE_EXHAUSTED)
+
+    assert permits.settled[-1][1:] == ("RECONCILED", 6)
+
+
+def test_a_model_buyer_cannot_be_built_with_nowhere_to_reserve_its_requests(
+    served: RequestLedger,
+) -> None:
+    """No live provider call without a trusted permit, refused where it is cheapest to refuse.
+
+    A constructor that allowed one would leave the invariant discoverable only by reading every
+    call site, and the call site that forgot would be the one that spent.
+    """
+    with pytest.raises(ValueError, match="reserve its provider requests"):
+        IsolatedMissionExecutor(
+            base_url="http://127.0.0.1:1",
+            token="ar_dev_" + "0" * 32 + "_" + "0" * 64,
+            served=served,
+            strategy=LLM_STRATEGY,
+            agent_configuration={},
+        )
+
+
+def test_a_mission_that_spent_its_allowance_is_the_harness_and_never_the_buyer() -> None:
+    """AgentRank declining to spend is not agent performance, so it must not be recorded as it.
+
+    ERRORED rather than FAILED means the mission's authored value is reported as not measured
+    rather than as demand the merchant lost, which is the honest reading of a mission nobody
+    paid to finish. It is not a way for a poor model to be excused: the turn budget already caps
+    what a model's own choices consume, so only provider-driven retries reach this ceiling.
+    """
+    assert _exited(EXIT_ALLOWANCE_EXHAUSTED) is FaultOrigin.HARNESS
+    assert _exited(EXIT_NOT_ISOLATED) is FaultOrigin.HARNESS
+    assert _exited(EXIT_PROTOCOL) is FaultOrigin.HARNESS
+    assert _exited(EXIT_FAILED) is FaultOrigin.AGENT
+    assert _exited(37) is FaultOrigin.AGENT
+
+
+def _reference_executor_with(
+    endpoint: LocalCommerceEndpoint, served: RequestLedger, permits: GrantedPermits
+) -> IsolatedMissionExecutor:
+    """An executor whose settlement can be driven directly, without starting a process.
+
+    The settlement rule is what these tests are about, and the outcomes it distinguishes are a
+    timeout, a crash and three exit codes. Producing each of those through a real subprocess
+    would be five slow tests about process control and one property.
+    """
+    return IsolatedMissionExecutor(
+        base_url=endpoint.base_url,
+        token="ar_dev_" + "0" * 32 + "_" + "0" * 64,
+        served=served,
+        permits=permits,
+    )

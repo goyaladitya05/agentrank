@@ -46,6 +46,7 @@ nothing about it changes because the launch was a merchant's first.
 
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -55,6 +56,7 @@ from agentrank_api.auth.service import MerchantCredentialService
 from agentrank_api.auth.tokens import TokenMarker
 from agentrank_api.benchmark.authorization import provision
 from agentrank_api.benchmark.buyer import MerchantBuyerSurface
+from agentrank_api.benchmark.capacity import ExecutionBudget
 from agentrank_api.benchmark.discovery import buyer_discovery_view, to_payload
 from agentrank_api.benchmark.endpoint import (
     LocalCommerceEndpoint,
@@ -65,6 +67,7 @@ from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
 from agentrank_api.benchmark.evaluation_launch import (
     BenchmarkEvaluationLaunch,
     BuyerProfile,
+    EvaluationLaunchStatus,
     EvaluationPurpose,
 )
 from agentrank_api.benchmark.execution import BenchmarkRunCapability, ExecutorIdentity
@@ -84,6 +87,13 @@ from agentrank_api.benchmark.llm import (
     executor_kind,
 )
 from agentrank_api.benchmark.models import BenchmarkEnvironment, BenchmarkRun
+from agentrank_api.benchmark.permits import (
+    WAIT_SENTENCES,
+    ExecutionWaitReason,
+    ProviderExecutionHaltedError,
+    ProviderExecutionService,
+    RunPermitBroker,
+)
 from agentrank_api.benchmark.repository import BenchmarkSuiteRepository
 from agentrank_api.benchmark.runner import BenchmarkRunService
 from agentrank_api.benchmark.wire import LLM_STRATEGY
@@ -104,6 +114,10 @@ FAILURE_SUITE_UNAVAILABLE = "benchmark_suite_unavailable"
 FAILURE_BUYER_CONFIGURATION = "buyer_configuration_invalid"
 FAILURE_REPRESENTATION_MISSING = "representation_unavailable"
 FAILURE_SOURCE_MISSING = "merchant_source_unavailable"
+# A model buyer launch admitted before execution budgets existed, which nothing can execute
+# under this build: there is no allowance to reserve against and inventing one here would be
+# spending on a bound the merchant was never shown.
+FAILURE_BUDGET_MISSING = "execution_budget_unavailable"
 
 # The one refusal that means this launch has executed nothing and may still execute later. The
 # run service raises it when another run owns this merchant's world.
@@ -141,13 +155,19 @@ class BenchmarkWorld(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class DispatchOutcome:
-    """What one dispatch did, for an operator reading the command's output."""
+    """What one dispatch did, for an operator reading the command's output.
+
+    `wait_reason` is present exactly when execution governance is why nothing happened or why
+    the launch stopped. It is AgentRank's own vocabulary rather than a provider's, so an
+    operator reading "this deployment paused Gemini" is never reading it as "Gemini failed".
+    """
 
     launch_id: uuid.UUID
     run_id: uuid.UUID | None
     status: str
     failure_code: str | None
     detail: str | None = None
+    wait_reason: ExecutionWaitReason | None = None
 
 
 def _unserviceable(launch: BenchmarkEvaluationLaunch) -> DispatchOutcome:
@@ -238,6 +258,12 @@ async def execute_next_launch(
         # expired row here would be a lazy load in the middle of an orchestration with no
         # transaction open.
         await session.rollback()
+        # An advisory look before anything long starts. The authoritative capacity gate runs
+        # inside the transaction that makes this launch one of the executing ones, and it has
+        # to: this read can be stale the instant it returns. What it buys is not correctness, it
+        # is not booting a loopback server and starting a run only to abort it when a provider
+        # is plainly paused.
+        early = await _capacity_wait_reason(session, plan)
         measured = await measured_documents(session, plan)
         # Reading them opened a transaction of its own, and the server boot below is exactly
         # what the claim was released to keep out of one. A commit rather than a rollback: a
@@ -257,6 +283,16 @@ async def execute_next_launch(
             detail=refused.detail,
         )
 
+    if early is not None:
+        return DispatchOutcome(
+            launch_id=launch_id,
+            run_id=None,
+            status="QUEUED",
+            failure_code=None,
+            detail=WAIT_SENTENCES[early],
+            wait_reason=early,
+        )
+
     try:
         finished = await _execute(
             session,
@@ -269,6 +305,8 @@ async def execute_next_launch(
             provider=provider,
             settings=settings,
         )
+    except ProviderExecutionHaltedError as halted:
+        return await _halted(session, worker, launch_id=launch_id, halted=halted)
     except ConflictError as refused:
         # Exactly one conflict is an ordinary answer: a world somebody else's run already owns.
         # The launch has executed nothing then, so it stays queued and honest rather than being
@@ -322,6 +360,10 @@ class _Plan:
     configuration: AgentConfiguration | None
     representation_id: uuid.UUID | None
     source_snapshot_id: uuid.UUID | None = None
+    # The execution budget this launch was admitted with, read back off the frozen columns
+    # rather than recomputed from today's policy. A run executes under what the merchant was
+    # shown, and recomputing it here would silently move the bound whenever a policy changed.
+    budget: ExecutionBudget | None = None
 
 
 async def _dispatch_plan(
@@ -390,6 +432,34 @@ async def _dispatch_plan(
         configuration=configuration,
         representation_id=None if representation is None else representation.id,
         source_snapshot_id=None if source is None else source.id,
+        budget=_frozen_budget(launch, configuration, missions=len(suite.missions)),
+    )
+
+
+def _frozen_budget(
+    launch: BenchmarkEvaluationLaunch, configuration: AgentConfiguration, *, missions: int
+) -> ExecutionBudget:
+    """The execution budget this launch froze, rebuilt from its own columns.
+
+    Refused rather than recomputed when the columns are absent. A model buyer launch admitted
+    before execution budgets existed has no allowance anybody agreed to, and running it under
+    one this build invented would spend against a bound the merchant never saw.
+    """
+    if (
+        launch.max_provider_requests is None
+        or launch.max_requests_per_mission is None
+        or launch.execution_budget_version is None
+    ):
+        raise LaunchDispatchError(
+            FAILURE_BUDGET_MISSING,
+            "this launch was admitted without a provider execution budget",
+        )
+    return ExecutionBudget(
+        policy_version=launch.execution_budget_version,
+        mission_count=missions,
+        max_model_turns=configuration.max_model_turns,
+        max_provider_requests=launch.max_provider_requests,
+        max_requests_per_mission=launch.max_requests_per_mission,
     )
 
 
@@ -475,6 +545,59 @@ def _provider_credential(settings: Settings, provider: str) -> bool:
     return False
 
 
+async def _capacity_wait_reason(session: AsyncSession, plan: _Plan) -> ExecutionWaitReason | None:
+    """Whether this provider plainly cannot take another evaluation right now.
+
+    A report and never a decision. Nothing is locked, nothing is claimed and the answer is not
+    relied on: a launch this says nothing about can still be refused by the authoritative gate a
+    moment later, and that refusal is the one that keeps concurrency correct.
+    """
+    if plan.configuration is None:
+        return None
+    status = await ProviderExecutionService(session).status(plan.configuration.provider)
+    return status.wait_reason
+
+
+async def _halted(
+    session: AsyncSession,
+    worker: EvaluationLaunchWorkerService,
+    *,
+    launch_id: uuid.UUID,
+    halted: ProviderExecutionHaltedError,
+) -> DispatchOutcome:
+    """Report a launch that execution governance stopped, and settle it only if it started.
+
+    The distinction is where the halt happened. A launch refused before it was bound never
+    became one of the executing ones, so it is still queued and honestly so: capacity frees, a
+    worker comes back and it runs. A launch halted part way through a suite has a run behind it
+    that has already been aborted, and it settles under AgentRank's own failure vocabulary.
+    """
+    await session.rollback()
+    launch = await session.get(BenchmarkEvaluationLaunch, launch_id)
+    if launch is not None and launch.status is EvaluationLaunchStatus.QUEUED:
+        return DispatchOutcome(
+            launch_id=launch_id,
+            run_id=None,
+            status="QUEUED",
+            failure_code=None,
+            detail=halted.detail,
+            wait_reason=halted.reason,
+        )
+    await worker.settle_failed(launch_id, failure_code=halted.failure_code)
+    log.warning(
+        "benchmark evaluation launch stopped by execution governance",
+        extra={"launch_id": str(launch_id), "wait_reason": halted.reason.value},
+    )
+    return DispatchOutcome(
+        launch_id=launch_id,
+        run_id=None if launch is None else launch.run_id,
+        status="FAILED",
+        failure_code=halted.failure_code,
+        detail=halted.detail,
+        wait_reason=halted.reason,
+    )
+
+
 async def _execute(
     session: AsyncSession,
     sessions: async_sessionmaker[AsyncSession],
@@ -519,7 +642,18 @@ async def _execute(
             representation_label=_run_label(source),
         )
         try:
-            await worker.bind_run(launch_id, started.id)
+            await worker.bind_run(
+                launch_id,
+                run_id=started.id,
+                admit=_capacity_admission(session, plan),
+            )
+        except ProviderExecutionHaltedError:
+            # Provider capacity, not a conflict. The launch is still queued because nothing was
+            # written, so the run this process created names nothing and is closed here; a
+            # worker that reaches this launch when capacity frees will start a fresh one.
+            await session.rollback()
+            await runs.abort_run(started.id, merchant_id=merchant_id)
+            raise
         except ConflictError:
             # Another worker reached this launch first. The run this process just created is
             # therefore a run no launch names, so it is closed honestly here rather than left
@@ -545,14 +679,30 @@ async def _execute(
                 served=served,
                 trusted=trusted,
                 settings=settings,
+                permits=_permit_broker(
+                    sessions,
+                    plan,
+                    merchant_id=merchant_id,
+                    launch_id=launch_id,
+                    run_id=started.id,
+                ),
             )
-            return await runs.execute_started_suite(
-                started.id,
-                executor,
-                merchant_id=merchant_id,
-                fixture=world.fixture,
-                witness=executor,
-            )
+            try:
+                return await runs.execute_started_suite(
+                    started.id,
+                    executor,
+                    merchant_id=merchant_id,
+                    fixture=world.fixture,
+                    witness=executor,
+                )
+            except ProviderExecutionHaltedError:
+                # The run stopped part way through because AgentRank declined to spend more, so
+                # it is closed here as the incomplete thing it is. Aborting before the launch is
+                # settled is not tidiness: a failed launch that names a run may only name an
+                # aborted one, and the database refuses the settlement otherwise.
+                await session.rollback()
+                await runs.abort_run(started.id, merchant_id=merchant_id)
+                raise
 
 
 @dataclass(frozen=True, slots=True)
@@ -637,6 +787,7 @@ def _executor(
     served: RequestLedger,
     trusted: MerchantBuyerSurface,
     settings: Settings,
+    permits: RunPermitBroker | None = None,
 ) -> IsolatedMissionExecutor:
     """The buyer this launch froze, in a process with no database.
 
@@ -665,6 +816,52 @@ def _executor(
         merchant_information=surface.merchant_information,
         discovery=surface.discovery,
         environment=provider_worker_environment(settings, plan.configuration.provider),
+        permits=permits,
     )
     executor.identity = plan.identity
     return executor
+
+
+def _permit_broker(
+    sessions: async_sessionmaker[AsyncSession],
+    plan: _Plan,
+    *,
+    merchant_id: uuid.UUID,
+    launch_id: uuid.UUID,
+    run_id: uuid.UUID,
+) -> RunPermitBroker | None:
+    """The spending broker for a model buyer, and nothing at all for the reference buyer.
+
+    None rather than a broker with a zero budget, because the reference buyer calls no provider:
+    a permit for it would be a reservation nothing could ever spend and a row that made the
+    execution ledger describe work that never touched a provider.
+    """
+    if plan.configuration is None or plan.budget is None:
+        return None
+    return RunPermitBroker(
+        sessions,
+        merchant_id=merchant_id,
+        launch_id=launch_id,
+        run_id=run_id,
+        provider=plan.configuration.provider,
+        requested_model=plan.configuration.requested_model,
+        budget=plan.budget,
+    )
+
+
+def _capacity_admission(
+    session: AsyncSession, plan: _Plan
+) -> Callable[[BenchmarkEvaluationLaunch], Awaitable[None]] | None:
+    """The provider capacity gate that runs inside the transaction which starts a launch.
+
+    None for the reference buyer, which consumes no provider capacity at all and would otherwise
+    be made to wait on a limit about somebody else's spending.
+    """
+    if plan.configuration is None:
+        return None
+    provider = plan.configuration.provider
+
+    async def admit(launch: BenchmarkEvaluationLaunch) -> None:
+        await ProviderExecutionService(session).admit_launch(provider, excluding=launch.id)
+
+    return admit
