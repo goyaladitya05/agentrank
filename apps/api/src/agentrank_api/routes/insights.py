@@ -11,6 +11,14 @@ expose findings, ownership, evidence references, simulated demand and methodolog
 they do not expose compiler review internals beyond what a merchant already owns, provider
 payloads beyond their redacted trace form, or anything weighted that could stand in for a
 score.
+
+They take an operator merchant rather than any merchant, which is to say they refuse a
+credential the benchmark runner minted for a run. That credential is a merchant credential and
+authenticates, and what it must not do is read the evaluator's findings about the run the buyer
+process holding it is executing inside. The loopback endpoint an isolated buyer is actually given
+mounts none of this, which is the layer that holds regardless; this is the second one, and it
+holds for any deployment where a benchmark credential can reach the ordinary API. A console
+session never carries a benchmark capability, so nothing a merchant does is affected.
 """
 
 import uuid
@@ -18,7 +26,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query
 
-from agentrank_api.dependencies import MerchantDep, SessionDep
+from agentrank_api.dependencies import OperatorDep, SessionDep
 from agentrank_api.diagnostics.schemas import (
     ExperimentComparisonView,
     MerchantOverviewView,
@@ -39,7 +47,7 @@ router = APIRouter(prefix="/api/v1/insights", tags=["insights"])
 @router.get("/overview")
 async def read_overview(
     session: SessionDep,
-    merchant: MerchantDep,
+    merchant: OperatorDep,
 ) -> MerchantOverviewView:
     """Benchmark health, recent runs, top findings, simulated demand and system state."""
     return overview_view(await DiagnosticsService(session).merchant_overview(merchant.merchant_id))
@@ -48,7 +56,7 @@ async def read_overview(
 @router.get("/runs")
 async def list_runs(
     session: SessionDep,
-    merchant: MerchantDep,
+    merchant: OperatorDep,
     limit: Annotated[int, Query(ge=1, le=50)] = 10,
 ) -> list[RunSummaryView]:
     """The merchant's runs, newest first, bounded by the requested page size."""
@@ -62,7 +70,7 @@ async def list_runs(
 async def read_run(
     run_id: uuid.UUID,
     session: SessionDep,
-    merchant: MerchantDep,
+    merchant: OperatorDep,
 ) -> RunDiagnosticsView:
     """One run's complete deterministic reading, including every mission and finding."""
     diagnostics = await DiagnosticsService(session).run_diagnostics(
@@ -76,7 +84,7 @@ async def read_mission(
     run_id: uuid.UUID,
     mission_run_id: uuid.UUID,
     session: SessionDep,
-    merchant: MerchantDep,
+    merchant: OperatorDep,
 ) -> MissionDiagnosisView:
     """One mission's diagnosis within one of the merchant's runs."""
     service = DiagnosticsService(session)
@@ -95,7 +103,7 @@ async def read_trace(
     run_id: uuid.UUID,
     mission_run_id: uuid.UUID,
     session: SessionDep,
-    merchant: MerchantDep,
+    merchant: OperatorDep,
     limit: Annotated[int, Query(ge=1, le=MAX_TRACE_LIMIT)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> TraceProjectionView:
@@ -114,7 +122,7 @@ async def read_trace(
 async def read_experiment(
     experiment_id: uuid.UUID,
     session: SessionDep,
-    merchant: MerchantDep,
+    merchant: OperatorDep,
 ) -> ExperimentComparisonView:
     """One controlled raw versus compiled experiment, with its methodology warnings."""
     result = await DiagnosticsService(session).experiment_diagnosis(
