@@ -58,6 +58,10 @@ describe("status and designation vocabulary", () => {
   it("describes experiment conclusions without spinning them", () => {
     expect(conclusionKindLabel("PARITY")).toEqual({ label: "Parity", tone: "neutral" });
     expect(conclusionKindLabel("OUTCOME_DIFFERENCES").label).toBe("Outcome differences");
+    expect(conclusionKindLabel("NOT_INTERPRETABLE")).toEqual({
+      label: "Not interpretable",
+      tone: "warn",
+    });
     expect(transitionDirectionLabel("COMPILED_LOSS").label).toBe("Raw succeeded, compiled did not");
     expect(transitionDirectionLabel("CHANGED").label).toBe("Changed failure mode");
   });

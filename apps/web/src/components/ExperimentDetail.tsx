@@ -23,8 +23,8 @@ import type { ExperimentComparison } from "@/lib/insights/types";
  * The controlled raw versus compiled comparison.
  *
  * Methodology warnings sit at the top because they qualify every number below them. The
- * conclusion is quoted from the backend verbatim: parity stays parity, differences stay
- * observations, and neither is ever restyled into a win.
+ * conclusion is quoted from the backend verbatim: parity stays parity, non-interpretable
+ * evidence stays non-interpretable, and neither is ever restyled into a win.
  */
 export function ExperimentDetailContent({ data }: { data: ExperimentComparison }) {
   const conclusion = conclusionKindLabel(data.conclusion.kind);
@@ -263,7 +263,9 @@ function MissionTransitions({ data }: { data: ExperimentComparison }) {
             explanation={
               data.conclusion.kind === "PARITY"
                 ? "Every completed pair agreed on every mission's outcome, which is what parity means here."
-                : "Every mission kept the same terminal position in both arms."
+                : data.conclusion.kind === "NOT_INTERPRETABLE"
+                  ? "The outcomes matched, but methodology warnings prevent reading that agreement as parity."
+                  : "Every mission kept the same terminal position in both arms."
             }
           />
         </div>

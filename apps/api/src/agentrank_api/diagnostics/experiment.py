@@ -172,8 +172,10 @@ class ComparisonConclusion:
     """The strongest statement this evidence deterministically supports.
 
     PARITY means every completed pair agreed on every mission, on safety and on captured
-    demand. It does not mean compilation cannot help anywhere; it means it did not help
-    here, at this sample size, for this model and this catalog.
+    demand, and methodology permits reading that agreement as a comparison result. It does
+    not mean compilation cannot help anywhere; it means it did not help here, at this sample
+    size, for this model and this catalog. A methodology warning that rules out causal
+    interpretation instead produces NOT_INTERPRETABLE, even when the printed metrics match.
     """
 
     kind: str
@@ -183,6 +185,7 @@ class ComparisonConclusion:
 CONCLUSION_PARITY = "PARITY"
 CONCLUSION_OUTCOME_DIFFERENCES = "OUTCOME_DIFFERENCES"
 CONCLUSION_INCOMPLETE = "INCOMPLETE"
+CONCLUSION_NOT_INTERPRETABLE = "NOT_INTERPRETABLE"
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,7 +214,7 @@ def diagnose_experiment(
     arms = {arm: _aggregate_arm(facts, arm) for arm in (ARM_RAW, ARM_COMPILED)}
     transitions = _mission_transitions(facts)
     warnings = tuple(_warnings(facts, arms))
-    conclusion = _conclusion(facts, transitions)
+    conclusion = _conclusion(facts, transitions, warnings)
     return ExperimentDiagnosis(
         engine_identity=engine_identity,
         experiment_id=facts.experiment_id,
@@ -405,7 +408,9 @@ def _demand_totals(arm: ArmAggregate) -> dict[str, dict[str, int]]:
 
 
 def _conclusion(
-    facts: ExperimentFacts, transitions: tuple[MissionTransition, ...]
+    facts: ExperimentFacts,
+    transitions: tuple[MissionTransition, ...],
+    warnings: tuple[MethodologyWarning, ...],
 ) -> ComparisonConclusion:
     complete = [
         (ordinal, pair)
@@ -419,6 +424,15 @@ def _conclusion(
             statement=(
                 "No complete raw and compiled pair has been measured yet, so this"
                 " experiment supports no comparison."
+            ),
+        )
+    if any(warning.code == "NOT_CAUSALLY_INTERPRETABLE" for warning in warnings):
+        return ComparisonConclusion(
+            kind=CONCLUSION_NOT_INTERPRETABLE,
+            statement=(
+                "Completed raw and agent-ready samples exist, but methodology evidence makes"
+                " this experiment not interpretable as a representation comparison. The raw"
+                " metrics below remain descriptive only."
             ),
         )
     arms = {arm: _aggregate_arm(facts, arm) for arm in (ARM_RAW, ARM_COMPILED)}
