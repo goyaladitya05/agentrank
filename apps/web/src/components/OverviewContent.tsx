@@ -111,7 +111,10 @@ export function OverviewContent({ data }: { data: MerchantOverview }) {
       </Section>
 
       <Section title="Representation state">
-        <RepresentationPanel state={data.representation_state} />
+        <RepresentationPanel
+          state={data.representation_state}
+          measured={data.runs.some((run) => run.status === "COMPLETED")}
+        />
       </Section>
 
       <Section title="Latest controlled experiment">
@@ -289,7 +292,21 @@ function RecentRuns({ runs }: { runs: readonly RunSummary[] }) {
   );
 }
 
-function RepresentationPanel({ state }: { state: RepresentationState }) {
+/**
+ * What a merchant has compiled, and the one next step that is actually available to them.
+ *
+ * `measured` is whether any run has completed, because that is what decides whether AgentRank
+ * would still offer a first evaluation. Without it this panel invited a merchant with a finished
+ * run and nothing published into an evaluation the server refuses, which is the console
+ * contradicting the rule rather than reporting it.
+ */
+function RepresentationPanel({
+  state,
+  measured,
+}: {
+  state: RepresentationState;
+  measured: boolean;
+}) {
   if (state.source_snapshot_id === null && state.compiled_representation_id === null) {
     return (
       <Panel>
@@ -345,7 +362,9 @@ function RepresentationPanel({ state }: { state: RepresentationState }) {
           to measure this one.
         </p>
       )}
-      {state.source_snapshot_id !== null && state.compiled_representation_id === null ? (
+      {!measured &&
+      state.source_snapshot_id !== null &&
+      state.compiled_representation_id === null ? (
         <p className={styles.finePrintTight}>
           Nothing is compiled yet. An evaluation can still measure your merchant as it is now.{" "}
           <Link className={styles.textLink} href="/evaluations">

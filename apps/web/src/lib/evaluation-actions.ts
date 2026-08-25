@@ -42,7 +42,7 @@ const REFUSALS: Record<string, string> = {
   representation_superseded:
     "A newer agent-ready representation has been published since this page loaded. Reload to evaluate the current one.",
   preflight_superseded:
-    "What this re-evaluation would run has changed since this page loaded. Reload to see what would be evaluated now.",
+    "What this evaluation would run has changed since this page loaded. Reload to see what would be evaluated now.",
   evaluation_already_pending:
     "An evaluation is already queued or running for your merchant. Wait for it to finish before starting another.",
   evaluation_request_key_reused:
@@ -59,7 +59,7 @@ const REFUSALS: Record<string, string> = {
     "No benchmark suite is published for your merchant, so there is nothing to run.",
   benchmark_world_unregistered:
     "Your merchant has no registered benchmark world, so a run has no catalog to be put back to.",
-  not_found: "This representation is no longer available. Reload to see the current one.",
+  not_found: "What this evaluation named is no longer available. Reload to see the current state.",
   unauthenticated: "Your session has expired. Sign in again to request an evaluation.",
 };
 
