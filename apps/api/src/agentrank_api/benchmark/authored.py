@@ -245,7 +245,7 @@ def _variant(path: Path, payload: Any) -> SeedVariant:
         raise AuthoredDefinitionError(path, "variant attributes must be an object")
     return SeedVariant(
         sku=_text(path, document, "sku"),
-        label=_text(path, document, "label"),
+        label=_optional_text(path, document, "label"),
         price_amount_minor=_integer(path, document, "price_amount_minor"),
         currency=_text(path, document, "currency"),
         inventory_quantity=_integer(path, document, "inventory_quantity"),

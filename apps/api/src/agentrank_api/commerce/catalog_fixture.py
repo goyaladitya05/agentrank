@@ -21,8 +21,12 @@ from agentrank_api.commerce.repository import CatalogRepository, MerchantReposit
 
 @dataclass(frozen=True, slots=True)
 class SeedVariant:
+    # `label` is optional because a real merchant catalog has variants nobody named. The column
+    # behind it has always been nullable, and this type being narrower than the thing it
+    # describes meant an evaluation catalog projected from merchant evidence would have had to
+    # invent a label for a variant the merchant left blank.
     sku: str
-    label: str
+    label: str | None
     price_amount_minor: int
     currency: str
     inventory_quantity: int
