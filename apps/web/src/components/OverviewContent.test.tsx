@@ -81,9 +81,26 @@ describe("<OverviewContent> product behavior", () => {
         data.simulated_demand_totals_by_currency = [];
       }),
     );
-    expect(html).toContain("No completed benchmark yet");
+    expect(html).toContain("No evaluations have run yet");
     expect(html).toContain("No findings");
     expect(html).toContain("No runs yet");
+  });
+
+  it("offers a merchant with nothing measured the one action that changes that", () => {
+    const html = render(
+      overviewWith((data) => {
+        data.top_findings = [];
+        data.top_findings_run_id = null;
+        data.runs = [];
+        data.simulated_demand_totals_by_currency = [];
+      }),
+    );
+    expect(html).toContain('href="/evaluations"');
+    expect(html).toContain("Run your first evaluation");
+    // No operator instruction where a merchant now has a button, and no invented numbers in
+    // place of the measurement nobody has taken.
+    expect(html).not.toContain("benchmark command line");
+    expect(html).not.toContain("0%");
   });
 
   it("labels simulated demand as simulated and never implies actual revenue", () => {

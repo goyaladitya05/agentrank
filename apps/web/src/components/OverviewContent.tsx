@@ -53,9 +53,13 @@ export function OverviewContent({ data }: { data: MerchantOverview }) {
         {latestFinishedRun === null ? (
           <Panel>
             <EmptyState
-              title="No completed benchmark yet"
-              explanation="When a benchmark run finishes against your merchant, its health and findings appear here."
-            />
+              title="No evaluations have run yet"
+              explanation="AgentRank has not measured this merchant, so there is nothing here to act on. An evaluation runs the benchmark suite against your merchant and produces its findings."
+            >
+              <Link className={styles.textLink} href="/evaluations">
+                See what would be evaluated
+              </Link>
+            </EmptyState>
           </Panel>
         ) : (
           <Panel>
@@ -215,8 +219,12 @@ function RecentRuns({ runs }: { runs: readonly RunSummary[] }) {
       <Panel>
         <EmptyState
           title="No runs yet"
-          explanation="Your operator can start a benchmark run with the benchmark command line."
-        />
+          explanation="Every benchmark run against your merchant appears here once one has been started."
+        >
+          <Link className={styles.textLink} href="/evaluations">
+            Run your first evaluation
+          </Link>
+        </EmptyState>
       </Panel>
     );
   }
@@ -288,7 +296,11 @@ function RepresentationPanel({ state }: { state: RepresentationState }) {
         <EmptyState
           title="No compiler representation"
           explanation="Once your merchant source is snapshotted and compiled into an agent-ready representation, its identities appear here."
-        />
+        >
+          <Link className={styles.textLink} href="/sources/new">
+            Add your merchant source
+          </Link>
+        </EmptyState>
       </Panel>
     );
   }
@@ -333,6 +345,15 @@ function RepresentationPanel({ state }: { state: RepresentationState }) {
           to measure this one.
         </p>
       )}
+      {state.source_snapshot_id !== null && state.compiled_representation_id === null ? (
+        <p className={styles.finePrintTight}>
+          Nothing is compiled yet. An evaluation can still measure your merchant as it is now.{" "}
+          <Link className={styles.textLink} href="/evaluations">
+            See what would be evaluated
+          </Link>
+          .
+        </p>
+      ) : null}
       <TechnicalDetails summary="Artifact identifiers">
         <IdRow label="Source snapshot id" value={state.source_snapshot_id} />
         <IdRow label="Compiled representation id" value={state.compiled_representation_id} />

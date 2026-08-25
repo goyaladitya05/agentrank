@@ -36,8 +36,12 @@ function RunsTable({ runs }: { runs: readonly import("@/lib/insights/types").Run
       <div className={styles.panel}>
         <EmptyState
           title="No benchmark runs yet"
-          explanation="When your operator runs a benchmark against this merchant, every run appears here with its outcomes and designation."
-        />
+          explanation="Every run appears here with its outcomes and designation once one has been executed. Your first evaluation is what produces one."
+        >
+          <Link className={styles.textLink} href="/evaluations">
+            Run your first evaluation
+          </Link>
+        </EmptyState>
       </div>
     );
   }

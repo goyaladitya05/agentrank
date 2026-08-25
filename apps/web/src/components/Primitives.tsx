@@ -55,11 +55,21 @@ export function Panel({ children }: { children: ReactNode }) {
   );
 }
 
-export function EmptyState({ title, explanation }: { title: string; explanation: string }) {
+export function EmptyState({
+  title,
+  explanation,
+  children,
+}: {
+  title: string;
+  explanation: string;
+  /** What a merchant can do about the emptiness, when there is something they can do. */
+  children?: ReactNode;
+}) {
   return (
     <div className={styles.emptyState}>
       <p className={styles.emptyTitle}>{title}</p>
       <p>{explanation}</p>
+      {children === undefined ? null : <p className={styles.finePrintTight}>{children}</p>}
     </div>
   );
 }
