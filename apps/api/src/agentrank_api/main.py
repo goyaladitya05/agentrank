@@ -42,6 +42,7 @@ from agentrank_api.routes import (
     razorpay,
     sources,
     system,
+    workspaces,
 )
 from agentrank_api.schema import EXPECTED_REVISION
 
@@ -279,6 +280,10 @@ def create_app(
     app.include_router(sources.router)
     if benchmark_commands:
         app.include_router(evaluations.router)
+        # Beside the evaluation command and gated by the same flag. Building an evaluation setup
+        # publishes the benchmark suite a run is marked against, so a buyer holding a credential
+        # for the loopback commerce endpoint must have no route to it.
+        app.include_router(workspaces.router)
     # In front of routing rather than in a dependency, because FastAPI reads and parses a request
     # body before it solves dependencies: by the time a schema or a route could look at it, the
     # bytes have been received and the parser has already recursed through them. A merchant source

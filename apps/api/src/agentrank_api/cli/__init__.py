@@ -54,6 +54,9 @@ uv run python -m agentrank_api.cli compiler run --merchant-slug voltedge --sourc
 uv run python -m agentrank_api.cli compiler show --merchant-slug voltedge <run-id>
 uv run python -m agentrank_api.cli compiler review --merchant-slug voltedge <candidate-id> accept
 uv run python -m agentrank_api.cli compiler publish --merchant-slug voltedge <run-id>
+uv run python -m agentrank_api.cli workspace show --merchant-slug voltedge
+uv run python -m agentrank_api.cli workspace bootstrap --merchant-slug voltedge
+uv run python -m agentrank_api.cli workspace history --merchant-slug voltedge
 ```
 
 Exit codes are meant to be acted on by a script as well as read by a person:
@@ -91,7 +94,14 @@ from collections.abc import Sequence
 from typing import TextIO
 
 from agentrank_api.benchmark.authored import AuthoredDefinitionError
-from agentrank_api.cli import benchmark, compiler, credentials, payments, representation
+from agentrank_api.cli import (
+    benchmark,
+    compiler,
+    credentials,
+    payments,
+    representation,
+    workspace,
+)
 from agentrank_api.cli.command import Command
 from agentrank_api.cli.exits import ExitCode
 from agentrank_api.config import Settings, get_settings
@@ -131,6 +141,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     compiler.add_commands(
         groups.add_parser("compiler", help="merchant compiler and review workflow")
+    )
+    workspace.add_commands(
+        groups.add_parser("workspace", help="merchant evaluation setup, built from source")
     )
     return parser
 

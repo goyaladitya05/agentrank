@@ -369,6 +369,16 @@ class MerchantEvaluationWorkspaceService:
             )
         return existing
 
+    async def current_source_snapshot_id(self, merchant_id: uuid.UUID) -> uuid.UUID | None:
+        """Which snapshot a bootstrap would read, without loading the document in it.
+
+        An operator naming only a merchant slug needs this to call `bootstrap`, which takes the
+        snapshot the caller was shown rather than selecting one itself. The service checks it
+        again under its own lock, so reading it here is a convenience and never the authority.
+        """
+        identity = await self._sources.current_identity(merchant_id)
+        return None if identity is None else identity.snapshot_id
+
     async def current_summary(self, merchant_id: uuid.UUID) -> WorkspaceSummary | None:
         """The merchant's current workspace as counts and identities, or None."""
         current = await self._workspaces.current(merchant_id)

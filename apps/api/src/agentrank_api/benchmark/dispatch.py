@@ -47,13 +47,12 @@ nothing about it changes because the launch was a merchant's first.
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.auth.service import MerchantCredentialService
 from agentrank_api.auth.tokens import TokenMarker
-from agentrank_api.benchmark.authored import AuthoredWorld
 from agentrank_api.benchmark.authorization import provision
 from agentrank_api.benchmark.buyer import MerchantBuyerSurface
 from agentrank_api.benchmark.discovery import buyer_discovery_view, to_payload
@@ -69,6 +68,7 @@ from agentrank_api.benchmark.evaluation_launch import (
     EvaluationPurpose,
 )
 from agentrank_api.benchmark.execution import BenchmarkRunCapability, ExecutorIdentity
+from agentrank_api.benchmark.fixtures import BenchmarkFixture
 from agentrank_api.benchmark.isolation import (
     IsolatedMissionExecutor,
     provider_worker_environment,
@@ -117,6 +117,28 @@ RUN_ALREADY_ACTIVE = "run_already_active"
 UNSERVICEABLE = "UNSERVICEABLE"
 
 
+class BenchmarkWorld(Protocol):
+    """The two things a dispatch needs to know about a world, and deliberately not a third.
+
+    Which merchant it is, and the catalog a run puts them back to before every mission. The
+    workload is not here: a dispatch reads the suite from the launch it claimed and the runner
+    reads missions from rows, so a world carrying one would be handing an oracle to a caller
+    with no use for it.
+
+    A protocol rather than a class, because there are now two kinds of world and neither is the
+    other's special case. `AuthoredWorld` is an operator's two JSON documents on disk; a
+    workspace world is the catalog a merchant's own frozen evidence generated, read back out of
+    the row that stored it. Everything downstream is identical, which is the point: there is one
+    benchmark execution path and this phase did not add a second.
+    """
+
+    @property
+    def merchant_slug(self) -> str: ...
+
+    @property
+    def fixture(self) -> BenchmarkFixture: ...
+
+
 @dataclass(frozen=True, slots=True)
 class DispatchOutcome:
     """What one dispatch did, for an operator reading the command's output."""
@@ -160,7 +182,7 @@ async def execute_next_launch(
     session: AsyncSession,
     sessions: async_sessionmaker[AsyncSession],
     *,
-    world: AuthoredWorld,
+    world: BenchmarkWorld,
     provider: PaymentProvider,
     settings: Settings,
 ) -> DispatchOutcome | None:
@@ -461,7 +483,7 @@ async def _execute(
     merchant_id: uuid.UUID,
     plan: _Plan,
     measured: tuple[CommerceRepresentation | None, MerchantSourceSnapshot | None],
-    world: AuthoredWorld,
+    world: BenchmarkWorld,
     provider: PaymentProvider,
     settings: Settings,
 ) -> BenchmarkRun:
@@ -475,9 +497,10 @@ async def _execute(
     launch naming the run an operator has to close rather than a launch nobody can connect to
     anything.
 
-    The suite comes from the launch and the catalog fixture comes from the operator files, which
-    is the same split every other execution path uses: the workload is immutable persisted rows,
-    and the world a run puts the merchant back to is trusted operator side input.
+    The suite comes from the launch and the catalog fixture comes from the world this process
+    holds, which is the same split every other execution path uses: the workload is immutable
+    persisted rows, and the world a run puts the merchant back to is trusted operator side
+    input, whether it was authored as files or generated from the merchant's own evidence.
     """
     runs = BenchmarkRunService(session)
     worker = EvaluationLaunchWorkerService(session)

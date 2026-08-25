@@ -88,6 +88,8 @@ from agentrank_api.errors import ConflictError, NotFoundError
 from agentrank_api.representation.definitions import RepresentationProducer
 from agentrank_api.representation.intake import MerchantSourceIntakeService, SourceIdentity
 from agentrank_api.representation.models import CommerceRepresentation, MerchantSourceSnapshot
+from agentrank_api.workspace.models import MerchantEvaluationWorkspace
+from agentrank_api.workspace.repository import MerchantEvaluationWorkspaceRepository
 
 RESOURCE = "benchmark_evaluation_launch"
 
@@ -354,6 +356,7 @@ class MerchantEvaluationLaunchService:
         self._runs = BenchmarkRunRepository(session)
         self._environments = BenchmarkEnvironmentService(session)
         self._sources = MerchantSourceIntakeService(session)
+        self._workspaces = MerchantEvaluationWorkspaceRepository(session)
 
     async def plan(self, merchant_id: uuid.UUID) -> EvaluationPlan:
         """What a launch would evaluate now, and what stops it if anything does.
@@ -374,8 +377,11 @@ class MerchantEvaluationLaunchService:
         blockers: list[LaunchBlocker] = []
 
         representation = await self._current_representation(merchant_id)
-        suite = await self._current_suite(merchant_id)
-        environment = await self._current_environment(merchant_id)
+        # Read once and passed to both, so the world and the workload a preflight names are
+        # provably the pair one workspace published rather than two independently newest rows.
+        workspace = await self._workspaces.current(merchant_id)
+        suite = await self._current_suite(merchant_id, workspace)
+        environment = await self._current_environment(merchant_id, workspace)
         pending = await self._pending(merchant_id)
         active = await self._runs.active_run_id(merchant_id=merchant_id)
         purpose = await self._purpose(merchant_id, representation)
@@ -416,8 +422,8 @@ class MerchantEvaluationLaunchService:
             blockers.append(
                 LaunchBlocker(
                     "benchmark_suite_unavailable",
-                    "No benchmark suite is published for this merchant, so there is nothing to"
-                    " run. Your operator publishes one from the benchmark command line.",
+                    "AgentRank has no benchmark missions for this merchant yet, so there is"
+                    " nothing to run. Prepare your evaluation setup first.",
                 )
             )
 
@@ -425,9 +431,8 @@ class MerchantEvaluationLaunchService:
             blockers.append(
                 LaunchBlocker(
                     "benchmark_world_unregistered",
-                    "This merchant has no registered benchmark world, so a run has no catalog to"
-                    " be put back to. Your operator registers one from the benchmark command"
-                    " line.",
+                    "AgentRank has no evaluation catalog for this merchant, so a run has nothing"
+                    " to be executed against. Prepare your evaluation setup first.",
                 )
             )
 
@@ -930,14 +935,24 @@ class MerchantEvaluationLaunchService:
             )
         ).scalar_one_or_none()
 
-    async def _current_suite(self, merchant_id: uuid.UUID) -> BenchmarkSuite | None:
-        """The most recently published suite authored against this merchant.
+    async def _current_suite(
+        self, merchant_id: uuid.UUID, workspace: MerchantEvaluationWorkspace | None
+    ) -> BenchmarkSuite | None:
+        """Which workload this merchant would be measured on.
 
-        Suites are global immutable templates and a merchant does not own one, so there is no
-        field saying which is theirs. The rule is stated rather than inferred: newest published
-        suite whose authored merchant slug is this merchant's, and the preflight names it so the
-        merchant reads which workload they are about to spend on.
+        Two answers and the first one is a fact rather than a convention. A merchant whose
+        evaluation workspace was generated from their own source snapshot has a row naming the
+        suite that workspace published, so which workload is theirs is proved by a foreign key.
+
+        Without one, the rule is the one that existed before workspaces did: the newest published
+        suite whose authored merchant slug is this merchant's. Suites are global immutable
+        templates and a merchant does not own one, so for a world an operator authored from files
+        there is no field saying which suite is theirs and this is the best statement available.
+        It is kept rather than replaced, because an authored world is still a supported way to
+        measure a merchant.
         """
+        if workspace is not None:
+            return await self._suites.get_by_id(workspace.suite_id)
         merchant = await self._merchant(merchant_id)
         row = (
             await self._session.execute(
@@ -949,7 +964,12 @@ class MerchantEvaluationLaunchService:
         ).scalar_one_or_none()
         return None if row is None else await self._suites.get_by_id(row)
 
-    async def _current_environment(self, merchant_id: uuid.UUID) -> BenchmarkEnvironment | None:
+    async def _current_environment(
+        self, merchant_id: uuid.UUID, workspace: MerchantEvaluationWorkspace | None
+    ) -> BenchmarkEnvironment | None:
+        """Which world this merchant would be measured against, by the same two rules."""
+        if workspace is not None:
+            return await self._session.get(BenchmarkEnvironment, workspace.environment_id)
         return (
             await self._session.execute(
                 select(BenchmarkEnvironment)

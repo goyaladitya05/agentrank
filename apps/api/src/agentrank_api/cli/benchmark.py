@@ -62,7 +62,11 @@ from agentrank_api.benchmark.authored import AuthoredWorld, publish_world, read_
 from agentrank_api.benchmark.authorization import provision
 from agentrank_api.benchmark.buyer import MerchantBuyerSurface
 from agentrank_api.benchmark.discovery import buyer_discovery_view, to_payload
-from agentrank_api.benchmark.dispatch import UNSERVICEABLE, execute_next_launch
+from agentrank_api.benchmark.dispatch import (
+    UNSERVICEABLE,
+    BenchmarkWorld,
+    execute_next_launch,
+)
 from agentrank_api.benchmark.endpoint import (
     LocalCommerceEndpoint,
     RequestLedger,
@@ -106,6 +110,8 @@ from agentrank_api.commerce.repository import MerchantRepository
 from agentrank_api.config import Settings
 from agentrank_api.errors import NotFoundError
 from agentrank_api.payments.provider import PaymentProvider
+from agentrank_api.workspace.repository import MerchantEvaluationWorkspaceRepository
+from agentrank_api.workspace.world import workspace_world
 
 # Where the authored world lives, relative to the working directory. A path rather than an
 # import, because an imported oracle is one a buyer process can import too.
@@ -201,6 +207,7 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
         ),
     )
     detail.add_argument("run_id", type=uuid.UUID, help="the benchmark run identifier")
+    _add_merchant(detail)
     _add_world(detail)
     _add_json(detail)
     detail.set_defaults(command=show)
@@ -216,6 +223,7 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
         ),
     )
     closing.add_argument("run_id", type=uuid.UUID, help="the benchmark run identifier")
+    _add_merchant(closing)
     _add_world(closing)
     _add_json(closing)
     closing.set_defaults(command=abort)
@@ -270,6 +278,15 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
         ),
     )
     _add_world(dispatching)
+    dispatching.add_argument(
+        "--merchant-slug",
+        default=None,
+        help=(
+            "execute the world this merchant's own evaluation setup generated, instead of the"
+            " authored world at --world. A merchant bootstrapped from their source snapshot has"
+            " no authored files, and their world is read from the database"
+        ),
+    )
     _add_json(dispatching)
     dispatching.set_defaults(command=dispatch)
 
@@ -316,6 +333,7 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
         ),
     )
     settling.add_argument("run_id", type=uuid.UUID, help="the benchmark run identifier")
+    _add_merchant(settling)
     _add_world(settling)
     _add_json(settling)
     settling.set_defaults(command=settle)
@@ -331,9 +349,25 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
         ),
     )
     diagnosing.add_argument("run_id", type=uuid.UUID, help="the benchmark run identifier")
+    _add_merchant(diagnosing)
     _add_world(diagnosing)
     _add_json(diagnosing)
     diagnosing.set_defaults(command=diagnose)
+
+
+def _add_merchant(parser: argparse.ArgumentParser) -> None:
+    """Name the merchant directly, for a world that has no authored files behind it.
+
+    Every one of these commands resolves a merchant so that a run identifier is worth nothing to
+    anybody who is not its owner, and until now the only way to name one was the authored world
+    at `--world`. A merchant whose evaluation setup was generated from their own source snapshot
+    has no such files, so their runs were unreadable from here.
+    """
+    parser.add_argument(
+        "--merchant-slug",
+        default=None,
+        help="the merchant this command is about, instead of the one --world describes",
+    )
 
 
 def _add_world(parser: argparse.ArgumentParser) -> None:
@@ -435,7 +469,7 @@ async def run(
     rather than the ledger itself.
     """
     world = read_world(arguments.world)
-    merchant_id = await _benchmark_merchant(session, world)
+    merchant_id = await _merchant_by_slug(session, world.merchant_slug)
     service = BenchmarkRunService(session)
     if arguments.executor == "llm":
         if not arguments.isolated:
@@ -588,7 +622,7 @@ async def dispatch(
     reporting UNSERVICEABLE is a deployment nobody has configured to run what its merchants are
     asking for, and an operator loop that read that as "nothing to do" would never find out.
     """
-    world = read_world(arguments.world)
+    world = await _dispatch_world(session, arguments)
     # What this process can run, stated before it tries. An operator whose launches are not
     # moving reads this line first: a worker that lists only the reference executor is a worker
     # with no provider credential, which is configuration rather than failure.
@@ -631,6 +665,30 @@ async def dispatch(
     if outcome.failure_code is not None or outcome.status == UNSERVICEABLE:
         return ExitCode.REFUSED
     return ExitCode.OK
+
+
+async def _dispatch_world(session: AsyncSession, arguments: argparse.Namespace) -> BenchmarkWorld:
+    """Which world this dispatch holds, from files or from the merchant's own evaluation setup.
+
+    Two sources and one execution path. An authored world is two JSON documents an operator
+    wrote; a generated world is the catalog a merchant's frozen source snapshot produced, read
+    back out of the workspace row that stored it and verified against the digest recorded there.
+    Everything after this line is identical, which is the point: this phase did not add a second
+    way to run a benchmark.
+
+    `--merchant-slug` wins when it is given, and a merchant with no workspace is a refusal rather
+    than a silent fall back to whatever `--world` defaults to. Falling back would point a worker
+    at the VoltEdge world while the operator believed they had named a real merchant.
+    """
+    if arguments.merchant_slug is None:
+        return read_world(arguments.world)
+    merchant = await MerchantRepository(session).get_by_slug(arguments.merchant_slug)
+    if merchant is None:
+        raise NotFoundError("merchant", arguments.merchant_slug)
+    current = await MerchantEvaluationWorkspaceRepository(session).current(merchant.id)
+    if current is None:
+        raise NotFoundError("merchant_evaluation_workspace", arguments.merchant_slug)
+    return workspace_world(current)
 
 
 async def queue(
@@ -759,7 +817,7 @@ async def settle(
     running.
     """
     del sessions, provider, settings
-    merchant_id = await _benchmark_merchant(session, read_world(arguments.world))
+    merchant_id = await _benchmark_merchant(session, arguments)
     run = await BenchmarkRunService(session).load(arguments.run_id, merchant_id=merchant_id)
     if not run.is_terminal:
         print(
@@ -800,7 +858,7 @@ async def compare_create(
     """Persist all paired sample identities before any live model call is possible."""
     del sessions, provider, settings
     world = read_world(arguments.world)
-    merchant_id = await _benchmark_merchant(session, world)
+    merchant_id = await _merchant_by_slug(session, world.merchant_slug)
     suite = await BenchmarkSuiteRepository(session).get(world.suite.key, world.suite.version)
     if suite is None:
         raise NotFoundError("benchmark_suite", world.suite.label)
@@ -874,7 +932,7 @@ async def compare_run(
 ) -> int:
     """Execute exactly one next sample, preserving the persisted alternating order."""
     world = read_world(arguments.world)
-    merchant_id = await _benchmark_merchant(session, world)
+    merchant_id = await _merchant_by_slug(session, world.merchant_slug)
     experiments = CompilerImpactExperimentService(session)
     treatment = await experiments.next_treatment(merchant_id, arguments.experiment_id)
     environment = await BenchmarkEnvironmentService(session).require_registered(world.fixture)
@@ -962,7 +1020,7 @@ async def compare_show(
     """Report every persisted sample without merging away stochastic executions."""
     del sessions, provider, settings
     world = read_world(arguments.world)
-    merchant_id = await _benchmark_merchant(session, world)
+    merchant_id = await _merchant_by_slug(session, world.merchant_slug)
     experiments = CompilerImpactExperimentService(session)
     experiment = await experiments.get(merchant_id, arguments.experiment_id)
     samples = await experiments.samples(merchant_id, experiment.id)
@@ -1087,7 +1145,7 @@ async def diagnose(
     )
     from agentrank_api.diagnostics.service import DiagnosticsService
 
-    merchant_id = await _benchmark_merchant(session, read_world(arguments.world))
+    merchant_id = await _benchmark_merchant(session, arguments)
     diagnostics = await DiagnosticsService(session).run_diagnostics(
         arguments.run_id, merchant_id=merchant_id
     )
@@ -1343,7 +1401,7 @@ async def show(
     """One run, its pins, its metrics and every mission outcome."""
     del sessions, provider, settings
     service = BenchmarkRunService(session)
-    merchant_id = await _benchmark_merchant(session, read_world(arguments.world))
+    merchant_id = await _benchmark_merchant(session, arguments)
     return await _report(service, arguments.run_id, merchant_id, arguments, out)
 
 
@@ -1363,7 +1421,7 @@ async def abort(
     """
     del sessions, provider, settings
     service = BenchmarkRunService(session)
-    merchant_id = await _benchmark_merchant(session, read_world(arguments.world))
+    merchant_id = await _benchmark_merchant(session, arguments)
     before = await service.load(arguments.run_id, merchant_id=merchant_id)
     unfinished = [result for result in before.mission_runs if not result.is_terminal]
     closed = await service.abort_run(arguments.run_id, merchant_id=merchant_id)
@@ -1406,18 +1464,31 @@ async def abort(
     return ExitCode.OK
 
 
-async def _benchmark_merchant(session: AsyncSession, world: AuthoredWorld) -> uuid.UUID:
-    """The merchant these commands are about, which is the one the world describes.
+async def _benchmark_merchant(session: AsyncSession, arguments: argparse.Namespace) -> uuid.UUID:
+    """The merchant these commands are about, named directly or read off an authored world.
 
     Every read on the run service takes a merchant and puts it in the query, which is the rule
     that makes a run identifier worth nothing to anybody who is not its merchant. An operator
     command line is not a merchant and holds no credential, so it resolves one the only honest
-    way available: from the benchmark world these commands are for. A run belonging to anybody
-    else is not found here, exactly as it would not be over HTTP.
+    way available. A run belonging to anybody else is not found here, exactly as it would not be
+    over HTTP.
+
+    Two ways to say which merchant, and the direct one exists because a merchant whose evaluation
+    setup was generated from their own source snapshot has no authored world to read a slug out
+    of. `--merchant-slug` wins where a command offers it; otherwise the slug is the one the
+    authored world at `--world` describes, which is what every one of these commands did before
+    a world could be generated.
     """
-    merchant = await MerchantRepository(session).get_by_slug(world.merchant_slug)
+    named = getattr(arguments, "merchant_slug", None)
+    slug = named if named is not None else read_world(arguments.world).merchant_slug
+    return await _merchant_by_slug(session, slug)
+
+
+async def _merchant_by_slug(session: AsyncSession, slug: str) -> uuid.UUID:
+    """One merchant by the name a command resolved, raising rather than returning None."""
+    merchant = await MerchantRepository(session).get_by_slug(slug)
     if merchant is None:
-        raise NotFoundError("merchant", world.merchant_slug)
+        raise NotFoundError("merchant", slug)
     return merchant.id
 
 
