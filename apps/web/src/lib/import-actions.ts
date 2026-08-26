@@ -23,7 +23,7 @@
 
 import { revalidatePath } from "next/cache";
 
-import { requireConsoleCredential } from "@/lib/auth/credential";
+import { consoleCredential, requireConsoleCredential } from "@/lib/auth/credential";
 import { apiBaseUrl } from "@/lib/config";
 import { decodeImportConfirmation, decodeSourceImport } from "@/lib/import";
 import type { ConfirmState, ConfirmValues, ImportState, ImportValues } from "@/lib/import-mutation";
@@ -115,6 +115,15 @@ export async function runImport(
   if (pages.length > MAX_PAGES) {
     return failed(
       `An import may name at most ${String(MAX_PAGES)} pages. This one names ${String(pages.length)}.`,
+      values,
+    );
+  }
+
+  // A lapsed cookie is answered here rather than by a redirect, for the reason the source editor
+  // gives: a redirect is a full navigation and would take the merchant's typed URLs with it.
+  if ((await consoleCredential()) === null) {
+    return failed(
+      "Your session has expired. Sign in again in another tab, then submit this form again: the pages you typed are still here.",
       values,
     );
   }

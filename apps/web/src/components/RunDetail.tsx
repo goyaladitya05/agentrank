@@ -7,7 +7,7 @@ import { EmptyState, KeyValueList, Panel, Section, StatusMark } from "@/componen
 import styles from "@/components/console.module.css";
 import { IdRow, TechnicalDetails } from "@/components/TechnicalDetails";
 import { formatCount, formatMoney, formatRate, formatTimestamp } from "@/lib/format";
-import { designationLabel, ownerLabel, statusLabel } from "@/lib/labels";
+import { demandBucketLabel, designationLabel, ownerLabel, statusLabel } from "@/lib/labels";
 import { primaryDiagnosisText, ownerOfPrimary, providerFaultMark } from "@/lib/insights/diagnosis";
 import { safetyReading } from "@/lib/insights/summary";
 import type { MissionDiagnosis, RunDiagnostics } from "@/lib/insights/types";
@@ -304,7 +304,7 @@ function MissionsTable({
     );
   }
   return (
-    <div className={styles.tableScroll}>
+    <div className={styles.tableScroll} tabIndex={0} aria-label="Missions in this run">
       <table className={styles.table}>
         <caption className={styles.cellMuted} style={{ textAlign: "left", padding: "0 12px 6px" }}>
           {`${missions.length} of ${total} mission(s)`}
@@ -362,9 +362,10 @@ function MissionsTable({
                     : mission.simulated_demand
                         .map(
                           (effect) =>
-                            `${formatMoney(effect.simulated_amount_minor, effect.currency)} ${
-                              effect.bucket
-                            }`,
+                            `${demandBucketLabel(effect.bucket)}: ${formatMoney(
+                              effect.simulated_amount_minor,
+                              effect.currency,
+                            )}`,
                         )
                         .join(" · ")}
                 </td>

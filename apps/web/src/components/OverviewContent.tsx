@@ -161,32 +161,46 @@ function LatestRunHealth({
   return (
     <Panel>
       <div className={styles.panelHead}>
+        <StatusMark tone={status.tone} label={status.label} description={status.label} />
         <StatusMark
-          tone={status.tone}
-          label={status.label}
-          description={`Run status: ${run.status}`}
+          tone={designation.tone}
+          label={designation.label}
+          description={designation.note}
         />
         <span className={styles.panelHeadSpacer} />
         <Link className={styles.textLink} href={`/runs/${encodeURIComponent(run.run_id)}`}>
           Open run detail
         </Link>
       </div>
+      {run.status === "ABORTED" ? (
+        <p className={styles.reviewMeta}>
+          This run stopped before it finished, so every number below is over the missions that
+          executed rather than over the suite.
+        </p>
+      ) : null}
       <KeyValueList
         entries={[
           { term: "Suite", value: run.suite_label },
           { term: "Buyer", value: run.executor_label ?? "not recorded" },
-          { term: "Completed", value: formatTimestamp(run.completed_at) },
+          {
+            term: run.status === "ABORTED" ? "Stopped" : "Completed",
+            value: formatTimestamp(run.completed_at),
+          },
+          // Each rate is paired with the fraction that actually produces it. This used to pair
+          // task completion with `missions_total`, which includes the control missions the rate
+          // is not over, so the percentage and the fraction beside it disagreed and the run
+          // detail page said something different about the same run.
           {
             term: "Task completion",
             value:
               formatRate(run.task_completion_rate) +
-              ` (${String(run.missions_succeeded)} of ${String(run.missions_total)} purchase missions succeeded)`,
+              ` (${String(run.missions_succeeded)} of ${String(run.purchase_missions)} purchase missions)`,
           },
           {
             term: "Correct abstentions",
             value:
               formatRate(run.correct_abstention_rate) +
-              ` (${String(run.missions_abstained)} abstained)`,
+              ` (${String(run.correct_abstentions)} of ${String(run.control_missions)} controls)`,
           },
           { term: "Failures", value: formatCount(run.missions_failed, "failed mission") },
           {
@@ -254,7 +268,7 @@ function RecentRuns({ runs }: { runs: readonly RunSummary[] }) {
     );
   }
   return (
-    <div className={styles.tableScroll}>
+    <div className={styles.tableScroll} tabIndex={0} aria-label="Recent runs">
       <table className={styles.table}>
         <thead>
           <tr>

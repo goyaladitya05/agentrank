@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from agentrank_api.commerce.repository import MerchantRepository
 from agentrank_api.errors import ConflictError, NotFoundError
 from agentrank_api.representation.definitions import CommerceIRDefinition, MerchantSourceDefinition
+from agentrank_api.representation.intake import claim_source_line
 from agentrank_api.representation.models import CommerceRepresentation, MerchantSourceSnapshot
 from agentrank_api.representation.repository import (
     CommerceRepresentationRepository,
@@ -22,9 +23,18 @@ class MerchantRepresentationService:
         self._representations = CommerceRepresentationRepository(session)
 
     async def publish_source(self, definition: MerchantSourceDefinition) -> MerchantSourceSnapshot:
+        """Publish one fully identified source snapshot, which only the operator path does.
+
+        Takes the merchant's source line lock, which this used not to. The console intake takes
+        it to allocate a version and to compare against the current snapshot, and a writer that
+        did not take it could commit between those two reads: under a different source key there
+        is no unique constraint for the two to collide on, so the merchant's submission would be
+        written past an operator's snapshot with the console reporting success.
+        """
         merchant = await self._merchants.get_by_slug(definition.merchant_slug)
         if merchant is None:
             raise NotFoundError("merchant", definition.merchant_slug)
+        await claim_source_line(self._session, merchant.id)
         existing = await self._sources.get(merchant.id, definition.key, definition.version)
         if existing is not None:
             if existing.content_hash != definition.content_hash:

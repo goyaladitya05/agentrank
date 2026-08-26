@@ -61,6 +61,13 @@ export function sessionCookieName(): string {
  * The prefixed one wins when both are present. A `__Host-` cookie is one no other host could have
  * set, so preferring it means an injected unprefixed cookie cannot displace a real session.
  */
+/**
+ * Every name a session cookie has ever been written under, most preferred first.
+ *
+ * Which of them this deployment will accept on the way in is `acceptedCookieNames`, which is
+ * narrower. This list is what a sign out clears, and it stays complete: clearing a name this
+ * process would not have read is free, and leaving one behind is not.
+ */
 export const SESSION_COOKIE_NAMES = [SECURE_SESSION_COOKIE, SESSION_COOKIE] as const;
 
 /** What the browser holds. Recognisable, and deliberately not what the API is told about. */
@@ -118,14 +125,28 @@ export interface CookieJar {
 }
 
 /**
- * The session cookie this request presented, under whichever name it arrived.
+ * Every cookie name this process will accept a session under, given what it can set.
  *
- * The `__Host-` prefixed name is preferred when both are present, and that preference is the
- * point rather than tidiness: a prefixed cookie is one no other host and no other path could have
- * set, so an injected unprefixed cookie cannot displace a real session by being read first.
+ * On a deployment that can use the prefix, the prefixed name is the only one. Reading the
+ * unprefixed one as well was a compatibility affordance for a browser that signed in before the
+ * deployment gained HTTPS, and it reopened the whole attack the prefix exists to close: a sibling
+ * subdomain, a browser extension or an XSS on any host under the registrable domain can set
+ * `ar_console_session=<attacker value>; Domain=.example.com; Path=/overview`, which sorts before
+ * the real cookie by path length and cannot be overwritten or cleared by anything writing
+ * `Path=/`. Preferring the prefixed name is not enough, because the victim's browser has no
+ * prefixed cookie once they have signed out.
+ *
+ * What the narrowing costs is that a merchant holding an unprefixed cookie when a deployment
+ * gains HTTPS signs in once more. What it buys is that a planted cookie cannot make them work
+ * inside somebody else's tenant.
  */
+export function acceptedCookieNames(): readonly string[] {
+  return cookiesAreSecure() ? [SECURE_SESSION_COOKIE] : SESSION_COOKIE_NAMES;
+}
+
+/** The session cookie this request presented, under a name this deployment accepts. */
 export function presentedCookie(jar: CookieJar): string | undefined {
-  for (const name of SESSION_COOKIE_NAMES) {
+  for (const name of acceptedCookieNames()) {
     const found = jar.get(name)?.value;
     if (found !== undefined && found.length > 0) {
       return found;

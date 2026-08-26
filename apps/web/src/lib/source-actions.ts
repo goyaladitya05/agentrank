@@ -28,7 +28,7 @@
 
 import { revalidatePath } from "next/cache";
 
-import { requireConsoleCredential } from "@/lib/auth/credential";
+import { consoleCredential, requireConsoleCredential } from "@/lib/auth/credential";
 import { apiBaseUrl } from "@/lib/config";
 import { decodeCompilerRun } from "@/lib/compiler";
 import { decodeSourceSubmission } from "@/lib/source";
@@ -116,6 +116,20 @@ export async function submitSource(
   if (size > MAX_DOCUMENT_BYTES) {
     return failed(
       `This document is ${String(size)} bytes. The limit is ${String(MAX_DOCUMENT_BYTES)}.`,
+      values,
+    );
+  }
+
+  // A lapsed cookie is answered here rather than by a redirect, and the document survives it.
+  // `requireConsoleCredential` redirects, which is a full navigation, and a merchant who pasted
+  // a source document and was interrupted for longer than a session lasts would arrive at the
+  // sign in page with what they wrote gone. This module promises above that a refusal never
+  // empties the editor; a redirect is the one path on which that was not true, and it is the
+  // likelier one. A cookie that is present but no longer accepted comes back from the API as an
+  // ordinary `unauthenticated` refusal, which already keeps the values.
+  if ((await consoleCredential()) === null) {
+    return failed(
+      "Your session has expired. Sign in again in another tab, then submit this form again: what you have written here is still here.",
       values,
     );
   }

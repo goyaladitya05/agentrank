@@ -160,7 +160,12 @@ async def index(
             .limit(MAX_LISTED)
         )
     ).all()
+    total = await session.scalar(select(func.count()).select_from(Merchant))
     payload: dict[str, Any] = {
+        # What exists, beside what is shown. "Which merchants exist" is a question this command
+        # is the only answer to, and at more than `MAX_LISTED` a capped list is a wrong answer
+        # that looks like a complete one.
+        "total": int(total or 0),
         "merchants": [
             {
                 "merchant_id": str(merchant.id),
@@ -169,7 +174,7 @@ async def index(
                 "open_credentials": int(open_count),
             }
             for merchant, open_count in rows
-        ]
+        ],
     }
     if arguments.as_json:
         write_json(out, payload)
@@ -184,5 +189,10 @@ async def index(
             f"  {entry['open_credentials']}",
             file=out,
         )
-    print(f"\n{len(payload['merchants'])} merchant(s)", file=out)
+    shown = len(payload["merchants"])
+    counted = payload["total"]
+    print(
+        f"\n{shown} merchant(s)" + ("" if shown == counted else f", showing {shown} of {counted}"),
+        file=out,
+    )
     return ExitCode.OK

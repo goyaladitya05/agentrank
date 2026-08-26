@@ -1054,10 +1054,24 @@ class MerchantEvaluationLaunchService:
         what a merchant asked for and then withdrew is still a thing that happened.
         """
         merchant = await self._merchant(merchant_id)
-        # The same lock a launch is admitted under, so a withdrawal and a dispatcher's claim are
-        # serialized rather than racing: the row is read again after it is held, and a launch a
-        # worker took in between is refused for executing rather than closed underneath the run.
+        # The same lock a launch is admitted under, so two withdrawals and a concurrent request
+        # serialize rather than racing.
+        #
+        # It does not serialize against a dispatcher, and cannot: the dispatcher releases its
+        # claim's row lock before it boots a loopback server, deliberately, because holding one
+        # across an application start would be an idle transaction bounded by a server rather
+        # than by a query. Between that release and `bind_run` the launch is queued and unlocked,
+        # which is exactly the window this method could settle it in.
+        #
+        # Two things close that rather than one. A merchant whose evaluation has reached the
+        # point of having a run is refused here, which is the part of the window where anything
+        # exists to protect. And the dispatcher treats a launch settled underneath it as an
+        # ordinary answer: it aborts the run it had just created, having executed no mission, and
+        # reports that the launch was settled elsewhere.
         await self._environments.claim(merchant.slug)
+        # Identity first, then state. A launch that is not this merchant's is an unknown one
+        # whatever else is true of the deployment, and checking anything before that would let a
+        # foreign identifier be answered with a conflict rather than a 404.
         launch = (
             await self._session.execute(
                 select(BenchmarkEvaluationLaunch)
@@ -1075,6 +1089,15 @@ class MerchantEvaluationLaunchService:
                 "launch_not_queued",
                 f"This evaluation is {launch.status.value.lower()} and only a queued one can be"
                 " withdrawn. An evaluation that has started is closed by your operator.",
+                resource=RESOURCE,
+                identifier=str(launch_id),
+            )
+        if await self._runs.active_run_id(merchant_id=merchant_id) is not None:
+            raise ConflictError(
+                "run_already_active",
+                "A benchmark run is executing against your world for this evaluation, so it is"
+                " no longer waiting and cannot be withdrawn. Your operator closes a run that has"
+                " started.",
                 resource=RESOURCE,
                 identifier=str(launch_id),
             )

@@ -89,8 +89,13 @@ def release_environment(settings: Settings, database: str) -> dict[str, str]:
 
     `ci` rather than `production` for one reason and it is written down above: the importer's
     address policy refuses loopback, and the variable that widens it is one `Settings` will not
-    read anywhere else. Every other variable is set here explicitly, so a developer's provider
-    key, Razorpay pair or database cannot reach the processes under test.
+    read anywhere else.
+
+    `ci` is also an environment that reads `.env`, which `production` is not, so every optional
+    variable is stated here rather than only the obvious ones. A developer's Razorpay pair or
+    connect timeout falling through to the file would make this a different deployment on their
+    machine than in CI, and "the same test every time it runs" is most of what this is for. An
+    empty string is how `Settings` spells "not configured" for each of them.
     """
     return {
         "PATH": os.environ.get("PATH", ""),
@@ -103,8 +108,11 @@ def release_environment(settings: Settings, database: str) -> dict[str, str]:
         "POSTGRES_DB": database,
         "POSTGRES_USER": settings.postgres_user,
         "POSTGRES_PASSWORD": settings.postgres_password.get_secret_value(),
+        "POSTGRES_CONNECT_TIMEOUT": str(settings.postgres_connect_timeout),
         "OPENAI_API_KEY": "",
         "GEMINI_API_KEY": "",
+        "RAZORPAY_KEY_ID": "",
+        "RAZORPAY_KEY_SECRET": "",
         "AGENTRANK_IMPORT_ALLOWED_NETWORKS": "127.0.0.0/8",
     }
 
@@ -373,9 +381,7 @@ def test_the_whole_merchant_product_runs_end_to_end_with_no_provider(
             )
             assert decided.status_code == 201, decided.text
 
-        published = client.post(
-            f"/api/v1/compiler/runs/{compiler_run}/publish", headers=headers
-        )
+        published = client.post(f"/api/v1/compiler/runs/{compiler_run}/publish", headers=headers)
         assert published.status_code == 200, published.text
         representation_id = published.json()["readiness"]["published_representation_id"]
         assert representation_id is not None
@@ -490,7 +496,8 @@ def test_no_model_provider_is_reachable_from_this_deployment(
             "-c",
             "from agentrank_api.config import build_settings; s = build_settings();"
             " import json; print(json.dumps({'openai': s.openai is not None,"
-            " 'gemini': s.gemini is not None, 'environment': s.environment}))",
+            " 'gemini': s.gemini is not None, 'razorpay': s.razorpay is not None,"
+            " 'environment': s.environment}))",
         ],
         cwd=REPOSITORY_ROOT,
         env=release_environment(settings, RELEASE_DATABASE),
@@ -503,6 +510,7 @@ def test_no_model_provider_is_reachable_from_this_deployment(
     assert json.loads(reported.stdout) == {
         "openai": False,
         "gemini": False,
+        "razorpay": False,
         "environment": "ci",
     }
     # The startup line names the one capability this deployment holds and no provider is in it.

@@ -188,9 +188,28 @@ describe("which cookie name a session is written under and read from", () => {
     expect(presentedCookie(jar)).toBe(genuine);
   });
 
-  it("still reads a session written under the plain name", () => {
+  it("refuses the plain name entirely on a deployment that can use the prefix", () => {
+    delete process.env[COOKIE_SECURE_VARIABLE];
+    // The attack the prefix exists to close. A sibling subdomain, an extension or an XSS on any
+    // host under the registrable domain can plant `ar_console_session=<value>; Path=/overview`,
+    // which sorts before the real cookie by path length and cannot be cleared by anything
+    // writing `Path=/`. Preferring the prefixed name is not enough, because a victim who has
+    // signed out has no prefixed cookie for it to be preferred over.
+    const planted = `${COOKIE_SCHEME}_${"c".repeat(64)}`;
+    const jar = {
+      get: (name: string) => (name === SESSION_COOKIE ? { value: planted } : undefined),
+    };
+
+    expect(presentedCookie(jar)).toBeUndefined();
+  });
+
+  it("reads the plain name on a deployment that cannot set Secure", () => {
+    // Local HTTP development, which is the one shape `AGENTRANK_COOKIE_SECURE=false` exists for
+    // and the one where a `__Host-` cookie cannot be written at all.
+    process.env[COOKIE_SECURE_VARIABLE] = "false";
     const value = `${COOKIE_SCHEME}_${"c".repeat(64)}`;
     const jar = { get: (name: string) => (name === SESSION_COOKIE ? { value } : undefined) };
+
     expect(presentedCookie(jar)).toBe(value);
   });
 

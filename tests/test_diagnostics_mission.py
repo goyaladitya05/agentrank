@@ -527,6 +527,49 @@ class TestMultipleFindings:
         assert stock.variant_ids == (VARIANT,)
 
 
+class TestStockOnAControlMission:
+    """The one rule that has to ask what the mission's ground truth was.
+
+    A stock abstention asks for one more unit than the shelf holds, so the correct answer is to
+    decline and the shelf refusing is the mission working. Reported as a merchant catalog defect,
+    that refusal became "restock the affected variant" in a panel a merchant reads as a trusted
+    fact about their own shop, for a shelf depth the mission was designed around. Where that depth
+    is a simulated one, because the merchant published a state and no count, it was AgentRank
+    telling a merchant to restock a number AgentRank chose.
+    """
+
+    def test_an_empty_shelf_on_a_control_is_not_a_catalog_defect(self) -> None:
+        diagnosis = diagnose_mission(
+            evidence(
+                expected_outcome=ExpectedOutcome.NO_ACCEPTABLE_PURCHASE,
+                failure_reasons=(FailureReason.INVENTORY_UNAVAILABLE,),
+                selection=SelectionFacts(variant_id=VARIANT, product_id=PRODUCT),
+            )
+        )
+
+        codes = [finding.code for finding in diagnosis.findings]
+        assert DiagnosticCode.STOCK_UNAVAILABLE not in codes
+        assert DiagnosticCode.SELECTION_VIOLATED_REQUIREMENTS in codes
+        buyer = next(
+            finding
+            for finding in diagnosis.findings
+            if finding.code is DiagnosticCode.SELECTION_VIOLATED_REQUIREMENTS
+        )
+        assert buyer.owner is DiagnosticOwner.BUYER_AGENT
+        assert "restock" not in (buyer.recommendation or "").lower()
+
+    def test_an_empty_shelf_where_a_purchase_was_available_still_is_one(self) -> None:
+        diagnosis = diagnose_mission(
+            evidence(
+                failure_reasons=(FailureReason.INVENTORY_UNAVAILABLE,),
+                selection=SelectionFacts(variant_id=VARIANT, product_id=PRODUCT),
+            )
+        )
+
+        codes = [finding.code for finding in diagnosis.findings]
+        assert DiagnosticCode.STOCK_UNAVAILABLE in codes
+
+
 class TestAdditionalRequiredCases:
     def test_agent_report_contradiction_is_a_buyer_finding(self) -> None:
         diagnosis = diagnose_mission(

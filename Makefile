@@ -123,11 +123,15 @@ db-verify: ## Confirm the local database is reachable and is PostgreSQL 18
 # run by an operator, on whatever schedule they choose. tests/test_backup_restore.py executes
 # both against a populated database, so the procedure is one that has been run rather than one
 # that has been written down.
+# `.env` is exported first, for the reason `make web` gives: these are shell scripts, and a shell
+# script does not read a dotenv file the way pydantic-settings does. Without it a developer whose
+# database password lives in `.env` gets an authentication failure from a backup command that
+# every other operator path would have run.
 db-backup: ## Dump the database. Example: make db-backup ARGS="agentrank.dump"
-	./scripts/backup.sh $(ARGS)
+	set -a; [ -f .env ] && . ./.env; set +a; ./scripts/backup.sh $(ARGS)
 
 db-restore: ## Restore a dump into an empty database. Example: make db-restore ARGS="agentrank.dump agentrank_restored"
-	./scripts/restore.sh $(ARGS)
+	set -a; [ -f .env ] && . ./.env; set +a; ./scripts/restore.sh $(ARGS)
 
 migrate: ## Apply all migrations
 	$(UV) run alembic upgrade head

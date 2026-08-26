@@ -24,9 +24,17 @@ their evaluation setup was built from. Adding an attribute to a source and recom
 ordinary product loop and contradicts nothing; changing a price or withdrawing a line is a
 different artifact describing a different shop.
 
+The controlled experiment is the third place an artifact is paired with a world, and it had every
+lineage rule binding the representation to the source and both to the merchant, and none binding
+either to the environment. It uses this too, and refuses the same drift a launch does.
+
 So this compares, and it compares only the three facts a world is authoritative for. Titles,
 descriptions, categories and typed attributes are exactly what a representation exists to
 improve, and a representation that states more of them than the world holds is doing its job.
+
+Only where a workspace generated the world. An operator-authored world's catalog is a file and the
+environment row records its identity rather than its content, so there is nothing in the database
+to compare against and nothing here is asked.
 
 Plain dictionaries in and reasons out. No session, no ORM and no fixture construction: the
 workspace's stored catalog payload and the representation's stored payload are both already in

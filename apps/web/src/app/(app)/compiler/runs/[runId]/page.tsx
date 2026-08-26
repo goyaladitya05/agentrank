@@ -11,6 +11,7 @@ import { publishRun, reviewCandidate } from "@/lib/compiler-actions";
 import { decodeCompilerRun, type CompilerCandidate, type CompilerRun } from "@/lib/compiler";
 import { renderValue } from "@/lib/fact-value";
 import { formatTimestamp } from "@/lib/format";
+import { statusLabel } from "@/lib/labels";
 import { loadInsight } from "@/lib/insights/load";
 
 export const dynamic = "force-dynamic";
@@ -66,7 +67,7 @@ export default async function CompilerRunPage({ params }: { params: Promise<{ ru
                   </Link>
                 ),
               },
-              { term: "Run status", value: run.status },
+              { term: "Run status", value: statusLabel(run.status).label },
               {
                 term: "Facts awaiting you",
                 value:

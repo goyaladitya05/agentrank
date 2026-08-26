@@ -20,6 +20,7 @@ from launch_support import (
 )
 from sqlalchemy import create_engine, func, inspect, select, text
 from sqlalchemy.exc import DBAPIError
+from workspace_support import catalogued
 
 from agentrank_api.audit.models import ActorType, AuditEvent
 from agentrank_api.benchmark.definitions import ExpectedOutcome
@@ -48,6 +49,8 @@ from agentrank_api.mandates.repository import MandateRepository
 from agentrank_api.models import Base
 from agentrank_api.payments.models import PaymentAttempt, PaymentAttemptStatus
 from agentrank_api.payments.repository import PaymentAttemptRepository
+from agentrank_api.representation.service import MerchantRepresentationService
+from agentrank_api.workspace.service import MerchantEvaluationWorkspaceService
 
 AlembicConfigFactory = Callable[[Settings], Config]
 
@@ -1120,3 +1123,108 @@ async def test_downgrading_past_the_launch_purpose_succeeds_without_a_first_eval
 
     assert current_revision(throwaway_database) == BEFORE_LAUNCH_PURPOSE
     assert "benchmark_reevaluation" in table_names(throwaway_database)
+
+
+# The revision before a workspace recorded its configuration and its stock assumption, which is
+# the last one whose `merchant_evaluation_workspace` rows carry neither column.
+BEFORE_WORKSPACE_STOCK_ASSUMPTION = "e5b7c93af142"
+
+
+@pytest.mark.anyio
+async def test_the_workspace_stock_columns_apply_to_a_table_that_already_holds_workspaces(
+    throwaway_database: Settings, alembic_config_factory: AlembicConfigFactory
+) -> None:
+    """The one case that migration reasons about, and the one no other test constructs.
+
+    `merchant_evaluation_workspace` carries a BEFORE UPDATE OR DELETE trigger that refuses every
+    write to an existing row. Adding a column does not fire it and backfilling one would, and
+    both check constraints are `IS NULL OR ...` so they validate against rows that predate them.
+    All three are properties of the migration rather than of the schema, and every other
+    migration test reaches head with that table empty: the populated-database test stops long
+    before a workspace could exist, and the two that downgrade past this revision build authored
+    worlds, which write no workspace row at all.
+
+    So this one builds a workspace at the revision before, migrates over it, reverses, and
+    migrates again, and reads the row back each time.
+    """
+    config = alembic_config_factory(throwaway_database)
+    command.upgrade(config, "head")
+
+    engine = create_async_engine(throwaway_database)
+    try:
+        async with create_session_factory(engine)() as session:
+            merchant = await MerchantRepository(session).create(
+                slug="migrating-workspace", name="Migrating"
+            )
+            await session.commit()
+            snapshot = await MerchantRepresentationService(session).publish_source(
+                catalogued("migrating-workspace")
+            )
+            built = (
+                await MerchantEvaluationWorkspaceService(session).bootstrap(
+                    merchant.id, source_snapshot_id=snapshot.id
+                )
+            ).workspace
+            workspace_id, suite_id = built.id, built.suite_id
+    finally:
+        await engine.dispose()
+
+    configuration, assumption = _workspace_columns(throwaway_database, workspace_id)
+    assert configuration is not None and assumption is not None
+
+    # Down over a populated table: both columns are dropped, and the trigger that refuses every
+    # write to an existing row does not stand in the way of dropping one.
+    command.downgrade(config, BEFORE_WORKSPACE_STOCK_ASSUMPTION)
+    assert "configuration" not in _workspace_column_names(throwaway_database)
+
+    # And back up over the same populated table. The columns return empty, which is exactly what
+    # this migration promises for a row that predates them, and both check constraints validate
+    # against that row rather than refusing it.
+    command.upgrade(config, "head")
+
+    assert _workspace_columns(throwaway_database, workspace_id) == (None, None)
+    # The workspace and the suite it published are still bound to each other, which is what a
+    # merchant's whole evaluation history hangs off.
+    assert _workspace_suite(throwaway_database, workspace_id) == suite_id
+
+
+def _workspace_column_names(target: Settings) -> set[str]:
+    engine = create_engine(target.database_url)
+    try:
+        return {
+            column["name"]
+            for column in inspect(engine).get_columns("merchant_evaluation_workspace")
+        }
+    finally:
+        engine.dispose()
+
+
+def _workspace_columns(
+    target: Settings, workspace_id: uuid.UUID
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    engine = create_engine(target.database_url)
+    try:
+        with engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    "select configuration, stock_assumption"
+                    " from merchant_evaluation_workspace where id = :id"
+                ),
+                {"id": workspace_id},
+            ).one()
+    finally:
+        engine.dispose()
+    return row[0], row[1]
+
+
+def _workspace_suite(target: Settings, workspace_id: uuid.UUID) -> uuid.UUID:
+    engine = create_engine(target.database_url)
+    try:
+        with engine.connect() as connection:
+            found = connection.execute(
+                text("select suite_id from merchant_evaluation_workspace where id = :id"),
+                {"id": workspace_id},
+            ).scalar_one()
+    finally:
+        engine.dispose()
+    return uuid.UUID(str(found))

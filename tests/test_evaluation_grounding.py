@@ -29,10 +29,12 @@ from dataclasses import replace
 
 import pytest
 from launch_support import without_providers
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from workspace_support import catalogued, product, source, variant
 
 from agentrank_api.benchmark.evaluation_launch import EvaluationPurpose
+from agentrank_api.benchmark.experiment import CompilerImpactExperimentService
 from agentrank_api.benchmark.grounding import (
     VariantFacts,
     contradictions,
@@ -40,10 +42,12 @@ from agentrank_api.benchmark.grounding import (
     world_facts,
 )
 from agentrank_api.benchmark.launch import MerchantEvaluationLaunchService
+from agentrank_api.benchmark.models import BenchmarkEnvironment
 from agentrank_api.commerce.repository import MerchantRepository
 from agentrank_api.compiler.service import MerchantCompilerService
 from agentrank_api.config import Settings
 from agentrank_api.representation.definitions import MerchantSourceDefinition
+from agentrank_api.representation.models import CommerceRepresentation
 from agentrank_api.representation.service import MerchantRepresentationService
 from agentrank_api.workspace.service import MerchantEvaluationWorkspaceService
 
@@ -190,3 +194,42 @@ def test_the_two_readers_agree_on_a_world_and_a_representation_that_match() -> N
         ]
     }
     assert contradictions(world_facts(catalog), representation_facts(representation)) == ()
+
+
+async def test_a_controlled_experiment_refuses_the_same_drift_a_launch_does(
+    catalog_settings: Settings, session: AsyncSession
+) -> None:
+    """Both arms are handed merchant information and both transact in one world.
+
+    Every lineage rule the experiment already enforced binds the representation to the source
+    snapshot and both to the merchant. None of them bound either to the environment, so an
+    operator could pair a world generated from one snapshot with a representation compiled from
+    another: both arms would be told a price the shelf does not hold, both would break their own
+    budgets, and the experiment would report a compiler comparison of the drift.
+    """
+    merchant_id = await _built(session, price=499900)
+    await _publish(session, merchant_id, replace(_catalog(249900, 10), version=2))
+    workspace = await MerchantEvaluationWorkspaceService(session).current_summary(merchant_id)
+    assert workspace is not None
+    environment = await session.get(BenchmarkEnvironment, workspace.environment_id)
+    representation = (
+        await session.execute(
+            select(CommerceRepresentation)
+            .where(CommerceRepresentation.merchant_id == merchant_id)
+            .order_by(CommerceRepresentation.write_order.desc())
+            .limit(1)
+        )
+    ).scalar_one()
+    assert environment is not None
+
+    with pytest.raises(ValueError, match="this benchmark environment does not hold"):
+        await CompilerImpactExperimentService(session).create(
+            merchant_id=merchant_id,
+            suite_id=workspace.suite_id,
+            environment=environment,
+            source_snapshot_id=representation.source_snapshot_id,
+            compiled_representation_id=representation.id,
+            buyer_configuration={},
+            buyer_configuration_digest=f"sha256:{'0' * 64}",
+            sample_count=1,
+        )

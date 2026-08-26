@@ -16,7 +16,10 @@ compare-run     executes one predeclared sample                         money mo
 compare-show    reads one experiment and every sample in it             nothing moves
 show            reads one run and counts it                             nothing moves
 diagnose        reads one run through the diagnostics engine            nothing moves
+queue           reads what is queued or executing, deployment wide      nothing moves
+launches        reads one merchant's launches, settled ones included    nothing moves
 abort           closes a run that stopped                               nothing moves
+cancel          closes a queued launch nothing is configured to run     nothing moves
 settle          closes the launch behind a run that already finished    nothing moves
 provider        reads what may be spent at each model provider           nothing moves
 provider-set    changes one provider's capacity policy                   nothing moves
@@ -329,6 +332,7 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
         ),
     )
     _add_merchant(launches)
+    _add_world(launches)
     launches.add_argument(
         "--limit", type=int, default=20, help="how many launches to read, newest first"
     )
@@ -842,6 +846,9 @@ async def queue(
             # answer: this worker cannot run it, or this deployment is not admitting provider
             # work for it right now. An executing launch is not waiting for anything.
             "wait_reason": _wait_reason(launch, executors, waits),
+            # An executing launch is recovered with `benchmark abort <run-id>`, and this is the
+            # command an operator reads to discover that there is one to recover.
+            "run_id": None if launch.run_id is None else str(launch.run_id),
         }
         for launch, slug in rows
     ]
@@ -879,6 +886,8 @@ async def queue(
             f"  {entry['wait_reason'] or MISSING}",
             file=out,
         )
+        if entry["run_id"] is not None:
+            print(f"{'':<{LAUNCH_WIDTH}}  run {entry['run_id']}", file=out)
     return ExitCode.OK
 
 
@@ -923,8 +932,17 @@ async def launch_history(
         .scalars()
         .all()
     )
+    total = await session.scalar(
+        select(func.count())
+        .select_from(BenchmarkEvaluationLaunch)
+        .where(BenchmarkEvaluationLaunch.merchant_id == merchant_id)
+    )
     payload: dict[str, Any] = {
         "merchant_id": str(merchant_id),
+        # What exists, beside what is shown. A capped read that reported only its own row count
+        # would answer "which launches does this merchant have" with a number that looks complete
+        # and is not.
+        "total": int(total or 0),
         "launches": [
             {
                 "launch_id": str(launch.id),
@@ -948,16 +966,26 @@ async def launch_history(
         return ExitCode.OK
     print(
         f"{'launch':<{LAUNCH_WIDTH}}  {'status':<{STATUS_WIDTH}}"
-        f"  {'executor':<{EXECUTOR_WIDTH}}  settled with",
+        f"  {'run':<{LAUNCH_WIDTH}}  settled with",
         file=out,
     )
     for entry in payload["launches"]:
+        # The run identifier is in the table rather than only in the JSON, because recovering a
+        # launch stuck EXECUTING is `benchmark abort <run-id>` and an operator reading this is
+        # usually reading it to find that identifier.
         print(
             f"{entry['launch_id']!s:<{LAUNCH_WIDTH}}  {entry['status']!s:<{STATUS_WIDTH}}"
-            f"  {entry['executor_kind']!s:<{EXECUTOR_WIDTH}}  {entry['failure_code'] or MISSING}",
+            f"  {entry['run_id'] or MISSING!s:<{LAUNCH_WIDTH}}"
+            f"  {entry['failure_code'] or MISSING}",
             file=out,
         )
-    print(f"\n{len(payload['launches'])} launch(es)", file=out)
+    shown = len(payload["launches"])
+    counted = payload["total"]
+    print(
+        f"\n{shown} launch(es)"
+        + ("" if shown == counted else f", showing the newest of {counted}"),
+        file=out,
+    )
     return ExitCode.OK
 
 

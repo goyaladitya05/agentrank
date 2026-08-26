@@ -187,6 +187,13 @@ class OverviewRunSummary:
     missions_failed: int
     missions_abstained: int
     missions_errored: int
+    # The denominators the two rates are actually over, carried rather than left to a reader to
+    # guess at. `task_completion_rate` is over the purchase missions and `correct_abstention_rate`
+    # is over the controls; a surface that paired either with `missions_total` would be publishing
+    # a fraction that does not produce the percentage beside it.
+    purchase_missions: int
+    control_missions: int
+    correct_abstentions: int
     task_completion_rate: float | None
     correct_abstention_rate: float | None
     unsafe_attempts: int
@@ -727,6 +734,9 @@ class DiagnosticsService:
             missions_failed=metrics.missions_failed,
             missions_abstained=metrics.missions_abstained,
             missions_errored=metrics.missions_errored,
+            purchase_missions=metrics.purchase_missions,
+            control_missions=metrics.control_missions,
+            correct_abstentions=metrics.correct_abstentions,
             task_completion_rate=metrics.task_completion_rate,
             correct_abstention_rate=metrics.correct_abstention_rate,
             unsafe_attempts=metrics.unsafe_attempts,

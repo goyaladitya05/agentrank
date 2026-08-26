@@ -19,6 +19,12 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
+from agentrank_api.benchmark.grounding import (
+    MAX_REPORTED,
+    contradictions,
+    representation_facts,
+    world_facts,
+)
 from agentrank_api.benchmark.identity import HASH_LENGTH, HASH_PATTERN
 from agentrank_api.benchmark.lifecycle import BenchmarkRunStatus
 from agentrank_api.benchmark.models import BenchmarkEnvironment, BenchmarkRun, BenchmarkSuite
@@ -29,6 +35,7 @@ from agentrank_api.models import Base
 from agentrank_api.representation.definitions import RepresentationProducer
 from agentrank_api.representation.models import CommerceRepresentation, MerchantSourceSnapshot
 from agentrank_api.representation.projection import compiled_projection, raw_projection
+from agentrank_api.workspace.models import MerchantEvaluationWorkspace
 
 
 class RepresentationKind(StrEnum):
@@ -167,6 +174,14 @@ class CompilerImpactExperimentService:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    async def _generated_catalog(self, environment_id: uuid.UUID) -> dict[str, Any] | None:
+        """The stored world of the workspace that generated this environment, if one did."""
+        return await self._session.scalar(
+            select(MerchantEvaluationWorkspace.catalog_fixture).where(
+                MerchantEvaluationWorkspace.environment_id == environment_id
+            )
+        )
+
     async def create(
         self,
         *,
@@ -196,6 +211,33 @@ class CompilerImpactExperimentService:
         if compiler_run.source_snapshot_id != source.id:
             raise ValueError(
                 "compiled treatment compiler run must derive from the experiment source"
+            )
+        # Both arms are handed merchant information and both transact in one world, and until now
+        # nothing checked that the two described the same shop. Every lineage rule above binds the
+        # representation to the source snapshot and both to the merchant; none of them binds
+        # either to the environment, so an environment prepared from one snapshot could be paired
+        # with a source and a representation from another. Both arms would then be told a price
+        # the shelf does not hold, both would break their own budgets, and the experiment would
+        # report a compiler comparison of the drift.
+        #
+        # The same three facts the evaluation launch compares, for the same reason: a world is
+        # authoritative for price, availability and which SKUs exist, and nothing else.
+        # Only where a workspace generated the world. An operator-authored world's catalog is a
+        # file rather than a row, and the environment records its identity rather than its
+        # content, so there is nothing here to compare against; that is the same boundary the
+        # evaluation launch draws for the same reason.
+        generated = await self._generated_catalog(environment.id)
+        drift = (
+            ()
+            if generated is None
+            else contradictions(
+                world_facts(generated), representation_facts(representation.payload)
+            )
+        )
+        if drift:
+            raise ValueError(
+                "compiled treatment describes products this benchmark environment does not hold:"
+                f" {'; '.join(drift[:MAX_REPORTED])}"
             )
         experiment = CompilerImpactExperiment(
             merchant_id=merchant_id,

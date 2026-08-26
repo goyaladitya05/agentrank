@@ -455,9 +455,20 @@ async def test_settle_refuses_a_run_that_has_not_finished(
     )
 
     result = await cli(catalog_settings, provider, "benchmark", "settle", str(started.id))
+    machine = await cli(
+        catalog_settings, provider, "benchmark", "settle", str(started.id), "--json"
+    )
 
     assert result.code == ExitCode.REFUSED
     assert "has not finished" in result.out
+    # A refusal is an answer, and answers respect the format the invocation asked for. A recovery
+    # script running this under `--json` used to get prose its parser could not tell from garbage.
+    assert machine.code == ExitCode.REFUSED
+    assert json.loads(machine.out) == {
+        "run_id": str(started.id),
+        "status": BenchmarkRunStatus.RUNNING.value,
+        "refused": "run_not_finished",
+    }
 
 
 # Dispatch.

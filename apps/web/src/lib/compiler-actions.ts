@@ -136,7 +136,11 @@ export async function reviewCandidate(
     );
     if (failed !== null) {
       if (failed.stale) refreshed(runId);
-      return { ok: false, message: failed.message, stale: failed.stale, values: null };
+      // The typed correction is given back even though this command did not use it. A merchant
+      // who opened "correct this fact instead", typed a value and an excerpt, and then pressed
+      // accept, gets a refusal from another tab's review; returning null here collapsed the
+      // panel and discarded everything they had written into it.
+      return { ok: false, message: failed.message, stale: failed.stale, values: entered };
     }
     refreshed(runId);
     return { ok: true, message: null, stale: false, values: null };

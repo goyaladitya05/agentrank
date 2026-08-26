@@ -143,6 +143,24 @@ class Settings(BaseSettings):
     # all, and refused outright in any environment that is a deployment. See the validator below.
     import_allowed_networks: str = Field(default="", alias="AGENTRANK_IMPORT_ALLOWED_NETWORKS")
 
+    @model_validator(mode="before")
+    @classmethod
+    def blank_razorpay_is_absent(cls, values: Any) -> Any:
+        """A Razorpay variable set empty means the integration is not configured.
+
+        The same rule the provider credentials already follow, and for the same reason. `Settings`
+        reads a `.env` file, so the only way a deployment that has a key on disk can say it does
+        not want one is to set the variable empty in its own environment. Without this, that
+        deployment refuses to start, and the message it refuses with names a live mode nobody was
+        trying to configure.
+        """
+        if not isinstance(values, dict):
+            return values
+        for name in ("RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET"):
+            if isinstance(values.get(name), str) and not values[name].strip():
+                values[name] = None
+        return values
+
     @model_validator(mode="after")
     def razorpay_is_test_mode_or_absent(self) -> Self:
         """Refuse a half configured integration, and refuse a live key outright.

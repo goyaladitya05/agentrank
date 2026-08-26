@@ -3,9 +3,13 @@
 #
 # Deliberately refuses a database that is not empty. A restore over live data is not a recovery,
 # it is two histories merged, and the failure mode is a merchant's evidence silently interleaved
-# with somebody else's: `pg_restore` would fail on the first duplicate key and leave whatever it
-# had already written behind. The supported procedure is to create an empty database and restore
-# into that, then point the deployment at it.
+# with somebody else's. The supported procedure is to create an empty database and restore into
+# that, then point the deployment at it.
+#
+# One transaction, so a restore that is interrupted leaves nothing behind and can simply be run
+# again. Without it, an interrupted restore leaves the enum types and trigger functions it had
+# already created, which the emptiness check below does not count, and the retry then fails on
+# `type already exists` with no way forward but dropping the database.
 #
 # After restoring, run `uv run alembic upgrade head` if the backup predates the running build.
 # The dump carries the `alembic_version` row it was taken at, so an older backup restores as an
@@ -28,6 +32,16 @@ if [ ! -r "$dump" ]; then
   exit 1
 fi
 
+# libpq reads a `dbname` containing `=` or `://` as a whole connection string, which would
+# override the host, the port and the user this script resolved, and offer PGPASSWORD to whatever
+# host it named. A database name is a name.
+case "$database" in
+  *=* | *://*)
+    echo "refusing a database name that is a connection string: $database" >&2
+    exit 64
+    ;;
+esac
+
 export PGPASSWORD=${POSTGRES_PASSWORD:-}
 
 tables=$(psql --host="$host" --port="$port" --username="$user" --dbname="$database" -tAc \
@@ -44,6 +58,7 @@ pg_restore \
   --dbname="$database" \
   --no-owner \
   --no-privileges \
+  --single-transaction \
   --exit-on-error \
   "$dump"
 

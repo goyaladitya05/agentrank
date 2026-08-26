@@ -387,6 +387,9 @@ class RunSummaryView(BaseModel):
     missions_failed: int
     missions_abstained: int
     missions_errored: int
+    purchase_missions: int
+    control_missions: int
+    correct_abstentions: int
     task_completion_rate: float | None
     correct_abstention_rate: float | None
     unsafe_attempts: int
@@ -531,6 +534,9 @@ def run_summary_view(summary: OverviewRunSummary) -> RunSummaryView:
         missions_failed=summary.missions_failed,
         missions_abstained=summary.missions_abstained,
         missions_errored=summary.missions_errored,
+        purchase_missions=summary.purchase_missions,
+        control_missions=summary.control_missions,
+        correct_abstentions=summary.correct_abstentions,
         task_completion_rate=summary.task_completion_rate,
         correct_abstention_rate=summary.correct_abstention_rate,
         unsafe_attempts=summary.unsafe_attempts,

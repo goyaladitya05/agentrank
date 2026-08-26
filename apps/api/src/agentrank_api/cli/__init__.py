@@ -124,13 +124,16 @@ PROGRAM = "agentrank"
 def build_parser() -> argparse.ArgumentParser:
     """The whole command surface, declared in one place.
 
-    argparse rather than a framework. There are ten commands, none of them has a nested
-    option group, and a dependency added for this would be a dependency in the deployment
-    artifact for the sake of coloured help text.
+    argparse rather than a framework. No command has a nested option group, and a dependency
+    added for this would be a dependency in the deployment artifact for the sake of coloured help
+    text.
 
-    Three groups. `credentials` provisions merchant API keys, which is deliberately not an HTTP
-    surface: an endpoint that issued one could issue it for anybody, and nothing could
-    authenticate the caller asking, because a credential is what makes authentication possible.
+    Grouped by what each one is about, and three of the groups exist because their commands have
+    no HTTP surface and should not have one. `merchants` provisions a merchant, which is the one
+    thing in this product that no merchant can do for themselves: there is no public signup, and
+    the credential that would authenticate one does not exist until an operator issues it.
+    `credentials` issues that credential, which an endpoint could not do safely because nothing
+    could authenticate the caller asking, a credential being what makes authentication possible.
     `benchmark` prepares a world and executes a suite, which overwrites a merchant's catalog and
     consumes its stock, and neither is something a network surface should be able to start.
     """

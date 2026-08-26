@@ -46,7 +46,7 @@ function RunsTable({ runs }: { runs: readonly import("@/lib/insights/types").Run
     );
   }
   return (
-    <div className={styles.tableScroll}>
+    <div className={styles.tableScroll} tabIndex={0} aria-label="Benchmark runs">
       <table className={styles.table}>
         <thead>
           <tr>

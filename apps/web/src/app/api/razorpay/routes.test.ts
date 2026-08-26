@@ -15,20 +15,22 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { SESSION_COOKIE, newCookieValue, sessionVerifier } from "@/lib/auth/session";
+import { newCookieValue, sessionVerifier } from "@/lib/auth/session";
 
 const SESSION_SECRET = "a-console-session-secret-of-sufficient-length";
 process.env.AGENTRANK_CONSOLE_SESSION_SECRET = SESSION_SECRET;
 
 const cookie: { value: string | undefined } = { value: undefined };
 
+// Name agnostic on purpose. Which name this deployment writes and accepts is decided by
+// `sessionCookieName` and pinned by `session.test.ts`; what these tests are about is what the
+// route does with a session, with one, and without one. `vi.mock` is hoisted above the imports,
+// so a factory that named the constant would not have it yet.
 vi.mock("next/headers", () => ({
   cookies: () =>
     Promise.resolve({
       get: (name: string) =>
-        name === SESSION_COOKIE && cookie.value !== undefined
-          ? { name, value: cookie.value }
-          : undefined,
+        cookie.value !== undefined ? { name, value: cookie.value } : undefined,
     }),
 }));
 

@@ -31,3 +31,7 @@ apps/web/test-results/
 apps/web/playwright-report/
 apps/web/blob-report/
 .playwright-browsers/
+
+# Database dumps. `scripts/backup.sh` writes the most sensitive file this project produces:
+# every tenant's evidence plus every credential and session digest. It never belongs in git.
+*.dump

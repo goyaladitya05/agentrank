@@ -309,12 +309,17 @@ function Notes({
 }
 
 /**
- * The one command on this page, and the one number a merchant supplies.
+ * The one command on this page, and it asks for nothing.
  *
- * The stock level is asked for because no public page publishes one and AgentRank will not invent
- * one. The wording says exactly that, and says what the number is for, because a merchant reading
- * "stock level" on a page about their own store could reasonably think it changes their real
- * inventory. It does not: it is the stock the isolated evaluation world holds.
+ * A confirmation is a decision about evidence the merchant has already read, and every fact in
+ * the snapshot it creates came off their own pages. It used to ask for a stock level, because a
+ * source variant needed an exact count and no public page publishes one; a source variant now
+ * holds the availability state a storefront actually publishes, so the last field on this page
+ * that was not evidence is gone.
+ *
+ * What is still said out loud is the variants whose pages published no availability at all. That
+ * is stored honestly and an evaluation world cannot hold it, so the merchant is told which lines
+ * they will have to state a stock state for, and where.
  */
 function Confirm({ found, action }: { found: SourceImport; action: ConfirmImportAction }) {
   const [state, formAction, pending] = useActionState(action, IDLE_CONFIRM);

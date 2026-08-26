@@ -8,7 +8,7 @@ import { TechnicalDetails } from "@/components/TechnicalDetails";
 import styles from "@/components/console.module.css";
 import { formatTimestamp } from "@/lib/format";
 import { loadInsight } from "@/lib/insights/load";
-import { statusLabel } from "@/lib/labels";
+import { compilerFailureLabel, statusLabel } from "@/lib/labels";
 import { decodeSourceSnapshot, originLabel, type SourceSnapshot } from "@/lib/source";
 import { startCompilerRun } from "@/lib/source-actions";
 
@@ -151,7 +151,9 @@ function Runs({ snapshot }: { snapshot: SourceSnapshot }) {
                   {run.error_code === null ? null : (
                     <>
                       <br />
-                      <span className={styles.cellMuted}>{run.error_code}</span>
+                      <span className={styles.cellMuted}>
+                        {compilerFailureLabel(run.error_code)}
+                      </span>
                     </>
                   )}
                 </td>

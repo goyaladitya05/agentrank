@@ -54,6 +54,21 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
+      # The operator backup procedure is `pg_dump` and `pg_restore`, and a client refuses a
+      # server newer than itself. Without a version 18 client on the runner, the tests that
+      # execute that procedure skip themselves and the release gate proves nothing about the one
+      # thing standing between a disk failure and every merchant's evidence.
+      - name: Install the PostgreSQL 18 client
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+            https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-18
+
       - name: Lint
         run: uv run ruff check .
 

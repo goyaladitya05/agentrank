@@ -129,6 +129,27 @@ class SourceIdentity:
     label: str
 
 
+async def claim_source_line(session: AsyncSession, merchant_id: uuid.UUID) -> None:
+    """Hold one merchant's source line until the transaction ends.
+
+    Public and shared, because two writers publish source snapshots and only one of them used to
+    take it. The console intake allocates a version and compares against the current snapshot,
+    both read-then-write; the operator command line publishes a fully identified definition and
+    takes no lock at all. Under a different source key there is no unique constraint for the two
+    to collide on, so an operator publishing while a merchant submits could commit a snapshot the
+    merchant's own submission then wrote past, with the console reporting success and nothing
+    downstream able to notice.
+
+    Transaction scoped, so it is released by the commit or the rollback that ends the command,
+    and taken before any row lock, which neither of these commands has, so it cannot join a cycle
+    with the order `agentrank_api.locking` writes down.
+    """
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"{SOURCE_RESOURCE}:{merchant_id}"},
+    )
+
+
 class MerchantSourceIntakeService:
     """The merchant's own source evidence: submitted, listed and read back."""
 
@@ -469,10 +490,7 @@ class MerchantSourceIntakeService:
 
     async def _claim(self, merchant_id: uuid.UUID) -> None:
         """Hold this merchant's source line against every other submission, until commit."""
-        await self._session.execute(
-            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-            {"key": f"{SOURCE_RESOURCE}:{merchant_id}"},
-        )
+        await claim_source_line(self._session, merchant_id)
 
     async def _next_version(self, merchant_id: uuid.UUID, key: str) -> int:
         highest = (

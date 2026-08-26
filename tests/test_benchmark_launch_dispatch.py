@@ -1001,9 +1001,15 @@ class TestOperatorRecovery:
     ) -> None:
         """A run no launch names is the one state the schema cannot detect or repair.
 
-        The claim's row lock is released before execution starts, so a second worker reaching
-        `bind_run` first is possible in principle. The loser must not leave a run executing
-        against a merchant with nothing to explain it, so it closes the run it just created.
+        The claim's row lock is released before execution starts, so a launch can be settled
+        between the claim and the bind: another worker reaching `bind_run` first, an operator
+        cancelling it, or its own merchant withdrawing it from the console. The loser must not
+        leave a run executing against a merchant with nothing to explain it, so it closes the run
+        it just created.
+
+        It reports rather than raises. Nothing failed: no mission ran, and the work this worker
+        claimed stopped being work. An unhandled conflict here would make an ordinary merchant
+        click exit an operator's dispatch command non zero.
         """
         settings = without_providers(catalog_settings)
         world = await build_launch_world(session, "bind-race-shop")
@@ -1014,16 +1020,19 @@ class TestOperatorRecovery:
 
         monkeypatch.setattr(EvaluationLaunchWorkerService, "bind_run", taken)
 
-        with pytest.raises(ConflictError):
-            await execute_next_launch(
-                session,
-                factory,
-                world=world.authored,
-                provider=FakePaymentProvider(),
-                settings=settings,
-            )
+        outcome = await execute_next_launch(
+            session,
+            factory,
+            world=world.authored,
+            provider=FakePaymentProvider(),
+            settings=settings,
+        )
 
         monkeypatch.undo()
+        assert outcome is not None
+        assert outcome.status == "SETTLED"
+        assert outcome.failure_code is None
+        assert outcome.run_id is None
         runs = (
             await session.execute(
                 select(BenchmarkRun).where(BenchmarkRun.merchant_id == world.merchant_id)

@@ -44,7 +44,7 @@ const REFUSALS: Record<string, string> = {
   preflight_superseded:
     "What this evaluation would run has changed since this page loaded. Reload to see what would be evaluated now.",
   evaluation_already_pending:
-    "An evaluation is already queued or running for your merchant. Wait for it to finish before starting another.",
+    "An evaluation is already queued or running for your merchant. Open it to see where it stands; a queued one that has not started can be withdrawn there.",
   evaluation_request_key_reused:
     "This form has already launched a different evaluation. Reload and try again.",
   evaluation_purpose_superseded:

@@ -12,7 +12,7 @@ import { decodeSourceOverview, decodeSourceSnapshot, documentText } from "@/lib/
 import { submitSource } from "@/lib/source-actions";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Supply source evidence | AgentRank" };
+export const metadata = { title: "Your merchant source | AgentRank" };
 
 /** The shape a source document has, shown rather than prefilled for a merchant who has none. */
 const SHAPE = `{
@@ -30,6 +30,14 @@ const SHAPE = `{
           "currency": "INR",
           "inventory_quantity": 24,
           "merchant_metadata": { "finish": "black" }
+        },
+        {
+          "sku": "YOUR-OTHER-SKU",
+          "label": "Sand",
+          "price_amount_minor": 499900,
+          "currency": "INR",
+          "availability": "IN_STOCK",
+          "merchant_metadata": {}
         }
       ],
       "merchant_metadata": {}
@@ -62,7 +70,7 @@ export default async function NewSourcePage() {
   return (
     <>
       <div className={styles.pageHeader}>
-        <h1 className={styles.pageTitle}>Supply source evidence</h1>
+        <h1 className={styles.pageTitle}>Your merchant source</h1>
       </div>
       <Section
         title="Source document"
@@ -103,6 +111,14 @@ export default async function NewSourcePage() {
               Identifiers may use letters, digits, hyphens and underscores. A product needs at least
               one variant. `merchant_metadata` maps names to strings, whole numbers or true and
               false.
+            </p>
+            <p className={styles.reviewMeta}>
+              Every variant states its stock, at whichever precision you have. Give
+              `inventory_quantity` when you know the count, or `availability` when you only know the
+              state: `IN_STOCK`, `OUT_OF_STOCK`, or `UNKNOWN` where you have not said. A count of
+              zero is out of stock. AgentRank never fills either of them in for you, and an
+              evaluation setup cannot be built from a variant whose availability is `UNKNOWN`,
+              because a simulated shelf holds an exact number of units.
             </p>
           </TechnicalDetails>
         </Panel>

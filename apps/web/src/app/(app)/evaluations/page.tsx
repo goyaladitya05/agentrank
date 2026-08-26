@@ -202,13 +202,17 @@ function Blockers({ preflight }: { preflight: EvaluationPreflight }) {
         ))}
       </ul>
       {preflight.pending_launch_id === null ? null : (
+        // "Open the evaluation already in progress" was wrong for the case a merchant most often
+        // lands here in: a launch waiting for a worker nobody has configured is not in progress,
+        // waiting will not end it, and the page it links to is the one place it can be put down.
         <p className={styles.reviewMeta}>
           <Link
             className={styles.rowLink}
             href={`/evaluations/${encodeURIComponent(preflight.pending_launch_id)}`}
           >
-            Open the evaluation already in progress
+            Open the evaluation you already asked for
           </Link>
+          . A queued one that has not started can be withdrawn there.
         </p>
       )}
     </>

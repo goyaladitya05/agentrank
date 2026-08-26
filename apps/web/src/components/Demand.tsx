@@ -31,7 +31,7 @@ export function DemandTable({
   const ordered = [...buckets].sort((a, b) => a.currency.localeCompare(b.currency));
 
   return (
-    <div className={styles.tableScroll}>
+    <div className={styles.tableScroll} tabIndex={0} aria-label="Simulated demand by currency">
       <table className={styles.table}>
         <caption className={styles.cellMuted} style={{ textAlign: "left", padding: "4px 12px" }}>
           {caption}
@@ -93,7 +93,11 @@ export function DeltaTable({
     return <p className={styles.finePrint}>No simulated demand was compared.</p>;
   }
   return (
-    <div className={styles.tableScroll}>
+    <div
+      className={styles.tableScroll}
+      tabIndex={0}
+      aria-label="Simulated demand compared between arms"
+    >
       <table className={styles.table}>
         <caption className={styles.cellMuted} style={{ textAlign: "left", padding: "4px 12px" }}>
           Compiled arm minus raw arm. Positive means the compiled arm carried more.

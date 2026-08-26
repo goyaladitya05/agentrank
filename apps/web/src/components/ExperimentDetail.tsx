@@ -124,7 +124,7 @@ function ArmsTable({
     );
   }
   return (
-    <div className={styles.tableScroll}>
+    <div className={styles.tableScroll} tabIndex={0} aria-label="Experiment arms">
       <table className={styles.table}>
         <thead>
           <tr>
@@ -214,7 +214,7 @@ function OutcomeDeltas({
     );
   }
   return (
-    <div className={styles.tableScroll}>
+    <div className={styles.tableScroll} tabIndex={0} aria-label="Outcome totals by arm">
       <table className={styles.table}>
         <caption
           className={styles.cellMuted}
@@ -277,7 +277,11 @@ function MissionTransitions({ data }: { data: ExperimentComparison }) {
       title="Mission transitions"
       hint="Missions whose terminal position differed between arms."
     >
-      <div className={styles.tableScroll}>
+      <div
+        className={styles.tableScroll}
+        tabIndex={0}
+        aria-label="Mission transitions between arms"
+      >
         <table className={styles.table}>
           <thead>
             <tr>

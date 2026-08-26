@@ -131,10 +131,11 @@ function outcome(state: CompileState): string {
     return "The compiler could not read this snapshot. The run says what stopped it.";
   }
   if (state.runStatus === "PENDING" || state.runStatus === "RUNNING") {
-    // Reachable, and only from a second caller. A run is committed RUNNING before the compiler
-    // reads anything, so a request that finds one another request is still executing is answered
-    // with it. Saying it failed would be a guess and saying it finished would be wrong.
-    return "This snapshot is being compiled. Open the run to see where it got to.";
+    // Historical. A compiler run is now written settled in one transaction, so nothing can
+    // create either state and a process that dies mid compile leaves no row at all. Rows that
+    // already carry one are still readable, and this is what they say. Saying they failed would
+    // be a guess and saying they finished would be wrong.
+    return "This snapshot has a compiler run that never finished. Open the run to see it.";
   }
   if (state.published) {
     return "This snapshot was already compiled and published. Its reviewed facts cannot change.";

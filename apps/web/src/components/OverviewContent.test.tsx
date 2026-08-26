@@ -19,7 +19,8 @@ function render(overview: MerchantOverview): string {
 describe("<OverviewContent> product behavior", () => {
   it("renders the latest run's real numbers from the API", () => {
     const html = render(overviewWith(() => undefined));
-    expect(html).toContain("8 of 14 purchase missions succeeded");
+    expect(html).toContain("8 of 8 purchase missions");
+    expect(html).toContain("4 of 4 controls");
     expect(html).toContain("INR\u00a021,000.00");
     expect(html).toContain("voltedge-core@2");
   });
@@ -230,5 +231,33 @@ describe("an evaluation that stopped part way", () => {
 
     expect(html).toContain("Nothing here needs your action");
     expect(html).not.toContain("This evaluation stopped before it finished");
+  });
+});
+
+describe("what the headline panel must always carry", () => {
+  it("marks the run's designation beside its own numbers", () => {
+    // The marker is required to accompany a development benchmark's figures wherever they
+    // appear, and this panel is where a merchant reads them first. It was computed here and
+    // never rendered, so the one place the note was missing was the first place they look.
+    const html = render(overviewWith(() => undefined));
+    const health = html.indexOf("Latest benchmark health");
+    const findings = html.indexOf("Top findings");
+    const marker = html.indexOf("Development benchmark", health);
+
+    expect(marker).toBeGreaterThan(health);
+    expect(marker).toBeLessThan(findings);
+  });
+
+  it("says an aborted run's numbers are over what executed, beside those numbers", () => {
+    const html = render(
+      overviewWith((overview) => {
+        const [latest] = overview.runs;
+        if (latest === undefined) throw new Error("the fixture has no runs");
+        latest.status = "ABORTED";
+      }),
+    );
+
+    expect(html).toContain("every number below is over the missions that executed");
+    expect(html).toContain("Stopped");
   });
 });

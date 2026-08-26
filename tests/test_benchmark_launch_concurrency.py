@@ -21,6 +21,7 @@ from launch_support import (
     LaunchWorld,
     build_initial_world,
     build_launch_world,
+    complete_run,
     queue_launch,
     without_providers,
 )
@@ -28,7 +29,15 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agentrank_api.benchmark.environment import BenchmarkEnvironmentService
-from agentrank_api.benchmark.evaluation_launch import BenchmarkEvaluationLaunch
+from agentrank_api.benchmark.evaluation_launch import (
+    BenchmarkEvaluationLaunch,
+    EvaluationLaunchStatus,
+)
+from agentrank_api.benchmark.launch import (
+    EvaluationLaunchWorkerService,
+    MerchantEvaluationLaunchService,
+    worker_executor_kinds,
+)
 from agentrank_api.config import Settings
 from agentrank_api.errors import ConflictError
 
@@ -163,3 +172,36 @@ async def test_two_first_evaluations_admit_one_launch(
     assert len(refused) == 1
     assert refused[0].reason == "evaluation_already_pending"
     assert await launch_count(session) == 1
+
+
+async def test_a_running_evaluation_cannot_be_withdrawn(
+    settings: Settings, session: AsyncSession
+) -> None:
+    """The one branch protecting a live run from a merchant's own button.
+
+    A queued launch has produced nothing: no mission has executed, no stock has been held and no
+    payment has been attempted, so closing one destroys no evidence. An executing launch is the
+    opposite of all four, and closing one from the console would leave a run nothing names.
+    """
+    quiet = without_providers(settings)
+    world = await build_launch_world(session, "withdraw-running-shop")
+    launch_id = await queue_launch(session, quiet, world, request_key="withdraw-running")
+    worker = EvaluationLaunchWorkerService(session)
+    claimed = await worker.claim_next(
+        world.merchant_id,
+        environment_id=world.environment_id,
+        executor_kinds=worker_executor_kinds(quiet),
+    )
+    assert claimed is not None
+    run_id = await complete_run(session, world)
+    await worker.bind_run(launch_id, run_id=run_id)
+    await session.commit()
+
+    with pytest.raises(ConflictError) as refused:
+        await MerchantEvaluationLaunchService(session, quiet).withdraw(world.merchant_id, launch_id)
+
+    assert refused.value.reason in {"launch_not_queued", "run_already_active"}
+    settled = await session.get(BenchmarkEvaluationLaunch, launch_id)
+    assert settled is not None
+    await session.refresh(settled)
+    assert settled.status is not EvaluationLaunchStatus.FAILED

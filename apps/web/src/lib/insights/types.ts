@@ -189,6 +189,16 @@ export interface RunSummary {
   readonly missions_failed: number;
   readonly missions_abstained: number;
   readonly missions_errored: number;
+  /**
+   * The denominators the two rates are actually over.
+   *
+   * `task_completion_rate` is succeeded over purchase missions and `correct_abstention_rate` is
+   * correct abstentions over controls. Pairing either with `missions_total` publishes a fraction
+   * that does not produce the percentage beside it, which is what this panel used to do.
+   */
+  readonly purchase_missions: number;
+  readonly control_missions: number;
+  readonly correct_abstentions: number;
   readonly task_completion_rate: number | null;
   readonly correct_abstention_rate: number | null;
   readonly unsafe_attempts: number;

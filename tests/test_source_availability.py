@@ -19,6 +19,9 @@ bootstrap configuration states and the workspace records as simulated, and `UNKN
 by name because a shelf cannot hold an unknown number of anything.
 """
 
+import json
+from pathlib import Path
+
 import pytest
 from workspace_support import product, source, variant
 
@@ -304,3 +307,52 @@ def test_the_assumed_depth_is_part_of_the_workspace_identity() -> None:
 def test_read_availability_refuses_a_state_this_repository_does_not_define() -> None:
     with pytest.raises(ValueError, match="does not define"):
         read_availability(None, "MAYBE", where="variant 'S'")
+
+
+def test_agentranks_own_import_provenance_never_becomes_a_benchmark_constraint() -> None:
+    """A generated mission requires a merchant's product fact, not AgentRank's reading of a page.
+
+    An import writes `import_availability` and `import_availability_text` into a variant's
+    merchant metadata, which is where provenance belongs: it explains the evidence beside it. The
+    projection copies scalar metadata into the evaluation catalog as typed attributes, and a typed
+    attribute there is something the specification families can build a mission around. A mission
+    requiring `import_availability_text` equals "In stock" would be measuring whether a buyer can
+    find AgentRank's own note about how it read a page, and it would take a slot in a bounded
+    mission budget from a fact the merchant actually publishes.
+    """
+    catalog = project_catalog(
+        source(
+            product(
+                "P",
+                variant(
+                    "S",
+                    stock=4,
+                    metadata={
+                        "finish": "black",
+                        "import_availability": "IN_STOCK",
+                        "import_availability_text": "In stock",
+                    },
+                ),
+            )
+        ),
+        merchant_slug="test-merchant",
+        merchant_name="Test",
+        version=1,
+    )
+
+    assert catalog.entries[0].attributes == {"finish": "black"}
+    # Dropped visibly rather than silently, by the same mechanism that reports a nested value.
+    assert "products[P].variants[S].merchant_metadata.import_availability" in catalog.omitted_fields
+
+
+def test_the_authored_voltedge_source_round_trips_byte_for_byte() -> None:
+    """The one source document this repository actually ships, asserted as bytes.
+
+    The synthetic case above proves the rule; this proves it holds for the document every
+    benchmark, every compiler test and the deployment smoke are built on. If it did not, the
+    stored snapshot's content hash would stop matching its payload and the compiler would refuse
+    to read it.
+    """
+    raw = json.loads(Path("benchmarks/voltedge/source.json").read_text(encoding="utf-8"))
+
+    assert parse_source(raw).payload() == raw

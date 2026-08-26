@@ -18,6 +18,7 @@ does not claim to support, is written down before anything else is deployed.
 | Python | 3.14 |
 | Node | 24 |
 | PostgreSQL | 18, run through Docker Compose |
+| PostgreSQL client | 18, for `make db-backup` and `make db-restore` only. Not needed to develop |
 | uv | latest |
 | pnpm | 11 |
 | Docker Engine and Compose v2 | latest |
@@ -41,6 +42,20 @@ dependencies from the lock files. `make db-up` starts PostgreSQL and waits for i
 become healthy. `make seed-dev` loads a small development catalog: one merchant, five
 products, ten variants. It is safe to run repeatedly and is never run by the application
 itself. Run `make help` to list every target.
+
+A real merchant is provisioned rather than seeded. `make seed-dev` exists to give a developer
+something to look at; a merchant who will import their own pages is created empty, because a
+merchant who arrives with a catalog somebody else wrote is a merchant whose own evidence has
+something to be reconciled with:
+
+```bash
+make merchants ARGS="create --merchant-slug acme-supply --name Acme"
+make credentials ARGS="create --merchant-slug acme-supply --label console"
+```
+
+That is the whole of what an operator does before a merchant can sign in. There is no public
+signup, and everything after those two commands is the merchant's own: their pages, their source
+snapshots, their evaluation setup and their evaluations.
 
 The last command mints a merchant API key and prints it once. Every commerce endpoint needs
 one, presented as `Authorization: Bearer <key>`; `/health` and `/ready` do not. There is no

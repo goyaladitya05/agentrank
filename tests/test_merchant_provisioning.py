@@ -140,7 +140,7 @@ async def test_provisioning_a_merchant_creates_no_catalog_and_no_benchmark_world
 
 
 async def test_creating_the_same_merchant_twice_is_the_same_merchant(
-    catalog_settings: Settings,
+    catalog_settings: Settings, session: AsyncSession
 ) -> None:
     """A provisioning command an operator may already have run is one they can run again."""
     first = await run(
@@ -166,7 +166,7 @@ async def test_creating_the_same_merchant_twice_is_the_same_merchant(
 
 
 async def test_a_slug_the_schema_refuses_is_a_refusal_rather_than_a_traceback(
-    catalog_settings: Settings,
+    catalog_settings: Settings, session: AsyncSession
 ) -> None:
     refused = await run(
         catalog_settings, "merchants", "create", "--merchant-slug", "Not A Slug", "--name", "X"
@@ -177,7 +177,7 @@ async def test_a_slug_the_schema_refuses_is_a_refusal_rather_than_a_traceback(
 
 
 async def test_listing_merchants_names_the_slug_every_other_command_takes(
-    catalog_settings: Settings,
+    catalog_settings: Settings, session: AsyncSession
 ) -> None:
     await run(
         catalog_settings, "merchants", "create", "--merchant-slug", SLUG, "--name", "Shop", "--json"
@@ -202,3 +202,29 @@ async def test_listing_merchants_names_the_slug_every_other_command_takes(
     # A listing names merchants and never a secret, which is the one thing `credentials create`
     # prints and nothing else ever does.
     assert "token" not in listed.out
+
+
+async def test_a_listing_that_is_capped_says_so_rather_than_looking_complete(
+    catalog_settings: Settings, session: AsyncSession
+) -> None:
+    """ "Which merchants exist" is a question this command is the only answer to.
+
+    A capped read that reported only its own row count would answer it with a number that looks
+    complete and is not, which is worse than an obviously truncated one.
+    """
+    for index in range(3):
+        await run(
+            catalog_settings,
+            "merchants",
+            "create",
+            "--merchant-slug",
+            f"capped-{index}",
+            "--name",
+            "Capped",
+            "--json",
+        )
+
+    listed = await run(catalog_settings, "merchants", "list", "--json")
+
+    assert listed.payload()["total"] == 3
+    assert len(listed.payload()["merchants"]) == 3

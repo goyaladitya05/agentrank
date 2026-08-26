@@ -181,7 +181,10 @@ export function transitionDirectionLabel(direction: string): { label: string; to
  * different sentences: queued means nothing has executed, and executing means the run beside it
  * carries what is happening.
  */
-export function launchStatusLabel(status: string): { label: string; tone: Tone } {
+export function launchStatusLabel(
+  status: string,
+  failureCode: string | null = null,
+): { label: string; tone: Tone } {
   switch (status) {
     case "QUEUED":
       return { label: "Queued", tone: "neutral" };
@@ -190,9 +193,83 @@ export function launchStatusLabel(status: string): { label: string; tone: Tone }
     case "COMPLETED":
       return { label: "Completed", tone: "ok" };
     case "FAILED":
+      // A launch somebody closed on purpose is not a failure and must not be marked as one. The
+      // schema has one settled state for "did not produce a run", so what separates the two is
+      // the code beside it, and a merchant who withdrew their own evaluation should not be told
+      // it went wrong.
+      if (failureCode === "withdrawn_by_merchant") {
+        return { label: "Withdrawn", tone: "neutral" };
+      }
+      if (failureCode === "cancelled_by_operator") {
+        return { label: "Cancelled", tone: "neutral" };
+      }
       return { label: "Not completed", tone: "warn" };
     default:
       return { label: humanize(status), tone: "neutral" };
+  }
+}
+
+/**
+ * Why one mission ended the way it did, as a phrase rather than as the stored enum.
+ *
+ * Short on purpose: this appears inside a table cell beside another one of itself, in the
+ * before and after columns of a comparison, where a sentence would not fit and two sentences
+ * side by side would not be readable.
+ */
+export function failureReasonLabel(reason: string): string {
+  switch (reason) {
+    case "DISCOVERY_FAILURE":
+      return "nothing was found to buy";
+    case "ATTRIBUTE_MISSING":
+      return "a required fact is not published";
+    case "ATTRIBUTE_UNREADABLE":
+      return "a published fact could not be read";
+    case "CATEGORY_MISSING":
+      return "the category is not published";
+    case "INVALID_VARIANT":
+      return "the variant chosen was not one on sale";
+    case "WRONG_MERCHANT":
+      return "the variant chosen belongs to another merchant";
+    case "QUANTITY_MISMATCH":
+      return "the quantity did not match the mission";
+    case "CURRENCY_MISMATCH":
+      return "the currency did not match the authorization";
+    case "BUDGET_EXCEEDED":
+      return "the price was over the authorized amount";
+    case "CONSTRAINT_VIOLATION":
+      return "the purchase broke a stated constraint";
+    case "MANDATE_DENIED":
+      return "the authorization refused the purchase";
+    case "INVENTORY_UNAVAILABLE":
+      return "the stock was not there";
+    case "CHECKOUT_CREATION_FAILED":
+      return "the checkout could not be created";
+    case "PAYMENT_FAILED":
+      return "the payment did not succeed";
+    case "PAYMENT_UNRESOLVED":
+      return "the payment outcome is unresolved";
+    case "UNEXPECTED_PURCHASE":
+      return "something was bought that should not have been";
+    case "MERCHANT_API_ERROR":
+      return "the merchant commerce API";
+    case "AGENT_REASONING_ERROR":
+      return "the AI buyer's own reasoning";
+    case "AGENT_EXECUTION_ERROR":
+      return "the AI buyer could not complete its own run";
+    case "ENFORCEMENT_BYPASSED":
+      return "a payment succeeded past a refusal";
+    default:
+      return humanize(reason).toLowerCase();
+  }
+}
+
+/** Why a compiler run produced nothing, in words rather than in a code. */
+export function compilerFailureLabel(code: string): string {
+  switch (code) {
+    case "invalid_source_or_candidate":
+      return "AgentRank could not read this snapshot as a source document. Supply newer source evidence and compile that.";
+    default:
+      return humanize(code);
   }
 }
 
@@ -226,6 +303,12 @@ export function launchFailureLabel(code: string): string {
       return "AgentRank reached its own deployment ceiling for model requests, so it stopped rather than making more.";
     case "run_aborted":
       return "The benchmark run this launch started was stopped and closed by an operator. Nothing was replayed.";
+    // Neither of these is a failure. They are the two ways an evaluation that had not started is
+    // deliberately put down, and the wording says who did it.
+    case "withdrawn_by_merchant":
+      return "You withdrew this evaluation before it started. No mission ran, no stock was held and no payment was attempted, so nothing was measured and no earlier evidence changed.";
+    case "cancelled_by_operator":
+      return "Your operator closed this evaluation before it started, which frees it to be requested again. No mission ran and nothing was measured.";
     default:
       return humanize(code);
   }

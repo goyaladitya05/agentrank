@@ -48,12 +48,12 @@ export interface CompileState {
   /**
    * What the run is, so the acknowledgement can say something true.
    *
-   * A compiler run that could not read its snapshot completes FAILED and is still answered 201;
-   * a run another request is still executing is answered the same way, because a run is committed
-   * RUNNING before the compiler reads anything; a well formed document often produces nothing to
-   * review at all; and asking again for a snapshot already compiled and published answers with
-   * that run. "The facts it proposed are waiting for your review" is false in all four, and the
-   * API already told the console which one this is.
+   * A compiler run that could not read its snapshot completes FAILED and is still answered 201; a
+   * well formed document often produces nothing to review at all; asking again for a snapshot
+   * already compiled and published answers with that run; and a row left PENDING or RUNNING by an
+   * older build, which nothing can create now, is none of those. "The facts it proposed are
+   * waiting for your review" is false in all four, and the API already told the console which one
+   * this is.
    */
   readonly runStatus: string | null;
   readonly pendingReviews: number | null;

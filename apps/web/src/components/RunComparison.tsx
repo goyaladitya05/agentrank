@@ -8,6 +8,7 @@ import {
   comparisonRateLabel,
   conclusionKindLabel,
   demandBucketLabel,
+  failureReasonLabel,
   statusLabel,
   transitionDirectionLabel,
   warningLabel,
@@ -245,7 +246,10 @@ function outcome(status: string | null, reason: string | null): string {
     return "not present in this run";
   }
   const label = statusLabel(status).label;
-  return reason === null ? label : `${label} (${reason})`;
+  // The reason is a stored enum and this is the last page of the merchant's journey. Rendering
+  // it raw put `AGENT_REASONING_ERROR` in a table cell beside a sentence written for a
+  // shopkeeper.
+  return reason === null ? label : `${label}: ${failureReasonLabel(reason)}`;
 }
 
 function Interactions({ comparison }: { comparison: RunComparison }) {

@@ -40,6 +40,8 @@ export const SOURCE_REFUSALS: Record<string, string> = {
  * here is the small set of codes whose API wording is about a request rather than about a store.
  */
 export const IMPORT_REFUSALS: Record<string, string> = {
+  import_request_key_reused:
+    "This form has already imported a different set of pages. Reload to start a new import.",
   request_too_large: "This import names more than the console can send. Remove some pages.",
   request_too_deeply_nested:
     "The console could not send this import. Reload the page and try again.",
@@ -48,6 +50,10 @@ export const IMPORT_REFUSALS: Record<string, string> = {
 };
 
 export const CONFIRM_REFUSALS: Record<string, string> = {
+  too_many_products:
+    "This import found more products than one source document holds. Import fewer pages at a time.",
+  too_many_variants:
+    "This import found more variants than one source document holds. Import fewer pages at a time.",
   no_products:
     "No product could be imported from these pages, so there is no source snapshot to create.",
   import_failed: "This import did not finish, so there is nothing to confirm. Run a new one.",

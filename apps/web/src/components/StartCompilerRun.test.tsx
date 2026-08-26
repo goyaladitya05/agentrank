@@ -145,10 +145,12 @@ describe("<CompileAccepted>", () => {
     expect(html).not.toContain("Compiler run finished");
   });
 
-  it("says a run another request is still executing is still executing", () => {
+  it("says a run left unfinished by an older build never finished", () => {
+    // Nothing can create either state now: a compiler run is written settled in one transaction.
+    // Rows that already carry one stay readable, and this is what the console says about them.
     for (const runStatus of ["PENDING", "RUNNING"]) {
       const html = accepted({ runStatus, pendingReviews: 0 });
-      expect(html).toContain("is being compiled");
+      expect(html).toContain("never finished");
       expect(html).not.toContain("could not read this snapshot");
       expect(html).not.toContain("Compiler run finished");
     }

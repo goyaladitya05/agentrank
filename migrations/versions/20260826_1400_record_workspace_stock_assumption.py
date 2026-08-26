@@ -37,10 +37,10 @@ depends_on: str | Sequence[str] | None = None
 
 TABLE = "merchant_evaluation_workspace"
 
-# The immutability trigger fires BEFORE UPDATE, so adding a column is fine and writing into one
-# afterwards is not. Both columns are therefore written by the INSERT that creates a workspace,
-# and rows that predate them keep saying nothing rather than being corrected.
-GUARD = "merchant_evaluation_workspace_guard"
+# The immutability trigger on this table fires BEFORE UPDATE OR DELETE, so adding a column is
+# fine and writing into one afterwards is not. Both columns are therefore written by the INSERT
+# that creates a workspace, and rows that predate them keep saying nothing rather than being
+# corrected. Both checks are `IS NULL OR ...` so they validate against every existing row.
 
 
 def upgrade() -> None:

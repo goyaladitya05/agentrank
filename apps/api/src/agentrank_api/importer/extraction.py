@@ -545,14 +545,23 @@ def _variant(
             )
     availability, text = _availability(offer, owner)
     quantity = _inventory_level(offer, owner)
-    if quantity is not None and availability is not AvailabilityEvidence.UNKNOWN:
+    if quantity is not None:
         implied = (
             AvailabilityEvidence.OUT_OF_STOCK if quantity == 0 else AvailabilityEvidence.IN_STOCK
         )
-        if implied is not availability:
-            # Two published facts about one thing that contradict each other. Picking either
-            # would be deciding which of a merchant's own statements to believe, which is the
-            # decision this importer exists without.
+        # Two published facts about one thing that contradict each other. Picking either would
+        # be deciding which of a merchant's own statements to believe, which is the decision this
+        # importer exists without.
+        #
+        # An unreadable token counts as a disagreement, not as an absence. A page publishing
+        # `PreOrder` beside a count of five has said something about availability that AgentRank
+        # cannot represent, and reading the count alone would turn a state it does not model into
+        # `IN_STOCK`. A page that published no availability token at all is different: there is
+        # nothing to disagree with, and the count says the whole thing on its own.
+        unreadable = availability is AvailabilityEvidence.UNKNOWN and text is not None
+        if unreadable or (
+            availability is not AvailabilityEvidence.UNKNOWN and implied is not availability
+        ):
             return Omission(
                 source_url,
                 "availability_conflict",
@@ -671,16 +680,19 @@ def _inventory_level(offer: dict[str, Any], owner: dict[str, Any]) -> int | None
     number that had to be massaged into shape is not a number a merchant published.
 
     Read the same way a price is, from the offer first and the product it belongs to second, so
-    a variant that states its own count is not given its family's.
+    a variant that states its own count is not given its family's. An offer that publishes the
+    key at all answers for itself, readably or not: falling through to the family on a value this
+    reader cannot use would give the variant a count its own page contradicted.
     """
     for holder in (offer, owner):
-        raw = holder.get("inventoryLevel")
+        if "inventoryLevel" not in holder:
+            continue
+        raw = holder["inventoryLevel"]
         if isinstance(raw, dict):
             raw = raw.get("value")
         if isinstance(raw, bool) or not isinstance(raw, int):
-            continue
-        if 0 <= raw <= MAX_INVENTORY_QUANTITY:
-            return raw
+            return None
+        return raw if 0 <= raw <= MAX_INVENTORY_QUANTITY else None
     return None
 
 

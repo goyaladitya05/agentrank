@@ -123,6 +123,12 @@ FAILURE_BUDGET_MISSING = "execution_budget_unavailable"
 # run service raises it when another run owns this merchant's world.
 RUN_ALREADY_ACTIVE = "run_already_active"
 
+# The launch this worker claimed was settled by somebody else before it could be bound: its
+# merchant withdrew it, an operator cancelled it, or another worker reached `bind_run` first. The
+# window exists because the claim's row lock is released before the loopback server boots, which
+# is argued in `execute_next_launch`.
+LAUNCH_NOT_QUEUED = "launch_not_queued"
+
 
 # The status a dispatch reports when it claimed nothing because everything queued for this world
 # is frozen to an executor this process cannot run. Distinct from claiming nothing because there
@@ -308,22 +314,29 @@ async def execute_next_launch(
     except ProviderExecutionHaltedError as halted:
         return await _halted(session, worker, launch_id=launch_id, halted=halted)
     except ConflictError as refused:
-        # Exactly one conflict is an ordinary answer: a world somebody else's run already owns.
-        # The launch has executed nothing then, so it stays queued and honest rather than being
-        # failed for a condition that will pass.
+        # Two conflicts are ordinary answers rather than failures.
+        #
+        # A world somebody else's run already owns. The launch has executed nothing then, so it
+        # stays queued and honest rather than being failed for a condition that will pass.
+        #
+        # And a launch that was settled between this worker's claim and its bind, which is the
+        # window the claim's released row lock leaves open. Its merchant withdrew it, an operator
+        # cancelled it, or another worker bound it first. `_execute` has already aborted the run
+        # it created, no mission ran, and there is nothing here to report as a failure of
+        # anything: what happened is that the work this worker claimed stopped being work.
         #
         # Every other conflict is deliberately not caught. A mission whose payment cannot be
         # accounted for raises one from inside execution, and reporting that as "still queued"
         # would tell an operator nothing had started while a run was executing and money may
         # have moved. Those propagate, the command exits non zero with the evidence, and the run
         # and its launch are closed the way a stopped run is always closed.
-        if refused.reason != RUN_ALREADY_ACTIVE:
+        if refused.reason not in {RUN_ALREADY_ACTIVE, LAUNCH_NOT_QUEUED}:
             raise
         await session.rollback()
         return DispatchOutcome(
             launch_id=launch_id,
             run_id=None,
-            status="QUEUED",
+            status="QUEUED" if refused.reason == RUN_ALREADY_ACTIVE else "SETTLED",
             failure_code=None,
             detail=refused.detail,
         )

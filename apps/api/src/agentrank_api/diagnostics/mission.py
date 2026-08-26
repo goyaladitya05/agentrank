@@ -717,8 +717,37 @@ def _attribute_recommendation(
 
 
 def _stock_rule(evidence: MissionDiagnosisInput) -> list[MissionFinding]:
+    """Empty stock on a mission that could have been bought, and never on one that could not.
+
+    The one rule in this builder that has to ask what the mission's ground truth was. Every
+    other reason here is a defect whichever answer the mission expected; this one is the mission
+    itself on a control. A stock abstention asks for one more unit than the shelf holds, so the
+    correct behaviour is to decline, and a buyer that attempts the purchase anyway is refused by
+    the very fact the mission was built on.
+
+    Reported as a merchant catalog defect, that refusal became "restock the affected variant" in
+    a panel a merchant reads as a trusted fact about their own shop, for a shelf depth the
+    mission was designed around. Where that depth is a simulated one, because the merchant
+    published a state and no count, it was AgentRank telling a merchant to restock a number
+    AgentRank chose.
+
+    On a mission where a purchase was genuinely available, empty stock is exactly what this code
+    says it is, and it still fires.
+    """
     if FailureReason.INVENTORY_UNAVAILABLE not in evidence.failure_reasons:
         return []
+    if not evidence.purchase_was_available:
+        return [
+            _finding(
+                DiagnosticCode.SELECTION_VIOLATED_REQUIREMENTS,
+                evidence,
+                summary=(
+                    "The buyer asked for more units than this line holds, on a mission whose"
+                    " correct answer was to decline."
+                ),
+                recommendation=None,
+            )
+        ]
     return [
         _finding(
             DiagnosticCode.STOCK_UNAVAILABLE,

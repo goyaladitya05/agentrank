@@ -20,8 +20,15 @@ import { inspectConfiguration } from "@/lib/configuration";
 
 export const dynamic = "force-dynamic";
 
-/** How long the API gets to answer its readiness endpoint before this reports it unavailable. */
-const PROBE_TIMEOUT_MS = 2_000;
+/**
+ * How long the API gets to answer its readiness endpoint before this reports it unavailable.
+ *
+ * Longer than the API's own database connect timeout, which defaults to five seconds and which
+ * `/ready` spends twice when PostgreSQL is unreachable rather than refusing. A shorter budget
+ * here aborts first and reports "the API did not answer", which sends an operator to look at the
+ * API process for a database outage the API was about to name.
+ */
+const PROBE_TIMEOUT_MS = 15_000;
 
 interface Component {
   readonly name: string;
@@ -45,10 +52,17 @@ async function apiComponent(): Promise<Component> {
       };
     }
     return { name: "api", status: "ok" };
-  } catch {
-    // Deliberately not the thrown error. A fetch failure message carries the host and port it
-    // tried, and a probe nobody has to authenticate for is not where that belongs.
-    return { name: "api", status: "unavailable", detail: "did not answer" };
+  } catch (error) {
+    // Deliberately not the thrown error's message. A fetch failure carries the host and port it
+    // tried, and a probe nobody has to authenticate for is not where that belongs. Which of the
+    // two happened is said, because "did not answer in time" and "could not be reached" send an
+    // operator to different places.
+    const timedOut = error instanceof Error && error.name === "TimeoutError";
+    return {
+      name: "api",
+      status: "unavailable",
+      detail: timedOut ? "did not answer in time" : "could not be reached",
+    };
   }
 }
 

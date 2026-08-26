@@ -2,10 +2,9 @@
 
 import uuid
 from collections.abc import Iterable
-from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -90,7 +89,18 @@ class MerchantCompilerService:
         #
         # Now nothing is written until the outcome is known, so a process that dies leaves no row
         # and the merchant simply compiles again.
+        # Nothing is held open across the compile. Reading the snapshot opened a transaction, and
+        # `_compile` is synchronous CPU work over a document already in memory, so leaving it
+        # open would pin a snapshot and an idle connection for the length of that work.
+        #
+        # A commit rather than a rollback, and the difference matters: this session belongs to
+        # the caller, `expire_on_commit` is off, and a rollback would expire every instance the
+        # caller loaded before it ever called this. Nothing was written, so committing a read is
+        # exactly ending it.
+        await self._session.commit()
         outcome, candidates = self._compile(payload, content_hash)
+        settled = await self._session.scalar(select(func.now()))
+        assert settled is not None  # `now()` always answers
         run = CompilerRun(
             merchant_id=merchant_id,
             source_snapshot_id=source_id,
@@ -98,7 +108,9 @@ class MerchantCompilerService:
             configuration=configuration.payload(),
             status=outcome,
             error_code=None if outcome is CompilerRunStatus.COMPLETED else INVALID_SOURCE,
-            completed_at=datetime.now(UTC),
+            # The database's clock, which is the one `created_at` defaults from. Two clocks would
+            # let host skew render a run as completed before it was created.
+            completed_at=settled,
         )
         try:
             self._session.add(run)

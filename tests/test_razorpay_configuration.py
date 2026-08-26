@@ -150,3 +150,19 @@ def test_a_real_model_provider_credential_is_carried_as_a_secret() -> None:
     assert credentials is not None
     assert credentials.api_key.get_secret_value() == "not-a-real-key"
     assert "not-a-real-key" not in repr(configured)
+
+
+def test_a_razorpay_variable_set_empty_means_the_integration_is_not_configured() -> None:
+    """The way a deployment with a key on disk says it does not want one.
+
+    `Settings` reads a `.env` file in every environment that is allowed to have one, so setting
+    the variable empty in the process environment is the only way to override it. Without this
+    the process refused to start, and the message it refused with named a live mode nobody was
+    trying to configure.
+    """
+    settings = Settings.model_validate(
+        {"POSTGRES_PASSWORD": "x", "RAZORPAY_KEY_ID": "", "RAZORPAY_KEY_SECRET": ""}
+    )
+
+    assert settings.razorpay is None
+    assert settings.capability_report()["razorpay_test_mode"] is False

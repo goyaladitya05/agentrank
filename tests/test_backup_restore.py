@@ -16,6 +16,8 @@ PostgreSQL version, into an empty database, with the evidence and the schema rev
 It claims nothing about replication, point in time recovery or a disk that failed mid-write.
 """
 
+import os
+import re
 import shutil
 import subprocess
 from collections.abc import Iterator
@@ -34,8 +36,6 @@ from agentrank_api.representation.service import MerchantRepresentationService
 from agentrank_api.schema import EXPECTED_REVISION
 from agentrank_api.workspace.service import MerchantEvaluationWorkspaceService
 
-pytestmark = pytest.mark.anyio
-
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 BACKUP = REPOSITORY_ROOT / "scripts" / "backup.sh"
 RESTORE = REPOSITORY_ROOT / "scripts" / "restore.sh"
@@ -43,20 +43,78 @@ RESTORE = REPOSITORY_ROOT / "scripts" / "restore.sh"
 RESTORE_DATABASE = "agentrank_restore_test"
 
 
-# Where the operator's tools live, which is not always the machine the tests run on. A deployment
-# runs `pg_dump` from a host that has the PostgreSQL client installed; a development machine runs
-# PostgreSQL in Docker and frequently has no client at all. Both are supported here, and it is the
-# same script executed either way: `bash -s` reads it from this repository over standard input, so
-# nothing about the procedure changes to accommodate the container.
-HOST_CLIENT = shutil.which("pg_dump") is not None
-
-# Resolved once rather than looked up per call, and as a full path so that what runs is decided
-# by this process' own PATH at import time rather than by whatever a subprocess inherits.
+# Where the operator's tools live, which is not always the machine the tests run on.
+#
+# A deployment runs `pg_dump` from a host that has the PostgreSQL client installed. A development
+# machine runs PostgreSQL in Docker and frequently has no client at all, and a CI runner has a
+# client whose major version may be older than the server it is pointed at, which `pg_dump`
+# refuses outright rather than dumping badly.
+#
+# So the container is preferred wherever there is one: its client is the server's own version by
+# construction. A host client is used when it is new enough. Neither is a reason to pretend the
+# procedure was verified, so the remaining case is a skip that says which of the two was missing.
+#
+# It is the same script either way. `bash -s` reads it from this repository over standard input,
+# so nothing about the procedure changes to accommodate where it runs.
 DOCKER = shutil.which("docker") or "docker"
+
+
+def _compose_postgres() -> bool:
+    """Whether this repository's own PostgreSQL container is up and reachable."""
+    if shutil.which("docker") is None:
+        return False
+    probe = subprocess.run(  # noqa: S603  the compose service this suite already runs against
+        [DOCKER, "compose", "exec", "-T", "postgres", "which", "pg_dump"],
+        capture_output=True,
+        cwd=REPOSITORY_ROOT,
+        check=False,
+        timeout=60,
+    )
+    return probe.returncode == 0
+
+
+def _host_client_is_new_enough() -> bool:
+    """Whether the host's own `pg_dump` can dump the server this suite runs against.
+
+    `pg_dump` refuses a server newer than itself, which is the case on a runner shipping an older
+    client. Comparing majors here turns that into a skip with a reason rather than a failure in
+    the middle of a dump.
+    """
+    client = shutil.which("pg_dump")
+    if client is None:
+        return False
+    reported = subprocess.run(  # noqa: S603  the client this machine's own PATH resolved
+        [client, "--version"], capture_output=True, text=True, check=False, timeout=60
+    )
+    if reported.returncode != 0:
+        return False
+    digits = "".join(
+        character
+        for character in reported.stdout.split()[-1]
+        if character.isdigit() or character == "."
+    )
+    major = digits.split(".")[0]
+    return major.isdigit() and int(major) >= SERVER_MAJOR
+
+
+# The PostgreSQL this repository runs against, stated once. `scripts/check-postgres.sh` holds the
+# same number for the same reason.
+SERVER_MAJOR = 18
+
+IN_CONTAINER = _compose_postgres()
+HOST_CLIENT = not IN_CONTAINER and _host_client_is_new_enough()
+RUNNABLE = IN_CONTAINER or HOST_CLIENT
+UNRUNNABLE = (
+    "no PostgreSQL client this suite can dump a version"
+    f" {SERVER_MAJOR} server with, on the host or in a container"
+)
 
 # Inside the container the server is on loopback whatever the host reaches it by, and the dump
 # lives in the container's own temporary directory because that is where the tool writing it is.
 CONTAINER_DUMP = "/tmp/agentrank-backup-test.dump"  # noqa: S108  a path inside a throwaway container
+
+
+pytestmark = [pytest.mark.anyio, pytest.mark.skipif(not RUNNABLE, reason=UNRUNNABLE)]
 
 
 def environment(settings: Settings) -> dict[str, str]:
@@ -83,13 +141,18 @@ def run(script: Path, *arguments: str, settings: Settings) -> subprocess.Complet
             timeout=180,
         )
     inside = environment(settings) | {"POSTGRES_HOST": "localhost", "POSTGRES_PORT": "5432"}
-    exported = [item for name, value in inside.items() for item in ("--env", f"{name}={value}")]
+    # Names on the command line and values in this process' own environment, which `docker compose
+    # exec --env NAME` forwards. The value form would put the database password in an argument
+    # vector every process on the host can read, which is exactly what `scripts/backup.sh` goes to
+    # trouble to avoid and would be a poor thing for the test that proves it to reintroduce.
+    forwarded = [item for name in inside for item in ("--env", name)]
     return subprocess.run(  # noqa: S603  the compose service this suite already runs against
-        [DOCKER, "compose", "exec", "-T", *exported, "postgres", "bash", "-s", "--", *arguments],
+        [DOCKER, "compose", "exec", "-T", *forwarded, "postgres", "bash", "-s", "--", *arguments],
         input=script.read_text(encoding="utf-8"),
         capture_output=True,
         text=True,
         cwd=REPOSITORY_ROOT,
+        env=os.environ | inside,
         check=False,
         timeout=180,
     )
@@ -108,6 +171,22 @@ def bytes_written(path: str) -> int:
         timeout=60,
     )
     return int(measured.stdout.strip()) if measured.returncode == 0 else 0
+
+
+def file_mode(path: str) -> int:
+    """The permission bits on a file the backup wrote, wherever the backup ran."""
+    if HOST_CLIENT:
+        return Path(path).stat().st_mode & 0o777
+    reported = subprocess.run(  # noqa: S603  the compose service this suite already runs against
+        [DOCKER, "compose", "exec", "-T", "postgres", "stat", "-c", "%a", path],
+        capture_output=True,
+        text=True,
+        cwd=REPOSITORY_ROOT,
+        check=False,
+        timeout=60,
+    )
+    assert reported.returncode == 0, reported.stderr
+    return int(reported.stdout.strip(), 8)
 
 
 def discard(path: str) -> None:
@@ -264,13 +343,67 @@ def test_the_scripts_refuse_a_call_they_do_not_understand(catalog_settings: Sett
     assert run(RESTORE, settings=catalog_settings).returncode == 64
 
 
-def test_no_backup_identifier_is_ever_a_caller_string() -> None:
-    """The database name a restore targets comes from an argument, so it is worth pinning.
+def test_no_caller_string_is_ever_interpolated_into_sql() -> None:
+    """Both scripts pass every identifier to `psql` as a flag value, never into a statement.
 
-    Both scripts pass every identifier to `psql` and `pg_restore` as a flag value rather than
-    interpolating one into SQL. The one SQL statement either of them runs is a fixed count over
-    `information_schema`, and this asserts that it stays fixed.
+    Asserted over every quoted SQL literal in the file rather than over the line after the first
+    `-tAc`, which is a line continuation and made this assertion trivially true.
     """
     body = RESTORE.read_text(encoding="utf-8")
-    assert "select count(*) from information_schema.tables where table_schema = 'public'" in body
-    assert "$database" not in body.split("-tAc")[1].split("\n")[0]
+    statements = re.findall(r'"(select [^"]+)"', body)
+    assert statements, body
+    for statement in statements:
+        assert "$" not in statement, statement
+
+
+async def test_a_database_name_that_is_a_connection_string_is_refused(
+    catalog_settings: Settings, dump_path: str
+) -> None:
+    """libpq reads a `dbname` containing `=` or `://` as a whole connection string.
+
+    It would override the host, the port and the user this script resolved, and offer the
+    deployment's password to whatever host it named, on the emptiness probe before `pg_restore`
+    even runs.
+    """
+    assert run(BACKUP, dump_path, settings=catalog_settings).returncode == 0
+
+    refused = run(
+        RESTORE,
+        dump_path,
+        "host=collector.example user=x dbname=y",
+        settings=catalog_settings,
+    )
+
+    assert refused.returncode == 64
+    assert "connection string" in refused.stderr
+
+
+def test_a_backup_is_readable_only_by_the_operator_who_took_it(
+    catalog_settings: Settings, dump_path: str
+) -> None:
+    """The most sensitive file this project produces is not world readable.
+
+    It holds every tenant's evidence plus every credential and session digest. Under the default
+    umask `pg_dump` would create it 0644, which on a shared host or a CI runner is every other
+    account on the machine.
+    """
+    assert run(BACKUP, dump_path, settings=catalog_settings).returncode == 0
+
+    assert file_mode(dump_path) & 0o077 == 0
+
+
+def test_a_backup_that_fails_leaves_no_file_pretending_to_be_one(
+    catalog_settings: Settings, dump_path: str
+) -> None:
+    """A truncated dump is discovered at the moment somebody needs it, which is the worst moment.
+
+    The failure is produced by pointing the script at a database that does not exist, which is
+    the shape of every real one: the file is created before `pg_dump` runs and the dump then
+    does not finish.
+    """
+    missing = catalog_settings.model_copy(update={"postgres_db": "agentrank_no_such_database"})
+
+    failed = run(BACKUP, dump_path, settings=missing)
+
+    assert failed.returncode != 0
+    assert bytes_written(dump_path) == 0

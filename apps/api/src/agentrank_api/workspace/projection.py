@@ -41,10 +41,18 @@ EVALUATION WORLD  an exact number of units, always, because a shelf has to hold 
 
 A count is carried across unchanged. A merchant who published only that something is in stock
 gets `assumed_stock_units` from the bootstrap configuration, which is a simulation parameter
-frozen into the workspace identity and reported as one; nothing writes it back into the source
-and nothing anywhere describes it as the merchant's stock. And `UNKNOWN` is refused by name,
-because a shelf cannot hold an unknown quantity of anything: a merchant who published no
-availability is asked to state one rather than having one chosen for them in either direction.
+frozen into the workspace identity and reported as one. And `UNKNOWN` is refused by name, because
+a shelf cannot hold an unknown quantity of anything: a merchant who published no availability is
+asked to state one rather than having one chosen for them in either direction.
+
+The assumed depth is authoritative inside the world and nowhere outside it. That is worth being
+exact about, because "it is never treated as real stock" would be too strong: a benchmark world is
+a commerce runtime, and a runtime whose shelf depth were advisory could not reserve, decrement or
+refuse anything. Within the world it is the stock, the storefront the buyer queries publishes it,
+and the oracle is computed against it. What it never becomes is a fact about the merchant: the
+source document keeps saying `IN_STOCK` with no count, `raw_projection` hands the buyer exactly
+that, and the workspace records which SKUs took a supplied depth so the console can render it as
+an assumption rather than as their inventory.
 
 Money stays an integer count of minor units with its currency beside it, exactly as it arrived.
 Nothing here converts, rounds, sums across currencies or infers an exponent.
@@ -91,6 +99,12 @@ _SCALARS = (str, int, bool)
 # already bounded well inside these, and one published by the operator command line is bounded by
 # nothing at all, so they are checked here rather than discovered as a database error in the
 # middle of the first benchmark run that tries to prepare the world.
+# The namespace an import writes its own provenance under, which is never a merchant product
+# fact. Stated here as well as in the importer because this is the boundary that has to refuse
+# it, and a projection that trusted the importer to have named things carefully would be a
+# projection with no rule at all.
+IMPORT_PROVENANCE_PREFIX = "import_"
+
 _LIMITS = {
     "external_id": 128,
     "title": 300,
@@ -346,6 +360,15 @@ def _variant(
     attributes: dict[str, Any] = {}
     for key in sorted(variant.merchant_metadata):
         value = variant.merchant_metadata[key]
+        if key.startswith(IMPORT_PROVENANCE_PREFIX):
+            # AgentRank's own record of how it read the merchant's page, not a fact about the
+            # product. It reaches the source document because provenance belongs with the
+            # evidence it explains, and it must not reach the evaluation catalog: a typed
+            # attribute there is something a generated mission can require, and a mission built
+            # on `import_availability_text` would be measuring whether a buyer can find
+            # AgentRank's own reading of a page rather than anything the merchant sells.
+            omitted.append(f"{address}.merchant_metadata.{key}")
+            continue
         if not isinstance(value, _SCALARS):
             omitted.append(f"{address}.merchant_metadata.{key}")
             continue

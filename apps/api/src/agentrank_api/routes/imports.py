@@ -110,14 +110,16 @@ async def run_import(
         )
     except RefusedTargetError as refused:
         # The URL goes in the field location, which is where a caller's own string already goes
-        # and where it is already bounded, rather than into the sentence, which is this
-        # repository's prose and stays that way.
+        # and where it is already bounded, and the message stays this repository's own sentence.
+        # A merchant who pasted twelve addresses reads which one was refused and why; a console
+        # that renders the field rather than the detail, which this one does, still shows them a
+        # sentence rather than a reason code.
         raise InvalidRequestError(
             refused.detail,
             fields=[
                 InvalidField(
                     location=["body", "pages", refused.url or "", "url"],
-                    message=refused.reason,
+                    message=refused.detail,
                 )
             ],
         ) from refused

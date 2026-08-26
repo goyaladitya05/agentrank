@@ -1,7 +1,8 @@
 import Link from "next/link";
 
-import { EmptyState, Panel, Section } from "@/components/Primitives";
+import { EmptyState, Panel, Section, StatusMark } from "@/components/Primitives";
 import styles from "@/components/console.module.css";
+import { statusLabel } from "@/lib/labels";
 import { decodeCompilerOverview } from "@/lib/compiler";
 import { formatTimestamp } from "@/lib/format";
 import { loadInsight } from "@/lib/insights/load";
@@ -99,7 +100,9 @@ function RunTable({ runs }: { runs: Awaited<ReturnType<typeof decodeCompilerOver
                   {run.source_label}
                 </Link>
               </td>
-              <td>{run.status}</td>
+              <td>
+                <StatusMark {...statusLabel(run.status)} />
+              </td>
               <td>
                 {String(run.reviewed_count)} of {String(run.review_required_count)} resolved
               </td>

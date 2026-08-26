@@ -131,28 +131,6 @@ class InvalidField(BaseModel):
     message: str
 
 
-class InvalidRequestError(AgentRankError):
-    """A request this application could not turn into the thing the caller named.
-
-    Distinct from a `ConflictError`, where the request was fine and the state refused it, and
-    distinct from the framework's own body validation, which runs before a route is entered. This
-    is for the refusals a route discovers afterwards: a domain constructor that finds two products
-    sharing a SKU, a review correction whose excerpt is not in the field it cites, a draft the
-    source schema will not accept.
-
-    It carries `fields` for the same reason `InvalidRequestResponse` does, so a caller that wants
-    to fix one field is not left parsing a sentence, and it is answered by the same handler that
-    answers the framework's own, so every 422 this application produces has one shape.
-    """
-
-    reason = "invalid_request"
-
-    def __init__(self, detail: str, *, fields: list[InvalidField] | None = None) -> None:
-        super().__init__(detail)
-        self.detail = detail
-        self.fields = fields or []
-
-
 class InvalidRequestResponse(ErrorResponse):
     """A request body this application could not read, said in a way an agent can act on.
 
@@ -208,6 +186,28 @@ def refusal_detail(fields: list[InvalidField]) -> str:
         f"{'.'.join(field.location) or 'body'}: {field.message}" for field in fields[:3]
     )
     return named or "the request body could not be read"
+
+
+class InvalidRequestError(AgentRankError):
+    """A request this application could not turn into the thing the caller named.
+
+    Distinct from a `ConflictError`, where the request was fine and the state refused it, and
+    distinct from the framework's own body validation, which runs before a route is entered. This
+    is for the refusals a route discovers afterwards: a domain constructor that finds two products
+    sharing a SKU, a review correction whose excerpt is not in the field it cites, a draft the
+    source schema will not accept.
+
+    It carries `fields` for the same reason `InvalidRequestResponse` does, so a caller that wants
+    to fix one field is not left parsing a sentence, and it is answered by the same handler that
+    answers the framework's own, so every 422 this application produces has one shape.
+    """
+
+    reason = "invalid_request"
+
+    def __init__(self, detail: str, *, fields: list[InvalidField] | None = None) -> None:
+        super().__init__(detail)
+        self.detail = detail
+        self.fields = fields or []
 
 
 def invalid_request(error: ValueError) -> InvalidRequestError:

@@ -155,7 +155,7 @@ export function MissionDetailContent({
             />
           </Panel>
         ) : (
-          <div className={styles.tableScroll}>
+          <div className={styles.tableScroll} tabIndex={0} aria-label="Commerce artifacts">
             <table className={styles.table}>
               <thead>
                 <tr>
@@ -187,7 +187,7 @@ export function MissionDetailContent({
             />
           </Panel>
         ) : (
-          <div className={styles.tableScroll}>
+          <div className={styles.tableScroll} tabIndex={0} aria-label="Evidence references">
             <table className={styles.table}>
               <thead>
                 <tr>
