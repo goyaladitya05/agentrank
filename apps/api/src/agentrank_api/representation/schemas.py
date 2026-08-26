@@ -281,7 +281,11 @@ class SourceSubmissionRequest(SourceDocumentInput):
     """
 
     request_key: str = Field(pattern=SUBMISSION_KEY_PATTERN)
-    base_source_snapshot_id: uuid.UUID | None = None
+    # `strict=False` for the same reason the availability field carries it: this model is strict,
+    # a JSON body carries a string, and a strict UUID field would only accept an actual UUID
+    # object. The value is still parsed as a UUID, so a malformed one is a refusal naming the
+    # field rather than a value quietly admitted.
+    base_source_snapshot_id: Annotated[uuid.UUID, Field(strict=False)] | None = None
 
     @field_validator("request_key")
     @classmethod

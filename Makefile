@@ -12,8 +12,8 @@ OPERATOR_CLI := agentrank_api.cli
 
 .PHONY: help install format lint format-check typecheck test test-backend test-frontend \
 	build-frontend test-browser test-smoke check-text check-whitespace check \
-	db-up db-down db-reset db-verify db-backup db-restore migrate seed-dev seed-benchmark \
-	api web payments credentials benchmark
+	test-release db-up db-down db-reset db-verify db-backup db-restore migrate seed-dev \
+	seed-benchmark api web payments credentials benchmark merchants
 
 help: ## List available targets
 	@grep -hE '^[a-zA-Z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) \
@@ -53,6 +53,13 @@ test: test-backend test-frontend test-browser ## Run all tests
 # time to wait for it while iterating on it.
 test-smoke: ## Start the supported topology in a clean database and run one merchant evaluation
 	$(UV) run pytest tests/test_deployment_smoke.py
+
+# The whole merchant product in one deployment: an operator provisions a merchant, that merchant
+# imports their own public pages from a storefront served on loopback, and everything from the
+# source snapshot to the comparison happens over HTTP against real processes. Also an ordinary
+# pytest module, and here as well because it starts three processes and is worth running alone.
+test-release: ## Take one merchant through the entire product against a clean deployment
+	$(UV) run pytest tests/test_release_candidate.py
 
 # The seeded keys reach the tests through the environment and never through an argument vector,
 # and the artifact scan runs whether the workflows passed or failed: a failing run is exactly when
@@ -148,3 +155,6 @@ credentials: ## Run the credential operator CLI. Example: make credentials ARGS=
 
 benchmark: ## Run the benchmark operator CLI. Example: make benchmark ARGS="run"
 	$(UV) run python -m $(OPERATOR_CLI) benchmark $(ARGS)
+
+merchants: ## Provision merchants. Example: make merchants ARGS="create --merchant-slug acme --name Acme"
+	$(UV) run python -m $(OPERATOR_CLI) merchants $(ARGS)
