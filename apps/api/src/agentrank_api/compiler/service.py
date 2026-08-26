@@ -47,6 +47,11 @@ from agentrank_api.representation.fixtures import RepresentationFixtureError, pa
 from agentrank_api.representation.models import CommerceRepresentation, MerchantSourceSnapshot
 from agentrank_api.representation.repository import CommerceRepresentationRepository
 
+# What a run records when the document it was given could not be read as a source document or
+# produced a candidate this build refuses. One code, because the distinction between the two is a
+# detail of this module and neither is something a merchant acts on differently.
+INVALID_SOURCE = "invalid_source_or_candidate"
+
 
 class MerchantCompilerService:
     """A whole-snapshot compiler.  It has no benchmark or buyer dependencies by design."""
@@ -72,33 +77,35 @@ class MerchantCompilerService:
         existing = await self._run_for_input(source_id, digest)
         if existing is not None:
             return existing
+        # Read the document before anything is written. Compilation is pure CPU over a document
+        # already in memory: no network, no model, no second query, and milliseconds.
+        #
+        # That ordering is the whole of the crash recovery. This used to commit PENDING, commit
+        # RUNNING, and only then extract, which meant the unique key on the snapshot and the
+        # configuration was consumed by the first commit. A process killed between commits left a
+        # run stuck PENDING or RUNNING that nothing recovers, publishing refused it forever, and
+        # the merchant could not escape by resubmitting their source either: identical evidence
+        # deduplicates back onto the same snapshot, so the same dead run came back. That was an
+        # unescapable dead end reachable by an ordinary restart.
+        #
+        # Now nothing is written until the outcome is known, so a process that dies leaves no row
+        # and the merchant simply compiles again.
+        outcome, candidates = self._compile(payload, content_hash)
         run = CompilerRun(
             merchant_id=merchant_id,
             source_snapshot_id=source_id,
             configuration_digest=digest,
             configuration=configuration.payload(),
-            status=CompilerRunStatus.PENDING,
+            status=outcome,
+            error_code=None if outcome is CompilerRunStatus.COMPLETED else INVALID_SOURCE,
+            completed_at=datetime.now(UTC),
         )
-        self._session.add(run)
         try:
-            await self._session.commit()
-        except IntegrityError:
-            # Two launches of one snapshot under one configuration. The unique key is what makes
-            # them one run rather than two readings of one document, and the loser answers with
-            # the run the winner wrote rather than with an error nothing went wrong for.
-            await self._session.rollback()
-            existing = await self._run_for_input(source_id, digest)
-            if existing is not None:
-                return existing
-            raise
-        run.status = CompilerRunStatus.RUNNING
-        await self._session.commit()
-        try:
-            definition = parse_source(payload)
-            if definition.content_hash != content_hash:
-                raise ValueError("persisted source content hash does not match its payload")
-            candidates = extract(definition)
-            self._validate_candidates(candidates, definition)
+            self._session.add(run)
+            # Flushed rather than committed, so the run has an identity for its candidates to
+            # name and the whole thing is still one transaction. A process that dies anywhere
+            # between here and the commit leaves nothing behind.
+            await self._session.flush()
             self._session.add_all(
                 CompilerCandidate(
                     merchant_id=merchant_id,
@@ -109,16 +116,39 @@ class MerchantCompilerService:
                 )
                 for proposal, state in candidates
             )
-            run.status = CompilerRunStatus.COMPLETED
-            run.completed_at = datetime.now(UTC)
             await self._session.commit()
-            return run
+        except IntegrityError:
+            # Two launches of one snapshot under one configuration. The unique key is what makes
+            # them one run rather than two readings of one document, and the loser answers with
+            # the run the winner wrote rather than with an error nothing went wrong for.
+            await self._session.rollback()
+            existing = await self._run_for_input(source_id, digest)
+            if existing is not None:
+                return existing
+            raise
+        return run
+
+    def _compile(
+        self, payload: dict[str, Any], content_hash: str
+    ) -> tuple[CompilerRunStatus, list[tuple[CandidateProposal, CandidateState]]]:
+        """Read one stored source document and propose what it states, or say it could not be.
+
+        Pure. No session, no clock and no IO of any kind, which is what lets the whole run be one
+        transaction: the work happens first and the row that records it is written once, settled.
+
+        A document this build cannot read is a FAILED run with no candidates rather than an
+        exception, because a snapshot that was valid when it was written and is not readable now
+        is a fact about this merchant's evidence that they should be able to see.
+        """
+        try:
+            definition = parse_source(payload)
+            if definition.content_hash != content_hash:
+                raise ValueError("persisted source content hash does not match its payload")
+            candidates = extract(definition)
+            self._validate_candidates(candidates, definition)
         except RepresentationFixtureError, ValueError:
-            run.status = CompilerRunStatus.FAILED
-            run.error_code = "invalid_source_or_candidate"
-            run.completed_at = datetime.now(UTC)
-            await self._session.commit()
-            return run
+            return CompilerRunStatus.FAILED, []
+        return CompilerRunStatus.COMPLETED, candidates
 
     async def get_run(self, merchant_id: uuid.UUID, run_id: uuid.UUID) -> CompilerRun:
         run = (

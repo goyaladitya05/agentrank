@@ -317,6 +317,24 @@ def add_commands(parser: argparse.ArgumentParser) -> None:
     _add_json(queueing)
     queueing.set_defaults(command=queue)
 
+    launches = commands.add_parser(
+        "launches",
+        help="one merchant's evaluation launches, settled ones included",
+        description=(
+            "Read a merchant's launch history. `queue` answers what is waiting now and drops a"
+            " launch the moment it settles, which leaves 'why did my evaluation disappear'"
+            " answerable only with SQL: a launch an operator cancelled, one that failed"
+            " governance and one that completed all look the same from there, which is absent."
+            " This reads them all, newest first, with the failure code each one settled with."
+        ),
+    )
+    _add_merchant(launches)
+    launches.add_argument(
+        "--limit", type=int, default=20, help="how many launches to read, newest first"
+    )
+    _add_json(launches)
+    launches.set_defaults(command=launch_history)
+
     cancelling = commands.add_parser(
         "cancel",
         help="close a queued launch nothing is configured to run, freeing the merchant's slot",
@@ -864,6 +882,85 @@ async def queue(
     return ExitCode.OK
 
 
+# How many launches `benchmark launches` will read at once, whatever a caller asks for. An
+# operator diagnosing one merchant needs the recent ones, and an unbounded read of a table with
+# no upper size is not a diagnostic.
+MAX_LAUNCH_HISTORY = 200
+
+
+async def launch_history(
+    session: AsyncSession,
+    sessions: async_sessionmaker[AsyncSession],
+    provider: PaymentProvider,
+    arguments: argparse.Namespace,
+    out: TextIO,
+    settings: Settings,
+) -> int:
+    """Read one merchant's evaluation launches, settled ones included.
+
+    The read that answers "my evaluation vanished". `queue` is deliberately about now and drops a
+    launch as soon as it settles, so a cancelled launch, one that failed for want of provider
+    allowance and one that completed were all equally invisible afterwards. This is the same
+    table read without the status filter, so it stays the one answer rather than a second one.
+
+    Merchant scoped, because a launch belongs to a merchant and the question is always about one.
+    """
+    del sessions, provider, settings
+    merchant_id = await _benchmark_merchant(session, arguments)
+    limit = max(1, min(arguments.limit, MAX_LAUNCH_HISTORY))
+    rows = list(
+        (
+            await session.execute(
+                select(BenchmarkEvaluationLaunch)
+                .where(BenchmarkEvaluationLaunch.merchant_id == merchant_id)
+                .order_by(
+                    BenchmarkEvaluationLaunch.requested_at.desc(),
+                    BenchmarkEvaluationLaunch.id.desc(),
+                )
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    payload: dict[str, Any] = {
+        "merchant_id": str(merchant_id),
+        "launches": [
+            {
+                "launch_id": str(launch.id),
+                "purpose": launch.purpose.value,
+                "status": launch.status.value,
+                "executor_kind": launch.executor_kind,
+                "requested_at": launch.requested_at.isoformat(),
+                "settled_at": None if launch.settled_at is None else launch.settled_at.isoformat(),
+                "run_id": None if launch.run_id is None else str(launch.run_id),
+                "failure_code": launch.failure_code,
+            }
+            for launch in rows
+        ],
+    }
+    if arguments.as_json:
+        write_json(out, payload)
+        return ExitCode.OK
+
+    if not payload["launches"]:
+        print("this merchant has requested no evaluations", file=out)
+        return ExitCode.OK
+    print(
+        f"{'launch':<{LAUNCH_WIDTH}}  {'status':<{STATUS_WIDTH}}"
+        f"  {'executor':<{EXECUTOR_WIDTH}}  settled with",
+        file=out,
+    )
+    for entry in payload["launches"]:
+        print(
+            f"{entry['launch_id']!s:<{LAUNCH_WIDTH}}  {entry['status']!s:<{STATUS_WIDTH}}"
+            f"  {entry['executor_kind']!s:<{EXECUTOR_WIDTH}}  {entry['failure_code'] or MISSING}",
+            file=out,
+        )
+    print(f"\n{len(payload['launches'])} launch(es)", file=out)
+    return ExitCode.OK
+
+
 # What the queue calls a launch nobody in this deployment is configured to execute. Its own
 # answer rather than a provider capacity one, because the fix is a credential and not patience.
 NO_CAPABLE_WORKER = "NO_CAPABLE_WORKER"
@@ -1169,10 +1266,21 @@ async def settle(
     merchant_id = await _benchmark_merchant(session, arguments)
     run = await BenchmarkRunService(session).load(arguments.run_id, merchant_id=merchant_id)
     if not run.is_terminal:
-        print(
-            f"refused     benchmark run {run.id} is {run.status.value} and has not finished",
-            file=out,
-        )
+        # A refusal is an answer and answers respect the format this invocation asked for. A
+        # recovery script running this under `--json` used to get prose on stdout, which its
+        # parser could not tell from garbage.
+        refusal = {
+            "run_id": str(run.id),
+            "status": run.status.value,
+            "refused": "run_not_finished",
+        }
+        if arguments.as_json:
+            write_json(out, refusal)
+        else:
+            print(
+                f"refused     benchmark run {run.id} is {run.status.value} and has not finished",
+                file=out,
+            )
         return ExitCode.REFUSED
     settled = await EvaluationLaunchWorkerService(session).settle_for_terminal_run(run.id)
     payload = {

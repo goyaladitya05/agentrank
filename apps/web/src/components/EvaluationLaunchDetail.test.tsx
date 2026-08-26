@@ -367,3 +367,36 @@ describe("a merchant's first evaluation", () => {
     expect(html).not.toMatch(/provider (failed|outage)/i);
   });
 });
+
+describe("withdrawing a queued evaluation", () => {
+  it("offers a way out of a queued launch", () => {
+    const html = renderToStaticMarkup(
+      <EvaluationLaunchDetailContent
+        launch={decodeEvaluationLaunchDetail(QUEUED_REEVALUATION_FIXTURE)}
+        withdraw={() => IDLE_LAUNCH}
+      />,
+    );
+
+    expect(html).toContain("Withdraw this evaluation");
+  });
+
+  it("offers no way out of one that has already started", () => {
+    // An executing launch has a run behind it that somebody has to account for, and closing one
+    // from here would leave that run orphaned.
+    const html = renderToStaticMarkup(
+      <EvaluationLaunchDetailContent
+        launch={decodeEvaluationLaunchDetail(RUNNING_REEVALUATION_FIXTURE)}
+        withdraw={() => IDLE_LAUNCH}
+      />,
+    );
+
+    expect(html).not.toContain("Withdraw this evaluation");
+  });
+
+  it("renders a queued launch with no withdraw action at all", () => {
+    const html = render(QUEUED_REEVALUATION_FIXTURE);
+
+    expect(html).not.toContain("Withdraw this evaluation");
+    expect(html).toContain("Queued");
+  });
+});

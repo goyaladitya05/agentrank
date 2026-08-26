@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { InsightFailure } from "@/components/InsightFailure";
 import { EvaluationLaunchDetailContent } from "@/components/EvaluationLaunchDetail";
 import { EvaluationRefresh } from "@/components/EvaluationRefresh";
+import { withdrawEvaluation } from "@/lib/evaluation-actions";
 import { loadInsight } from "@/lib/insights/load";
 import { decodeEvaluationLaunchDetail } from "@/lib/evaluation";
 
@@ -37,7 +38,10 @@ export default async function EvaluationLaunchPage({
   // pure function of its data and every state it can show is renderable in a test.
   return (
     <>
-      <EvaluationLaunchDetailContent launch={launch} />
+      <EvaluationLaunchDetailContent
+        launch={launch}
+        withdraw={withdrawEvaluation.bind(null, launchId)}
+      />
       <EvaluationRefresh active={launch.status === "QUEUED" || launch.status === "EXECUTING"} />
     </>
   );

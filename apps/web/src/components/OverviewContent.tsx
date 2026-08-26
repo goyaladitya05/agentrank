@@ -27,6 +27,26 @@ import type {
   RunSummary,
 } from "@/lib/insights/types";
 
+/**
+ * What an aborted run is, said before anything derived from it is read.
+ *
+ * A run that stopped part way is the newest evidence there is and its numbers describe only the
+ * missions that executed. Without this, a run halted at mission zero rendered as "Nothing here
+ * needs your action" above a completion rate of zero per cent, which is two false statements: it
+ * needed action, and nothing was measured to be zero per cent of.
+ */
+function Incomplete({ run }: { run: RunSummary }) {
+  const executed =
+    run.missions_succeeded + run.missions_failed + run.missions_abstained + run.missions_errored;
+  return (
+    <p>
+      <StatusMark tone="warn" label="Incomplete" /> This evaluation stopped before it finished.{" "}
+      {String(executed)} of {String(run.missions_total)} missions executed, so everything below
+      describes those and not your merchant as a whole.
+    </p>
+  );
+}
+
 export function OverviewContent({ data }: { data: MerchantOverview }) {
   const latestFinishedRun =
     data.runs.find((run) => run.status === "COMPLETED" || run.status === "ABORTED") ?? null;
@@ -63,8 +83,13 @@ export function OverviewContent({ data }: { data: MerchantOverview }) {
           </Panel>
         ) : (
           <Panel>
+            {latestFinishedRun.status === "ABORTED" ? <Incomplete run={latestFinishedRun} /> : null}
             {sentences.length === 0 ? (
-              <p>No findings on this run. Nothing here needs your action.</p>
+              <p>
+                {latestFinishedRun.status === "ABORTED"
+                  ? "No findings came out of the part of this run that executed."
+                  : "No findings on this run. Nothing here needs your action."}
+              </p>
             ) : (
               sentences.map((sentence) => <p key={sentence}>{sentence}</p>)
             )}

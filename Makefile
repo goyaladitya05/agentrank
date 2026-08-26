@@ -12,8 +12,8 @@ OPERATOR_CLI := agentrank_api.cli
 
 .PHONY: help install format lint format-check typecheck test test-backend test-frontend \
 	build-frontend test-browser test-smoke check-text check-whitespace check \
-	db-up db-down db-reset db-verify migrate seed-dev seed-benchmark api web payments credentials \
-	benchmark
+	db-up db-down db-reset db-verify db-backup db-restore migrate seed-dev seed-benchmark \
+	api web payments credentials benchmark
 
 help: ## List available targets
 	@grep -hE '^[a-zA-Z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) \
@@ -110,6 +110,17 @@ db-reset: ## Destroy the data volume and start a clean database
 
 db-verify: ## Confirm the local database is reachable and is PostgreSQL 18
 	./scripts/check-postgres.sh
+
+# PostgreSQL holds every immutable artifact this product produces and none of it is
+# reconstructible from anywhere else. These are the whole backup story: pg_dump and pg_restore,
+# run by an operator, on whatever schedule they choose. tests/test_backup_restore.py executes
+# both against a populated database, so the procedure is one that has been run rather than one
+# that has been written down.
+db-backup: ## Dump the database. Example: make db-backup ARGS="agentrank.dump"
+	./scripts/backup.sh $(ARGS)
+
+db-restore: ## Restore a dump into an empty database. Example: make db-restore ARGS="agentrank.dump agentrank_restored"
+	./scripts/restore.sh $(ARGS)
 
 migrate: ## Apply all migrations
 	$(UV) run alembic upgrade head

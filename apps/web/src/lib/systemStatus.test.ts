@@ -71,3 +71,58 @@ describe("fetchSystemStatus", () => {
     expect(status.database.state).toBe("unknown");
   });
 });
+
+describe("the schema component", () => {
+  it("reports an incompatible schema as unavailable rather than dropping it", async () => {
+    // The deploy that starts processes before its migration lands. The database is up and the
+    // API is answering, and every merchant request is failing.
+    const status = await fetchSystemStatus("https://api.example", () =>
+      Promise.resolve(
+        Response.json(
+          {
+            status: "not_ready",
+            components: [
+              { name: "database", status: "connected", detail: null },
+              { name: "schema", status: "incompatible", detail: "expected abc, found def" },
+            ],
+          },
+          { status: 503 },
+        ),
+      ),
+    );
+
+    expect(status.database.state).toBe("connected");
+    expect(status.schema.state).toBe("unavailable");
+    expect(status.schema.detail).toBe("expected abc, found def");
+  });
+
+  it("reads the schema component's own word for connected", async () => {
+    const status = await fetchSystemStatus("https://api.example", () =>
+      Promise.resolve(
+        Response.json({
+          status: "ready",
+          components: [
+            { name: "database", status: "connected", detail: null },
+            { name: "schema", status: "compatible", detail: "abc" },
+          ],
+        }),
+      ),
+    );
+
+    expect(status.schema.state).toBe("connected");
+  });
+
+  it("says a schema the API did not report is unknown rather than fine", async () => {
+    const status = await fetchSystemStatus("https://api.example", () =>
+      Promise.resolve(
+        Response.json({
+          status: "ready",
+          components: [{ name: "database", status: "connected", detail: null }],
+        }),
+      ),
+    );
+
+    expect(status.schema.state).toBe("unknown");
+    expect(status.schema.detail).toBe("not reported by the API");
+  });
+});

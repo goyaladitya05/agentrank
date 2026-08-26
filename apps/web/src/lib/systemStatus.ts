@@ -15,6 +15,15 @@ export interface ComponentStatus {
 export interface SystemStatus {
   readonly api: ComponentStatus;
   readonly database: ComponentStatus;
+  /**
+   * Whether the API is running against the schema its build expects.
+   *
+   * Reported separately because it is the component that fails on its own. A deploy that starts
+   * processes before its migration lands has a database that is up and an API that is answering,
+   * and every merchant request failing; a status page that showed only the first two would say
+   * everything is fine while nothing works.
+   */
+  readonly schema: ComponentStatus;
 }
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -55,9 +64,11 @@ function isReadinessPayload(value: unknown): value is ReadinessPayload {
 }
 
 function toComponentState(status: string): ComponentState {
-  if (status === "connected" || status === "unavailable") {
-    return status;
-  }
+  // `compatible` is the schema component's own word for connected. Everything the API can say
+  // that is not one of these two is a state this console does not claim to understand, and
+  // "unknown" is the honest rendering of that rather than a guess in either direction.
+  if (status === "connected" || status === "compatible") return "connected";
+  if (status === "unavailable" || status === "incompatible") return "unavailable";
   return "unknown";
 }
 
@@ -69,6 +80,7 @@ function apiUnreachable(detail: string): SystemStatus {
   return {
     api: { name: "API", state: "unavailable", detail },
     database: { name: "Database", state: "unknown", detail: null },
+    schema: { name: "Schema", state: "unknown", detail: null },
   };
 }
 
@@ -107,6 +119,7 @@ export async function fetchSystemStatus(
   }
 
   const database = payload.components.find((component) => component.name === "database");
+  const schema = payload.components.find((component) => component.name === "schema");
 
   return {
     api: { name: "API", state: "connected", detail: null },
@@ -117,5 +130,8 @@ export async function fetchSystemStatus(
           detail: database.detail,
         }
       : { name: "Database", state: "unknown", detail: "not reported by the API" },
+    schema: schema
+      ? { name: "Schema", state: toComponentState(schema.status), detail: schema.detail }
+      : { name: "Schema", state: "unknown", detail: "not reported by the API" },
   };
 }

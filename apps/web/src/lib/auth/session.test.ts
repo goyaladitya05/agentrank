@@ -13,6 +13,7 @@ import {
   presentedCookie,
   sessionCookieName,
   sessionCookieOptions,
+  sessionCookieRemoval,
   sessionSecret,
   sessionVerifier,
 } from "./session";
@@ -196,5 +197,24 @@ describe("which cookie name a session is written under and read from", () => {
   it("answers undefined when no session cookie is present at all", () => {
     expect(presentedCookie({ get: () => undefined })).toBeUndefined();
     expect(presentedCookie({ get: () => ({ value: "" }) })).toBeUndefined();
+  });
+});
+
+describe("removing a session cookie", () => {
+  it("carries the attributes the browser needs to accept the removal", () => {
+    // A `__Host-` prefixed cookie may only be written with Secure and Path=/. A removal without
+    // them is refused by the browser and the session cookie survives a sign out.
+    const removal = sessionCookieRemoval(SECURE_SESSION_COOKIE);
+
+    expect(removal.secure).toBe(true);
+    expect(removal.path).toBe("/");
+    expect(removal.maxAge).toBe(0);
+    expect(removal.httpOnly).toBe(true);
+  });
+
+  it("removes the unprefixed name at the root path rather than at the current one", () => {
+    // Without Path=/ the removal takes the request's default path, so signing out from a nested
+    // route left the cookie in place for every other route.
+    expect(sessionCookieRemoval(SESSION_COOKIE).path).toBe("/");
   });
 });

@@ -197,3 +197,38 @@ describe("<OverviewContent> product behavior", () => {
     expect(html).toContain('href="/evaluations"');
   });
 });
+
+describe("an evaluation that stopped part way", () => {
+  it("says the run is incomplete before anything derived from it", () => {
+    // A run halted at mission zero used to render as "Nothing here needs your action" above a
+    // completion rate of zero per cent. Both are false: it needed action, and nothing was
+    // measured to be zero per cent of.
+    const html = render(
+      overviewWith((overview) => {
+        const [latest] = overview.runs;
+        if (latest === undefined) throw new Error("the fixture has no runs");
+        latest.status = "ABORTED";
+        latest.missions_succeeded = 0;
+        latest.missions_failed = 0;
+        latest.missions_abstained = 0;
+        latest.missions_errored = 0;
+        overview.top_findings = [];
+      }),
+    );
+
+    expect(html).toContain("This evaluation stopped before it finished");
+    expect(html).toContain("0 of 14 missions executed");
+    expect(html).not.toContain("Nothing here needs your action");
+  });
+
+  it("still says nothing needs action when a completed run produced no findings", () => {
+    const html = render(
+      overviewWith((overview) => {
+        overview.top_findings = [];
+      }),
+    );
+
+    expect(html).toContain("Nothing here needs your action");
+    expect(html).not.toContain("This evaluation stopped before it finished");
+  });
+});

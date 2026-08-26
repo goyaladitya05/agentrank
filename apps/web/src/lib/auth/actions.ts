@@ -22,6 +22,7 @@ import {
   presentedCookie,
   sessionCookieName,
   sessionCookieOptions,
+  sessionCookieRemoval,
   sessionVerifier,
 } from "@/lib/auth/session";
 import { apiBaseUrl } from "@/lib/config";
@@ -90,12 +91,14 @@ export async function signOut(): Promise<void> {
   const verifier = sessionVerifier(presentedCookie(jar));
   // Both names, because a deployment that gained or lost HTTPS since this browser signed in may
   // hold the other one, and a sign out that left it behind would be a sign out that did not.
+  // Written rather than deleted, for the reason `sessionCookieRemoval` states: a deletion with no
+  // Path and no Secure is one the browser refuses to apply to the cookie this console sets.
   //
   // The cookie goes whatever the API says. A browser that keeps presenting a session the server
   // has closed learns nothing useful, and a network failure here must not leave somebody looking
   // at a console they asked to leave.
   for (const name of SESSION_COOKIE_NAMES) {
-    jar.delete(name);
+    jar.set(name, "", sessionCookieRemoval(name));
   }
   if (verifier !== null) {
     try {

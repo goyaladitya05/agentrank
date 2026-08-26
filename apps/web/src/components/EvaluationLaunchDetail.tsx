@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import { EmptyState, KeyValueList, Panel, Section, StatusMark } from "@/components/Primitives";
 import { RunComparisonPanel } from "@/components/RunComparison";
+import { WithdrawEvaluation, type WithdrawAction } from "@/components/WithdrawEvaluation";
 import { TechnicalDetails, IdRow } from "@/components/TechnicalDetails";
 import styles from "@/components/console.module.css";
 import { formatTimestamp } from "@/lib/format";
@@ -27,7 +28,13 @@ import type { EvaluationLaunchDetail } from "@/lib/evaluation";
  * empty. There is no prior run and no field standing in for one, so nothing here has a zero to
  * put in its place.
  */
-export function EvaluationLaunchDetailContent({ launch }: { launch: EvaluationLaunchDetail }) {
+export function EvaluationLaunchDetailContent({
+  launch,
+  withdraw,
+}: {
+  launch: EvaluationLaunchDetail;
+  withdraw?: WithdrawAction;
+}) {
   const status = launchStatusLabel(launch.status);
   const pending = launch.status === "QUEUED" || launch.status === "EXECUTING";
   const initial = launch.purpose === "INITIAL";
@@ -42,6 +49,9 @@ export function EvaluationLaunchDetailContent({ launch }: { launch: EvaluationLa
         <Panel>
           <ExecutionState launch={launch} />
           <ModelSpending launch={launch} />
+          {launch.status === "QUEUED" && withdraw !== undefined ? (
+            <WithdrawEvaluation action={withdraw} />
+          ) : null}
           {pending ? (
             <p className={styles.reviewMeta} role="status">
               This page re-reads the launch every {REFRESH_SECONDS} seconds until it finishes.

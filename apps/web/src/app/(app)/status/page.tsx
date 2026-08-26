@@ -16,7 +16,7 @@ export default async function SystemStatusPage() {
   return (
     <section className={styles.main}>
       <h1 className={styles.wordmark}>System status</h1>
-      <SystemStatusTable components={[status.api, status.database]} />
+      <SystemStatusTable components={[status.api, status.database, status.schema]} />
     </section>
   );
 }

@@ -59,6 +59,8 @@ const REFUSALS: Record<string, string> = {
     "AgentRank has no benchmark missions for your merchant yet. Prepare your evaluation setup first.",
   benchmark_world_unregistered:
     "AgentRank has no evaluation catalog for your merchant yet. Prepare your evaluation setup first.",
+  launch_not_queued:
+    "This evaluation has already started or already finished, so it cannot be withdrawn. Reload to see where it stands.",
   not_found: "What this evaluation named is no longer available. Reload to see the current state.",
   unauthenticated: "Your session has expired. Sign in again to request an evaluation.",
 };
@@ -151,6 +153,52 @@ export async function requestEvaluation(
     unknown: false,
     launchId: launched.launch_id,
   };
+}
+
+/**
+ * Withdraw a queued evaluation.
+ *
+ * The exit from the one state this console could not leave. A queued launch waits for an
+ * operator process, and while it waits the merchant can neither request another evaluation nor
+ * build a new evaluation setup, so a deployment with no capable worker left them holding a
+ * request nothing would run.
+ *
+ * Safe by what a queued launch is: no mission has executed, no stock has been held and no
+ * payment has been attempted. It is settled rather than deleted, so it stays in history as
+ * something the merchant asked for and then withdrew.
+ */
+export async function withdrawEvaluation(launchId: string, _: LaunchState): Promise<LaunchState> {
+  const credential = await requireConsoleCredential();
+  let response: Response;
+  try {
+    response = await fetch(
+      `${apiBaseUrl().replace(/\/+$/, "")}/api/v1/benchmark/evaluations/${encodeURIComponent(launchId)}/withdraw`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${credential}` },
+        cache: "no-store",
+      },
+    );
+  } catch {
+    return {
+      ok: false,
+      message:
+        "The console could not reach AgentRank, so whether this evaluation was withdrawn is unknown. Reload this page to see the current state.",
+      stale: false,
+      unknown: true,
+      launchId: null,
+    };
+  }
+
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const failed = refusal(response.status, payload);
+    if (failed.stale) refreshed();
+    return failed;
+  }
+  refreshed();
+  revalidatePath(`/evaluations/${launchId}`);
+  return { ok: true, message: null, stale: false, unknown: false, launchId };
 }
 
 function refreshed(): void {

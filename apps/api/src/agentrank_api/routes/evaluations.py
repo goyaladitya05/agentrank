@@ -109,3 +109,27 @@ async def request_launch(
         plan_digest=request.plan_digest,
     )
     return EvaluationLaunchView.from_domain(await service.detail(merchant.merchant_id, launch.id))
+
+
+@router.post("/{launch_id}/withdraw")
+async def withdraw_launch(
+    launch_id: uuid.UUID,
+    session: SessionDep,
+    merchant: OperatorDep,
+    settings: SettingsDep,
+) -> EvaluationLaunchView:
+    """Close a queued evaluation the merchant no longer wants.
+
+    The exit from the one state the console could not leave. A queued launch waits for a worker
+    an operator configures, and while it waits the merchant can neither request another
+    evaluation nor build a new evaluation setup, so a deployment with no capable worker left them
+    holding a request nothing would run and no way to put it down.
+
+    A command rather than a delete, and the launch is settled rather than removed: what a
+    merchant asked for and then withdrew is a thing that happened. Queued only, because an
+    executing launch has a run behind it that somebody has to account for, and that is refused
+    with a code rather than performed.
+    """
+    service = MerchantEvaluationLaunchService(session, settings)
+    await service.withdraw(merchant.merchant_id, launch_id)
+    return EvaluationLaunchView.from_domain(await service.detail(merchant.merchant_id, launch_id))

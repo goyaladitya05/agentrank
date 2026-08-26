@@ -43,6 +43,8 @@ uv run python -m agentrank_api.cli payments reconcile-unresolved --limit 20
 uv run python -m agentrank_api.cli payments resume <attempt-id>
 uv run python -m agentrank_api.cli payments abandon <attempt-id> --reason provider_unreachable
 uv run python -m agentrank_api.cli payments status
+uv run python -m agentrank_api.cli merchants create --merchant-slug ampere-supply --name "Ampere"
+uv run python -m agentrank_api.cli merchants list
 uv run python -m agentrank_api.cli credentials create --merchant-slug ampere-supply --label local
 uv run python -m agentrank_api.cli credentials list --merchant-slug ampere-supply
 uv run python -m agentrank_api.cli credentials revoke <credential-id>
@@ -102,6 +104,7 @@ from agentrank_api.cli import (
     benchmark,
     compiler,
     credentials,
+    merchants,
     migrations,
     payments,
     representation,
@@ -136,6 +139,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="AgentRank operator tooling. Trusted local surface, no authentication.",
     )
     groups = parser.add_subparsers(dest="group", required=True)
+    merchants.add_commands(
+        groups.add_parser("merchants", help="merchant provisioning, which has no other surface")
+    )
     payments.add_commands(groups.add_parser("payments", help="payment operations and recovery"))
     credentials.add_commands(groups.add_parser("credentials", help="merchant API key provisioning"))
     benchmark.add_commands(

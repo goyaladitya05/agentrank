@@ -179,6 +179,39 @@ export function sessionCookieOptions(maxAgeSeconds: number): {
   };
 }
 
+/**
+ * The attributes that actually remove one session cookie from a browser.
+ *
+ * Not `jar.delete(name)`, which is what this used to be. That emits `name=; Expires=Thu, 01 Jan
+ * 1970` with no `Path` and no `Secure`, and a `__Host-` prefixed cookie may only be written with
+ * `Secure` and `Path=/`, so the browser rejects the deletion outright and the cookie stays. The
+ * unprefixed name fares no better: a deletion with no `Path` takes the request's default path,
+ * which is not `/` on any nested route, so signing out from `/sources/imports/<id>` left the real
+ * cookie in place. What ended the session was the API call beside it, whose failure is
+ * deliberately swallowed, so a sign out during a brief API outage left the browser holding a live
+ * session while telling the merchant they had left.
+ *
+ * A deletion is an ordinary write with an expired lifetime, so it carries the attributes the
+ * original write carried. `secure` is forced on for the prefixed name because the prefix requires
+ * it; that name cannot exist on a deployment that is not secure, so nothing is lost by clearing
+ * it that way there.
+ */
+export function sessionCookieRemoval(name: string): {
+  httpOnly: true;
+  sameSite: "lax";
+  path: "/";
+  maxAge: 0;
+  secure: boolean;
+} {
+  return {
+    httpOnly: true,
+    sameSite: "lax",
+    path: "/",
+    maxAge: 0,
+    secure: name === SECURE_SESSION_COOKIE || cookiesAreSecure(),
+  };
+}
+
 export const COOKIE_SECURE_VARIABLE = "AGENTRANK_COOKIE_SECURE";
 
 /**

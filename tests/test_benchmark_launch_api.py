@@ -1006,3 +1006,66 @@ class TestReadCost:
 
         assert one > 0
         assert three == one
+
+
+async def test_a_merchant_can_withdraw_a_queued_evaluation_and_ask_again(
+    settings: Settings,
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+    issue_credential: CredentialIssuer,
+) -> None:
+    """The exit from the one state the console could not leave.
+
+    A queued launch waits for a worker an operator configures, and while it waits the merchant
+    can neither request another evaluation nor build a new evaluation setup. A deployment with no
+    capable worker left them holding a request nothing would run and no way to put it down.
+    """
+    world = await build_launch_world(session, "withdraw-shop")
+    token = await issue_credential(world.merchant_id)
+    http = client(settings, factory)
+
+    queued = http.post(
+        LAUNCH, headers=bearer(token), json=launch_body(http, token, request_key="withdraw-first")
+    ).json()
+    assert queued["status"] == "QUEUED"
+
+    withdrawn = http.post(f"{LAUNCH}/{queued['launch_id']}/withdraw", headers=bearer(token))
+
+    assert withdrawn.status_code == 200
+    assert withdrawn.json()["status"] == "FAILED"
+    assert withdrawn.json()["failure_code"] == "withdrawn_by_merchant"
+
+    # The merchant's one pending slot is free again, so they can ask a second time.
+    assert http.get(PREFLIGHT, headers=bearer(token)).json()["launchable"] is True
+    second = http.post(
+        LAUNCH, headers=bearer(token), json=launch_body(http, token, request_key="withdraw-second")
+    )
+    assert second.status_code == 201
+    assert second.json()["status"] == "QUEUED"
+
+    # Withdrawing something already settled is refused by name rather than done twice.
+    repeated = http.post(f"{LAUNCH}/{queued['launch_id']}/withdraw", headers=bearer(token))
+    assert repeated.status_code == 409
+    assert repeated.json()["error"] == "launch_not_queued"
+
+
+async def test_another_merchants_launch_cannot_be_withdrawn(
+    settings: Settings,
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+    issue_credential: CredentialIssuer,
+) -> None:
+    world = await build_launch_world(session, "withdraw-owner")
+    intruder = await build_launch_world(session, "withdraw-intruder")
+    token = await issue_credential(world.merchant_id)
+    other = await issue_credential(intruder.merchant_id)
+    http = client(settings, factory)
+
+    queued = http.post(
+        LAUNCH,
+        headers=bearer(token),
+        json=launch_body(http, token, request_key="withdraw-isolation"),
+    ).json()
+    refused = http.post(f"{LAUNCH}/{queued['launch_id']}/withdraw", headers=bearer(other))
+
+    assert refused.status_code == 404

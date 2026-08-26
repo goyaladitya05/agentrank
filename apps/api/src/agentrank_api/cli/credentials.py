@@ -47,6 +47,7 @@ know whose. Nothing here reads a Unix username and calls it authentication.
 """
 
 import argparse
+import sys
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, TextIO
@@ -515,7 +516,12 @@ async def purge_sessions(
     """
     del sessions_factory, provider, settings
     if arguments.older_than_days < 0 or arguments.limit < 1:
-        print("--older-than-days must not be negative and --limit must be at least 1", file=out)
+        # Usage goes to stderr, not to the stream a caller is parsing. An operator piping this
+        # into `jq` should get a parse failure from nothing rather than from a sentence.
+        print(
+            "--older-than-days must not be negative and --limit must be at least 1",
+            file=sys.stderr,
+        )
         return ExitCode.USAGE
     removed = await ConsoleSessionService(session).purge_settled(
         older_than=timedelta(days=arguments.older_than_days), limit=arguments.limit
