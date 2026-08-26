@@ -258,7 +258,7 @@ function OutcomeFilterNav({ runId, current }: { runId: string; current: OutcomeF
       {OUTCOME_FILTERS.map((outcome) => (
         <Link
           key={outcome}
-          href={`/runs/${encodeURIComponent(runId)}${
+          href={`/lab/runs/${encodeURIComponent(runId)}${
             outcome === "ALL" ? "" : `?outcome=${outcome}`
           }`}
           className={styles.textLink}
@@ -329,7 +329,7 @@ function MissionsTable({
                 <td>
                   <Link
                     className={styles.rowLinkStrong}
-                    href={`/runs/${encodeURIComponent(runId)}/missions/${encodeURIComponent(
+                    href={`/lab/runs/${encodeURIComponent(runId)}/missions/${encodeURIComponent(
                       mission.mission_run_id,
                     )}`}
                   >

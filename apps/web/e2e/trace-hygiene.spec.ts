@@ -41,9 +41,9 @@ test("a retained trace of a signed in session carries no credential material", a
   await signIn(page, context, key);
   await page
     .getByRole("navigation", { name: "Console" })
-    .getByRole("link", { name: "Compiler" })
+    .getByRole("link", { name: "Fixes" })
     .click();
-  await expect(page.getByRole("heading", { name: "Compiler review" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Fixes" })).toBeVisible();
 
   const trace = testInfo.outputPath("signed-in-trace.zip");
   await context.tracing.stop({ path: trace });
@@ -54,7 +54,7 @@ test("a retained trace of a signed in session carries no credential material", a
   // clean answer mean something: it fails unless the trace really did capture the session.
   const report = execFileSync(
     "uv",
-    ["run", "python", "scripts/check-e2e-artifacts.py", trace, "--require", "/compiler"],
+    ["run", "python", "scripts/check-e2e-artifacts.py", trace, "--require", "/fixes"],
     {
       cwd: "../..",
       encoding: "utf-8",

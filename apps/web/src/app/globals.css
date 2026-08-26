@@ -1,18 +1,28 @@
 :root {
   color-scheme: light dark;
 
-  --surface: #fbfbfa;
-  --surface-raised: #ffffff;
-  --surface-header: #f2f2f0;
-  --border: #d7d6d1;
-  --border-strong: #a8a7a1;
-  --text: #17191a;
-  --text-muted: #62666a;
-  --accent: #245c8a;
+  /* Warm paper neutrals rather than default gray. The surface carries the product's
+     seriousness; color is reserved for status and for the one accent. */
+  --surface: #f7f6f3;
+  --surface-raised: #fffefc;
+  --surface-header: #efede8;
+  --surface-sunken: #f1efeb;
+  --border: #e0ddd6;
+  --border-strong: #aaa69d;
+  --text: #1c1b18;
+  --text-muted: #67645c;
+  --accent: #1f5673;
+  --accent-strong: #17435a;
+  --accent-surface: #eef3f6;
 
-  --state-ok: #1f6b45;
-  --state-warn: #8a6412;
-  --state-fail: #9b2c2c;
+  --state-ok: #226b46;
+  --state-ok-surface: #edf4ee;
+  --state-warn: #8a5f10;
+  --state-warn-surface: #f7f1e4;
+  --state-fail: #99312e;
+  --state-fail-surface: #f8eeec;
+
+  --shadow-raised: 0 1px 2px rgba(28, 27, 24, 0.04);
 
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   --sans:
@@ -22,18 +32,26 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --surface: #121415;
-    --surface-raised: #191c1d;
-    --surface-header: #1e2223;
-    --border: #2d3234;
-    --border-strong: #474d50;
-    --text: #e5e8e8;
-    --text-muted: #99a0a3;
-    --accent: #7fb0dd;
+    --surface: #131413;
+    --surface-raised: #1b1c1a;
+    --surface-header: #201f1d;
+    --surface-sunken: #181917;
+    --border: #2e2f2c;
+    --border-strong: #4c4d48;
+    --text: #e8e7e2;
+    --text-muted: #9c9a92;
+    --accent: #7db4d4;
+    --accent-strong: #a3cbe2;
+    --accent-surface: #1b2830;
 
-    --state-ok: #56b389;
-    --state-warn: #d3a444;
-    --state-fail: #e1786f;
+    --state-ok: #5cb488;
+    --state-ok-surface: #1a2620;
+    --state-warn: #d2a648;
+    --state-warn-surface: #2a2419;
+    --state-fail: #df7b71;
+    --state-fail-surface: #2c1d1b;
+
+    --shadow-raised: none;
   }
 }
 
@@ -54,12 +72,14 @@ body {
   color: var(--text);
   font-family: var(--sans);
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 1.55;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 h1,
-h2 {
+h2,
+h3 {
   margin: 0;
   font-weight: 600;
 }

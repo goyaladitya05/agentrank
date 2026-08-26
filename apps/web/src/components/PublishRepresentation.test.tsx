@@ -7,9 +7,8 @@ import { IDLE_MUTATION, type CompilerMutationState } from "@/lib/compiler-mutati
 function confirmation(state: CompilerMutationState = IDLE_MUTATION, pending = false): string {
   return renderToStaticMarkup(
     <PublishConfirmation
-      runId="01a03000-0000-7000-8000-000000000001"
       sourceLabel="voltedge-merchant-source@2"
-      action="/compiler"
+      action="/fixes"
       state={state}
       pending={pending}
     />,
@@ -19,29 +18,25 @@ function confirmation(state: CompilerMutationState = IDLE_MUTATION, pending = fa
 describe("<PublishRepresentation>", () => {
   it("requires an explicit confirmation step before it renders the publish submit", () => {
     const html = renderToStaticMarkup(
-      <PublishRepresentation
-        runId="run-1"
-        sourceLabel="catalog@2"
-        action={async () => IDLE_MUTATION}
-      />,
+      <PublishRepresentation sourceLabel="catalog@2" action={async () => IDLE_MUTATION} />,
     );
-    expect(html).toContain("Review publication");
-    expect(html).not.toContain("Publish representation</button>");
+    expect(html).toContain("Publish fixes");
+    expect(html).not.toContain("Publish fixes</button></div>");
+    expect(html).not.toContain('type="submit"');
   });
 });
 
 describe("<PublishConfirmation>", () => {
-  it("names the source and run being published and offers a way out", () => {
+  it("names the source being published and offers a way out", () => {
     const html = confirmation();
     expect(html).toContain("voltedge-merchant-source@2");
-    expect(html).toContain("01a03000-0000-7000-8000-000000000001");
     expect(html).toContain("Cancel");
   });
 
   it("says publication does not rerun a benchmark and promises no performance change", () => {
     const html = confirmation();
     expect(html).toContain("does not rerun a benchmark");
-    expect(html).toContain("does not change any price, stock level or order");
+    expect(html).toContain("does not change any price, stock");
     expect(html.toLowerCase()).not.toContain("improve");
     expect(html.toLowerCase()).not.toContain("score");
   });

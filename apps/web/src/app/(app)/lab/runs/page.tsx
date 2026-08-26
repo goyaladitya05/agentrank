@@ -92,7 +92,7 @@ function RunsTable({ runs }: { runs: readonly import("@/lib/insights/types").Run
                 <td>
                   <Link
                     className={styles.rowLinkStrong}
-                    href={`/runs/${encodeURIComponent(run.run_id)}`}
+                    href={`/lab/runs/${encodeURIComponent(run.run_id)}`}
                   >
                     {run.suite_label}
                   </Link>

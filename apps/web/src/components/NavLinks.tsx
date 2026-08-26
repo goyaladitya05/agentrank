@@ -5,13 +5,20 @@ import { usePathname } from "next/navigation";
 
 import styles from "./nav.module.css";
 
+/**
+ * The merchant navigation. Deliberately four entries.
+ *
+ * Everything else a merchant does, importing a store, preparing an evaluation, measuring
+ * again, is reached contextually from these pages, so the navigation answers the four
+ * questions a merchant actually returns for: how am I doing, what is wrong, what can I
+ * approve, and what has happened. The technical surfaces live under /lab, behind the
+ * separate link the layout renders beside sign out.
+ */
 const LINKS = [
   { href: "/overview", label: "Overview" },
-  { href: "/runs", label: "Runs" },
-  { href: "/sources", label: "Source" },
-  { href: "/compiler", label: "Compiler" },
-  { href: "/evaluations", label: "Evaluation" },
-  { href: "/status", label: "System status" },
+  { href: "/issues", label: "Issues" },
+  { href: "/fixes", label: "Fixes" },
+  { href: "/history", label: "History" },
 ];
 
 export function NavLinks() {

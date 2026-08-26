@@ -1,0 +1,495 @@
+/* Merchant-facing composition: the overview hero, stat strip, issue groups, fix review
+   cards and the before/after comparison. Built on the same tokens as the console module;
+   this file holds the larger typographic scale the merchant product leads with. */
+
+.eyebrow {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.pageIntro {
+  margin: 2px 0 0;
+  font-size: 14px;
+  color: var(--text-muted);
+  max-width: 62ch;
+}
+
+/* The overview hero: performance statement beside the one action that matters now. */
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
+  gap: 24px;
+  margin-bottom: 36px;
+}
+
+.heroPerformance {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-raised);
+  padding: 24px 28px;
+}
+
+.heroHeadline {
+  margin: 0 0 4px;
+  font-size: 30px;
+  line-height: 1.2;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+}
+
+.heroHeadline strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.heroSub {
+  margin: 0 0 18px;
+  font-size: 14px;
+  color: var(--text-muted);
+  max-width: 58ch;
+}
+
+.heroTrack {
+  margin: 0 0 18px;
+}
+
+/* One row of figures divided by hairlines. Deliberately not a card grid. */
+
+.statStrip {
+  display: flex;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+  gap: 12px 0;
+}
+
+.stat {
+  flex: 1 1 120px;
+  min-width: 120px;
+  padding: 0 20px;
+  border-left: 1px solid var(--border);
+}
+
+.stat:first-child {
+  padding-left: 0;
+  border-left: none;
+}
+
+.statValue {
+  display: block;
+  font-size: 21px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.statValue[data-tone="warn"] {
+  color: var(--state-warn);
+}
+
+.statValue[data-tone="ok"] {
+  color: var(--state-ok);
+}
+
+.statLabel {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* The next action. The most visually important element on the overview. */
+
+.actionCard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-raised);
+  padding: 22px 24px;
+}
+
+.actionEyebrow {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.actionTitle {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+
+.actionBody {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.actionFoot {
+  margin-top: auto;
+  padding-top: 8px;
+}
+
+.primaryButton {
+  display: inline-block;
+  padding: 9px 18px;
+  border: 1px solid var(--accent-strong);
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--surface-raised);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.primaryButton:hover {
+  background: var(--accent-strong);
+}
+
+.primaryButton:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.secondaryAction {
+  font-size: 13px;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.secondaryAction:hover {
+  text-decoration: underline;
+}
+
+.secondaryAction:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (max-width: 860px) {
+  .hero {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Issue presentation: two groups a merchant can tell apart at a glance. */
+
+.issueGroupTitle {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.issueGroupTitle[data-tone="warn"] {
+  color: var(--state-warn);
+}
+
+.issueGroupTitle[data-tone="neutral"] {
+  color: var(--text-muted);
+}
+
+.issueGroupCount {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.issueCard {
+  display: block;
+  padding: 16px 20px;
+  border-top: 1px solid var(--border);
+}
+
+.issueCard:first-of-type {
+  border-top: none;
+}
+
+.issueTitleRow {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.issueTitle {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  flex: 1 1 auto;
+  min-width: 220px;
+}
+
+.issueTitleLink {
+  color: inherit;
+  text-decoration: none;
+}
+
+.issueTitleLink:hover {
+  color: var(--accent);
+}
+
+.issueTitleLink:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.issueFacts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.issueConsequence {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.issueRecommendation {
+  margin: 8px 0 0;
+  font-size: 13px;
+  max-width: 72ch;
+}
+
+/* Fix review: current information beside the proposed agent-ready fact. */
+
+.fixCard {
+  padding: 18px 20px;
+  border-top: 1px solid var(--border);
+}
+
+.fixCard:first-of-type {
+  border-top: none;
+}
+
+.fixHead {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.fixSubject {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  flex: 1 1 auto;
+}
+
+.fixAttribute {
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.fixComparison {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  margin: 0 0 10px;
+}
+
+.fixSide {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 14px;
+  background: var(--surface-sunken);
+}
+
+.fixSideProposed {
+  background: var(--accent-surface);
+  border-color: var(--accent);
+}
+
+.fixSideLabel {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.fixSideValue {
+  font-size: 15px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.fixSideMeta {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+@media (max-width: 640px) {
+  .fixComparison {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Before and after: the payoff panel. */
+
+.compare {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0 28px;
+  margin: 4px 0 14px;
+}
+
+.compareSide {
+  padding: 14px 0 10px;
+}
+
+.compareSide + .compareSide {
+  border-left: 1px solid var(--border);
+  padding-left: 28px;
+}
+
+.compareLabel {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.compareValue {
+  display: block;
+  margin: 2px 0 8px;
+  font-size: 34px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+}
+
+.compareValue small {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--text-muted);
+  letter-spacing: normal;
+}
+
+.compareChanges {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13.5px;
+}
+
+.compareChanges li {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 3px 0;
+}
+
+.compareDelta {
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.compareDelta[data-tone="ok"] {
+  color: var(--state-ok);
+}
+
+.compareDelta[data-tone="warn"] {
+  color: var(--state-warn);
+}
+
+@media (max-width: 640px) {
+  .compare {
+    grid-template-columns: 1fr;
+  }
+  .compareSide + .compareSide {
+    border-left: none;
+    border-top: 1px solid var(--border);
+    padding-left: 0;
+  }
+}
+
+/* History: a single readable stream of merchant events. */
+
+.eventRow {
+  display: grid;
+  grid-template-columns: 170px minmax(0, 1fr) auto;
+  gap: 6px 20px;
+  align-items: baseline;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+}
+
+.eventRow:first-of-type {
+  border-top: none;
+}
+
+.eventWhen {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.eventTitle {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.eventTitle a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.eventTitle a:hover {
+  color: var(--accent);
+}
+
+.eventTitle a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.eventDetail {
+  display: block;
+  margin-top: 1px;
+  font-size: 12.5px;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+@media (max-width: 640px) {
+  .eventRow {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+}

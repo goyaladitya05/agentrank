@@ -47,8 +47,8 @@ function confirmation(
 describe("<LaunchConfirmation>", () => {
   it("says what will run, what it costs in execution and what it does not touch", () => {
     const html = confirmation(PREFLIGHT_FIXTURE);
-    expect(html).toContain("voltedge-core@2");
-    expect(html).toContain("14 missions are executed");
+    expect(html).toContain("your published store description");
+    expect(html).toContain("14 shopping scenarios are executed");
     expect(html).toContain("Every previous run and its findings stay exactly as they are");
     expect(html).toContain("can consume quota or incur cost");
     expect(html).toContain("12 model turns per mission");
@@ -147,15 +147,15 @@ describe("<EvaluationLaunchDetailContent>", () => {
     const html = render(QUEUED_REEVALUATION_FIXTURE);
     expect(html).toContain("Nothing has been executed yet");
     expect(html).toContain("no model quota has been spent");
-    expect(html).not.toContain("Open the benchmark run");
+    expect(html).not.toContain("Open the full run detail");
   });
 
   it("reports real mission counts and never a percentage", () => {
     const html = render(RUNNING_REEVALUATION_FIXTURE);
-    expect(html).toContain("7 of 14 missions finished");
+    expect(html).toContain("7 of 14 scenarios finished");
     expect(html).not.toMatch(/\d+%/);
     expect(html).toContain("re-reads the launch every 10 seconds");
-    expect(html).toContain("Open the benchmark run");
+    expect(html).toContain("Open the full run detail");
   });
 
   it("explains a launch that could not run without blaming the merchant", () => {
@@ -168,7 +168,7 @@ describe("<EvaluationLaunchDetailContent>", () => {
 
   it("leads a completed comparison with its caveats", () => {
     const html = render(COMPLETED_REEVALUATION_FIXTURE);
-    expect(html).toContain("14 of 14 missions finished");
+    expect(html).toContain("14 of 14 scenarios finished");
     expect(html).toContain("Not a controlled experiment");
     expect(html).toContain("One run on each side");
     expect(html).toContain("Newly completed");
@@ -239,7 +239,7 @@ describe("<EvaluationLaunchDetailContent>", () => {
 
   it("offers the compiler facts behind the representation it tested", () => {
     const html = render(COMPLETED_REEVALUATION_FIXTURE);
-    expect(html).toContain("/compiler/runs/01a0aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa1");
+    expect(html).toContain("/fixes/01a0aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa1");
   });
 });
 
@@ -294,20 +294,20 @@ describe("a merchant's first evaluation", () => {
     const html = render(COMPLETED_INITIAL_FIXTURE);
     expect(html).toContain("through the ordinary storefront");
     expect(html).toContain("voltedge-source@1");
-    expect(html).toContain("14 of 14 missions finished");
+    expect(html).toContain("14 of 14 scenarios finished");
   });
 
   it("offers ordinary product navigation and never a compiler run it did not have", () => {
     const html = render(COMPLETED_INITIAL_FIXTURE);
-    expect(html).toContain("Review your merchant source");
-    expect(html).toContain('href="/sources"');
-    expect(html).not.toContain("/compiler/runs/");
+    expect(html).toContain("Review your issues");
+    expect(html).toContain('href="/issues"');
+    expect(html).not.toContain("/fixes/");
     expect(html).not.toContain("Review the compiler facts");
   });
 
   it("reaches the ordinary run surfaces once it completes", () => {
     const html = render(COMPLETED_INITIAL_FIXTURE);
-    expect(html).toContain("Open the benchmark run and its findings");
+    expect(html).toContain("Open the full run detail in the Lab");
     expect(html).toContain("/runs/01a0dddd-dddd-7ddd-8ddd-ddddddddddd2");
   });
 
@@ -348,7 +348,7 @@ describe("a merchant's first evaluation", () => {
 
   it("does not present a stopped evaluation's five missions as a finished evaluation", () => {
     const html = render(BUDGET_EXHAUSTED_FIXTURE);
-    expect(html).not.toContain("5 of 14 missions finished");
+    expect(html).not.toContain("5 of 14 scenarios finished");
     expect(html).toContain("No comparison yet");
     expect(html).toContain("a partial run&#x27;s counts describe part of a workload");
   });

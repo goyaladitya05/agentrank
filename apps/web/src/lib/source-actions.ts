@@ -48,7 +48,7 @@ const MAX_DOCUMENT_BYTES = 128 * 1024;
 
 function refreshed(): void {
   revalidatePath("/sources");
-  revalidatePath("/compiler");
+  revalidatePath("/fixes");
   revalidatePath("/overview");
 }
 

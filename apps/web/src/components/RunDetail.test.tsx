@@ -77,7 +77,7 @@ describe("<RunDetailContent>", () => {
   it("links a finding to the exact compiler fact behind the representation it tested", () => {
     const html = render();
     expect(html).toContain(
-      "/compiler/runs/01a0aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa1#01a0bbbb-bbbb-7bbb-8bbb-bbbbbbbbbbb1",
+      "/fixes/01a0aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa1#01a0bbbb-bbbb-7bbb-8bbb-bbbbbbbbbbb1",
     );
     expect(html).toContain("variant.VE-CHG-100-BLK.attribute.wattage");
   });
@@ -93,7 +93,7 @@ describe("<RunDetailContent>", () => {
     const html = renderToStaticMarkup(
       <RunDetailContent data={decodeRunDiagnostics(stripped)} filter="ALL" />,
     );
-    expect(html).not.toContain("/compiler/runs/");
+    expect(html).not.toContain("/fixes/");
     expect(html).not.toContain("Compiler facts behind the representation this run tested");
     // The finding itself is unchanged: no link is not no problem.
     expect(html).toContain("wattage");

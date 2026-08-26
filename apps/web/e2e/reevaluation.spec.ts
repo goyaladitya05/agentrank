@@ -97,24 +97,24 @@ function newestLaunch(page: Page) {
 async function signIn(page: Page, context: BrowserContext): Promise<void> {
   if (key === undefined) throw new Error("AGENTRANK_E2E_REEVALUATION_KEY is required");
   await establishSession(page, context, key);
-  await expect(nav(page, "Evaluation")).toBeVisible();
+  await expect(nav(page, "Overview")).toBeVisible();
 }
 
 async function publishRepresentation(page: Page): Promise<void> {
-  await nav(page, "Compiler").click();
-  await page.getByRole("link", { name: /-source@1/ }).click();
-  await expect(page.getByRole("heading", { name: "Review compiler run" })).toBeVisible();
-  await page.getByRole("button", { name: "Review publication" }).click();
+  await nav(page, "Fixes").click();
+  await page.getByRole("link", { name: /-source@1/ }).first().click();
+  await expect(page.getByRole("heading", { name: "Review fixes" })).toBeVisible();
+  await page.getByRole("button", { name: "Publish fixes" }).click();
   await expect(page.getByText("does not rerun a benchmark")).toBeVisible();
-  await page.getByRole("button", { name: "Publish representation" }).click();
-  await expect(page.getByText("Agent-ready representation published:")).toBeVisible();
+  await page.getByRole("button", { name: "Publish fixes" }).click();
+  await expect(page.getByText("These fixes are published.")).toBeVisible();
 }
 
 async function requestEvaluation(page: Page): Promise<void> {
-  await nav(page, "Evaluation").click();
-  await page.getByRole("button", { name: "Review re-evaluation" }).click();
+  await page.goto("/evaluations");
+  await page.getByRole("button", { name: "Measure again" }).click();
   const form = page.getByRole("form", { name: "Confirm re-evaluation" });
-  await expect(form).toContainText("2 missions are executed");
+  await expect(form).toContainText("2 shopping scenarios are executed");
   await expect(form).toContainText("Every previous run and its findings stay exactly as they are");
   await form.getByRole("button", { name: "Request re-evaluation" }).click();
 }
@@ -129,8 +129,8 @@ test("a merchant publishes, launches a re-evaluation and reads the result agains
   await publishRepresentation(page);
 
   // Publishing said so itself, and the launch history proves it: nothing was started.
-  await expect(page.getByText("Publishing did not run a benchmark")).toBeVisible();
-  await nav(page, "Evaluation").click();
+  await expect(page.getByText("Publishing never runs an evaluation.")).toBeVisible();
+  await page.goto("/evaluations");
   await expect(page.getByText("No evaluations have run yet")).toBeVisible();
 
   await requestEvaluation(page);
@@ -142,17 +142,17 @@ test("a merchant publishes, launches a re-evaluation and reads the result agains
   await newestLaunch(page).click();
   await expect(page.getByText("Nothing has been executed yet")).toBeVisible();
   await expect(page.getByText("no model quota has been spent")).toBeVisible();
-  await expect(page.getByText("Open the benchmark run")).toHaveCount(0);
+  await expect(page.getByText("Open the full run detail")).toHaveCount(0);
 
   // The API executes nothing. An operator process claims the launch and runs it.
   expect(dispatch()).toContain("COMPLETED");
 
   await page.reload();
-  await expect(page.getByText("2 of 2 missions finished")).toBeVisible();
+  await expect(page.getByText("2 of 2 scenarios finished")).toBeVisible();
   await expect(page.getByText("no earlier completed run of this suite")).toBeVisible();
 
-  // The completed run reaches the ordinary diagnostics surfaces.
-  await page.getByRole("link", { name: "Open the benchmark run" }).click();
+  // The completed run reaches the Lab diagnostics surfaces.
+  await page.getByRole("link", { name: "Open the full run detail in the Lab" }).click();
   await expect(page.getByRole("heading", { name: "Run detail" })).toBeVisible();
   await expect(page.getByText("Task completion")).toBeVisible();
 
@@ -160,9 +160,11 @@ test("a merchant publishes, launches a re-evaluation and reads the result agains
   await requestEvaluation(page);
   expect(dispatch()).toContain("COMPLETED");
   await newestLaunch(page).click();
-  await expect(page.getByText("2 of 2 missions finished")).toBeVisible();
+  await expect(page.getByText("2 of 2 scenarios finished")).toBeVisible();
   await expect(page.getByText("Not a controlled experiment", { exact: true })).toBeVisible();
   await expect(page.getByText("One run on each side", { exact: true })).toBeVisible();
+  // The merchant payoff renders from the engine's own counts, above the detailed tables.
+  await expect(page.getByText("purchase scenarios completed").first()).toBeVisible();
   await expect(page.getByRole("link", { name: "before", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "after", exact: true })).toBeVisible();
 
@@ -184,7 +186,7 @@ test("a merchant publishes, launches a re-evaluation and reads the result agains
   });
   expect(crossOrigin.status()).not.toBe(200);
 
-  await nav(page, "Evaluation").click();
+  await page.goto("/evaluations");
   await expect(page.locator('[aria-label="Evaluations"] tbody tr')).toHaveCount(2);
 });
 

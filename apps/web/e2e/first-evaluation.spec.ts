@@ -67,7 +67,7 @@ function newestLaunch(page: Page) {
 async function signIn(page: Page, context: BrowserContext): Promise<void> {
   if (key === undefined) throw new Error("AGENTRANK_E2E_FIRST_KEY is required");
   await establishSession(page, context, key);
-  await expect(nav(page, "Evaluation")).toBeVisible();
+  await expect(nav(page, "Overview")).toBeVisible();
 }
 
 test("a merchant with no benchmark history reaches their first result from the console", async ({
@@ -76,27 +76,26 @@ test("a merchant with no benchmark history reaches their first result from the c
 }) => {
   await signIn(page, context);
 
-  // The zero state is factual and carries the one action that changes it.
+  // The zero state is the merchant journey with the one action that changes it.
   await page.goto("/overview");
-  await expect(page.getByText("No evaluations have run yet")).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: "See what would be evaluated" }).first(),
-  ).toBeVisible();
+  await expect(page.getByText("Can AI shopping agents buy from your store?")).toBeVisible();
+  await page.getByRole("link", { name: "Run your first evaluation" }).click();
 
   // What would be evaluated, before anything is spent. No representation is named, because
   // none exists, and nothing claims there is a previous result.
-  await nav(page, "Evaluation").click();
   await expect(page.getByRole("heading", { name: "Run your first evaluation" })).toBeVisible();
+  await expect(page.getByText("no earlier result to read it against")).toBeVisible();
+  await expect(page.getByText("No evaluations have run yet")).toBeVisible();
+  // The frozen technical identities stay behind the disclosure rather than in the lede.
+  await page.getByText("Technical details").first().click();
   await expect(
     page.getByText("Your merchant as it is now, through the ordinary storefront"),
   ).toBeVisible();
-  await expect(page.getByText("no earlier result to read it against")).toBeVisible();
-  await expect(page.getByText("No evaluations have run yet")).toBeVisible();
 
   // Launching is an explicit second act, and the confirmation says what it does and does not do.
-  await page.getByRole("button", { name: "Review first evaluation" }).click();
+  await page.getByRole("button", { name: "Run evaluation" }).click();
   const form = page.getByRole("form", { name: "Confirm first evaluation" });
-  await expect(form).toContainText("2 missions are executed");
+  await expect(form).toContainText("2 shopping scenarios are executed");
   await expect(form).toContainText("The buyer reads the ordinary storefront");
   await expect(form).toContainText("This creates your first benchmark result");
   await expect(form).toContainText("does not change your prices, inventory or any payment");
@@ -108,7 +107,7 @@ test("a merchant with no benchmark history reaches their first result from the c
   await expect(page.getByRole("heading", { name: "First evaluation" })).toBeVisible();
   await expect(page.getByText("Nothing has been executed yet")).toBeVisible();
   await expect(page.getByText("no model quota has been spent")).toBeVisible();
-  await expect(page.getByText("Open the benchmark run")).toHaveCount(0);
+  await expect(page.getByText("Open the full run detail")).toHaveCount(0);
   // A first evaluation has no before, so the page has no comparison section to be empty.
   await expect(page.getByText("Compared with your previous run")).toHaveCount(0);
   await expect(page.getByText("No comparison yet")).toHaveCount(0);
@@ -117,25 +116,25 @@ test("a merchant with no benchmark history reaches their first result from the c
   expect(dispatch()).toContain("COMPLETED");
 
   await page.reload();
-  await expect(page.getByText("2 of 2 missions finished")).toBeVisible();
+  await expect(page.getByText("2 of 2 scenarios finished")).toBeVisible();
   // Still no comparison, and still nothing standing in for one.
   await expect(page.getByText("Compared with your previous run")).toHaveCount(0);
   await expect(page.getByText("0%")).toHaveCount(0);
 
   // The next legitimate step is ordinary product navigation, not a causal claim.
-  await expect(page.getByRole("link", { name: "Review your merchant source" })).toBeVisible();
-  await expect(page.getByText("Review the compiler facts")).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Review your issues" })).toBeVisible();
+  await expect(page.getByText("Review the fixes")).toHaveCount(0);
 
-  // The completed run reaches the ordinary diagnostics surfaces, with no special first-run path.
-  await page.getByRole("link", { name: "Open the benchmark run" }).click();
+  // The completed run reaches the Lab diagnostics surfaces, with no special first-run path.
+  await page.getByRole("link", { name: "Open the full run detail in the Lab" }).click();
   await expect(page.getByRole("heading", { name: "Run detail" })).toBeVisible();
   await expect(page.getByText("Task completion")).toBeVisible();
 
   // And the merchant's history is exactly one evaluation and one run. No synthetic before was
   // written to give the first result something to sit beside.
-  await nav(page, "Evaluation").click();
+  await page.goto("/evaluations");
   await expect(page.locator('[aria-label="Evaluations"] tbody tr')).toHaveCount(1);
   await expect(page.getByText("First evaluation").first()).toBeVisible();
-  await nav(page, "Runs").click();
+  await page.goto("/lab/runs");
   await expect(page.locator("table tbody tr")).toHaveCount(1);
 });

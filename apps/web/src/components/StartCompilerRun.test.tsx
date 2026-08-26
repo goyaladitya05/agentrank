@@ -56,7 +56,7 @@ describe("<StartCompilerRun>", () => {
       />,
     );
     expect(html).toContain("already been read by the compiler");
-    expect(html).toContain("/compiler/runs/01a03000-0000-7000-8000-00000000000b");
+    expect(html).toContain("/fixes/01a03000-0000-7000-8000-00000000000b");
     expect(html).not.toContain("Run the compiler</button>");
   });
 });
@@ -124,7 +124,7 @@ describe("<CompileAccepted>", () => {
     const html = accepted({ pendingReviews: 2 });
     expect(html).toContain("2 facts need your decision");
     expect(html).toContain("Review this compiler run");
-    expect(html).toContain("/compiler/runs/01a03000-0000-7000-8000-00000000000a");
+    expect(html).toContain("/fixes/01a03000-0000-7000-8000-00000000000a");
     expect(html).toContain('role="status"');
   });
 

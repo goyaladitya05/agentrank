@@ -6,7 +6,9 @@ import { EvaluationSetupPanel } from "@/components/EvaluationSetup";
 import { InsightFailure } from "@/components/InsightFailure";
 import { LaunchEvaluation } from "@/components/LaunchEvaluation";
 import { EmptyState, KeyValueList, Panel, Section, StatusMark } from "@/components/Primitives";
+import { TechnicalDetails } from "@/components/TechnicalDetails";
 import styles from "@/components/console.module.css";
+import merchant from "@/components/merchant.module.css";
 import { formatTimestamp } from "@/lib/format";
 import { launchStatusLabel } from "@/lib/labels";
 import { loadInsight } from "@/lib/insights/load";
@@ -21,17 +23,22 @@ import {
 } from "@/lib/evaluation";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Evaluation | AgentRank" };
+export const metadata = { title: "Measure | AgentRank" };
 
 /**
- * The one page a merchant starts a benchmark from, whichever of the two commands they are
+ * The one page a merchant starts an evaluation from, whichever of the two commands they are
  * making.
  *
- * Which one that is comes from the server. A merchant who has published an agent-ready
- * representation is asking about that artifact; a merchant with nothing published and nothing
- * measured is asking how well a buyer does against them as they are. Every heading, every
- * sentence and the confirmation itself follow that answer rather than guessing from whichever
- * fields came back filled.
+ * Which one that is comes from the server. A merchant who has published fixes is measuring
+ * that published description; a merchant with nothing published and nothing measured is
+ * asking how well an agent does against their store as it is. Every heading, every sentence
+ * and the confirmation itself follow that answer rather than guessing from whichever fields
+ * came back filled.
+ *
+ * The preflight leads with the four things worth knowing before spending: how many shopping
+ * scenarios run, which model runs them, the model request allowance with the retry rule, and
+ * what the result will be read against. The frozen identities behind the launch stay in a
+ * technical disclosure.
  */
 export default async function EvaluationsPage() {
   const setup = await loadInsight("/api/v1/benchmark/workspace", decodeEvaluationSetup);
@@ -51,11 +58,20 @@ export default async function EvaluationsPage() {
   return (
     <>
       <div className={styles.pageHeader}>
-        <h1 className={styles.pageTitle}>Evaluation</h1>
+        <div>
+          <h1 className={styles.pageTitle}>
+            {initial ? "Run your first evaluation" : "Measure again"}
+          </h1>
+          <p className={merchant.pageIntro}>
+            {initial
+              ? "AI shopping agents attempt realistic purchase scenarios against your store, and AgentRank records exactly what happens."
+              : "Your published fixes are measured with the same shopping scenarios, so the result reads as a before and after."}
+          </p>
+        </div>
       </div>
       <Section
-        title="Evaluation setup"
-        hint="What AgentRank measures you against, built from your own merchant information."
+        title="What AgentRank tests"
+        hint="Built from your own store information. Building it spends nothing."
       >
         <EvaluationSetupPanel
           setup={setup.data}
@@ -63,11 +79,11 @@ export default async function EvaluationsPage() {
         />
       </Section>
       <Section
-        title={initial ? "Run your first evaluation" : "Request a re-evaluation"}
+        title={initial ? "Run the evaluation" : "Run the re-evaluation"}
         hint={
           initial
-            ? "AgentRank has not measured this merchant yet. This creates the first result."
-            : "Publishing a representation never starts a benchmark. This does."
+            ? "This creates your first result."
+            : "Publishing fixes never starts an evaluation. This does."
         }
       >
         <Panel>
@@ -97,34 +113,46 @@ function Preflight({
   preflight: EvaluationPreflight;
   action: Parameters<typeof LaunchEvaluation>[0]["action"];
 }) {
-  const initial = preflight.purpose === "INITIAL";
   return (
     <>
       <KeyValueList
         entries={[
-          initial
-            ? {
-                term: "What is evaluated",
-                value: "Your merchant as it is now, through the ordinary storefront",
-              }
-            : {
-                term: "Representation under test",
-                value: preflight.representation_label ?? "None published",
-              },
-          { term: "Merchant information", value: informationSentence(preflight) },
-          { term: "Benchmark suite", value: preflight.suite_label ?? "None published" },
           {
-            term: "Missions",
-            value: preflight.mission_count === null ? "unknown" : String(preflight.mission_count),
+            term: "Shopping scenarios",
+            value:
+              preflight.mission_count === null
+                ? "unknown"
+                : `${String(preflight.mission_count)}, one at a time`,
           },
-          { term: "Benchmark world", value: preflight.environment_label ?? "Not registered" },
-          { term: "Buyer", value: buyerSentence(preflight) },
+          { term: "Model", value: buyerSentence(preflight) },
           {
-            term: "Compared against",
-            value: comparisonSentence(preflight),
+            term: "Model requests",
+            value:
+              preflight.max_provider_requests === null
+                ? "None. The reference buyer calls no model provider."
+                : `At most ${String(preflight.max_provider_requests)}. Retries count against this allowance.`,
           },
+          { term: "Compared against", value: comparisonSentence(preflight) },
         ]}
       />
+      <TechnicalDetails summary="Technical details">
+        <KeyValueList
+          entries={[
+            preflight.purpose === "INITIAL"
+              ? {
+                  term: "What is evaluated",
+                  value: "Your merchant as it is now, through the ordinary storefront",
+                }
+              : {
+                  term: "Representation under test",
+                  value: preflight.representation_label ?? "None published",
+                },
+            { term: "Merchant information", value: informationSentence(preflight) },
+            { term: "Benchmark suite", value: preflight.suite_label ?? "None published" },
+            { term: "Benchmark world", value: preflight.environment_label ?? "Not registered" },
+          ]}
+        />
+      </TechnicalDetails>
       {launchable(preflight) ? (
         <LaunchEvaluation preflight={preflight} action={action} />
       ) : (
@@ -239,13 +267,13 @@ function BlockerAction({ code }: { code: string }) {
   }
   if (code === "no_published_representation") {
     return (
-      <Link className={styles.rowLink} href="/compiler">
-        Open the compiler
+      <Link className={styles.rowLink} href="/fixes">
+        Review and publish your fixes
       </Link>
     );
   }
   if (code === "benchmark_suite_unavailable" || code === "benchmark_world_unregistered") {
-    return <span className={styles.finePrint}>See Evaluation setup above.</span>;
+    return <span className={styles.finePrint}>See what AgentRank tests above.</span>;
   }
   return null;
 }
@@ -257,12 +285,12 @@ function buyerSentence(preflight: EvaluationPreflight): string {
   return "AgentRank's deterministic reference buyer, which is not an AI agent";
 }
 
-/** What one launch measured, in the vocabulary of its own kind. */
+/** What one launch measured, in merchant words. The exact artifact is on its detail page. */
 function measured(launch: EvaluationLaunch): string {
   if (launch.purpose === "INITIAL") {
     return launch.source_snapshot_label ?? "Your merchant information";
   }
-  return launch.representation_label ?? "";
+  return "Your published fixes";
 }
 
 function History({ launches }: { launches: readonly EvaluationLaunch[] }) {
@@ -284,14 +312,13 @@ function History({ launches }: { launches: readonly EvaluationLaunch[] }) {
             <th scope="col">Requested</th>
             <th scope="col">Kind</th>
             <th scope="col">Measured</th>
-            <th scope="col">Suite</th>
             <th scope="col">State</th>
             <th scope="col">Progress</th>
           </tr>
         </thead>
         <tbody>
           {launches.map((launch) => {
-            const status = launchStatusLabel(launch.status);
+            const status = launchStatusLabel(launch.status, launch.failure_code);
             return (
               <tr key={launch.launch_id}>
                 <td>
@@ -303,15 +330,14 @@ function History({ launches }: { launches: readonly EvaluationLaunch[] }) {
                   </Link>
                 </td>
                 <td>{launch.purpose === "INITIAL" ? "First evaluation" : "Re-evaluation"}</td>
-                <td className={styles.mono}>{measured(launch)}</td>
-                <td>{launch.suite_label}</td>
+                <td>{measured(launch)}</td>
                 <td>
                   <StatusMark tone={status.tone} label={status.label} />
                 </td>
                 <td>
                   {launch.missions_completed === null
                     ? "not started"
-                    : `${String(launch.missions_completed)} of ${String(launch.mission_count)} missions`}
+                    : `${String(launch.missions_completed)} of ${String(launch.mission_count)} scenarios`}
                 </td>
               </tr>
             );

@@ -42,11 +42,8 @@ function reviewOf(page: Page, target: string) {
 }
 
 function rowOf(page: Page, target: string) {
-  const parts = target.split(".");
-  return page
-    .getByRole("row")
-    .filter({ hasText: parts.slice(0, 2).join(".") })
-    .filter({ hasText: parts[parts.length - 1] ?? target });
+  // Each proposed fact is one labelled card, addressable by its full target.
+  return page.getByRole("article", { name: `Fix ${target}` });
 }
 
 async function correct(page: Page, target: string): Promise<void> {
@@ -67,13 +64,14 @@ test("a merchant supplies newer source evidence, compiles it and publishes a sec
   }
   await establishSession(page, context, key);
 
-  // The dead end: everything is reviewed and one representation is published.
-  await nav(page).getByRole("link", { name: "Compiler" }).click();
+  // The dead end: everything is reviewed and one representation is published. The Lab holds
+  // the technical statement of it.
+  await page.goto("/lab/compiler");
   await expect(page.getByText("All required reviews are resolved.")).toBeVisible();
   await expect(page.getByText(`Published representation: ${publishedBefore}`)).toBeVisible();
 
   // The source history the merchant starts from.
-  await nav(page).getByRole("link", { name: "Source" }).click();
+  await page.goto("/sources");
   await expect(page.getByRole("heading", { name: "Source", exact: true })).toBeVisible();
   await expect(page.getByText("voltedge-merchant-source@1").first()).toBeVisible();
   await expect(page.getByText("Published by an operator").first()).toBeVisible();
@@ -130,13 +128,13 @@ test("a merchant supplies newer source evidence, compiles it and publishes a sec
 
   // And it ends in the review workflow that already existed.
   await page.getByRole("link", { name: "Review this compiler run" }).click();
-  await expect(page.getByRole("heading", { name: "Review compiler run" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Review fixes" })).toBeVisible();
   await expect(page.getByText("voltedge-merchant-source@2")).toBeVisible();
   await expect(page.getByText("2 fact(s) still require review.")).toBeVisible();
 
   // The fact the newer evidence made ambiguous cites a field of the product it is about.
   const wattage = rowOf(page, WATTAGE_BLACK);
-  await wattage.getByText("Inspect source evidence").click();
+  await wattage.getByText("View evidence").click();
   await expect(wattage.getByText("products[VE-CHG-100].").first()).toBeVisible();
 
   // And the correction proves which snapshot the run actually read. The API refuses a
@@ -148,24 +146,25 @@ test("a merchant supplies newer source evidence, compiles it and publishes a sec
   await expect(rowOf(page, WATTAGE_WHITE).getByText("Corrected by you")).toBeVisible();
 
   // Publication stays explicit and still says what it does not do.
-  await page.getByRole("button", { name: "Review publication" }).click();
+  await page.getByRole("button", { name: "Publish fixes" }).click();
   await expect(page.getByText("does not rerun a benchmark")).toBeVisible();
-  await page.getByRole("button", { name: "Publish representation" }).click();
+  await page.getByRole("button", { name: "Publish fixes" }).click();
 
-  const publication = page.getByRole("region", { name: "Publication" });
-  await expect(publication).toContainText("Agent-ready representation published:");
+  const publication = page.getByRole("region", { name: "Publish" });
+  await expect(publication).toContainText("These fixes are published.");
+  await publication.getByText("Technical details").click();
   const identity = ((await publication.innerText()).match(/[0-9a-f]{8}-[0-9a-f-]{27}/) ?? [])[0];
   expect(identity).toBeDefined();
   expect(identity).not.toBe(publishedBefore);
 
   // Measuring it again is still a command nobody here ran, and the launch history proves it
   // rather than the sentence beside the link.
-  await expect(publication).toContainText("request a re-evaluation");
-  await nav(page).getByRole("link", { name: "Evaluation" }).click();
+  await expect(publication.getByRole("link", { name: "Measure again" })).toBeVisible();
+  await page.goto("/evaluations");
   await expect(page.getByText("No evaluations have run yet")).toBeVisible();
 
   // The first representation and the run behind it are exactly what they were.
-  await nav(page).getByRole("link", { name: "Source" }).click();
+  await page.goto("/sources");
   await expect(
     page.getByRole("row").filter({ hasText: "voltedge-merchant-source@1" }),
   ).toBeVisible();
@@ -175,10 +174,10 @@ test("a merchant supplies newer source evidence, compiles it and publishes a sec
     page.getByText("This snapshot has already been read by the compiler."),
   ).toBeVisible();
   await page.getByRole("link", { name: "Review the compiler run for this snapshot" }).click();
-  await expect(
-    page.getByRole("region", { name: "Publication" }).getByText(publishedBefore),
-  ).toBeVisible();
-  await expect(page.getByRole("button", { name: "Review publication" })).toHaveCount(0);
+  const earlier = page.getByRole("region", { name: "Publish" });
+  await earlier.getByText("Technical details").click();
+  await expect(earlier.getByText(publishedBefore)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Publish fixes" })).toHaveCount(0);
 });
 
 test("the console shows nothing about a source snapshot without a signed in session", async ({

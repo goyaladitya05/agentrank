@@ -122,7 +122,7 @@ export function CompilerActions({ references }: { references: readonly CompilerR
           <li key={reference.candidate_id}>
             <Link
               className={styles.rowLink}
-              href={`/compiler/runs/${encodeURIComponent(reference.compiler_run_id)}#${encodeURIComponent(reference.candidate_id)}`}
+              href={`/fixes/${encodeURIComponent(reference.compiler_run_id)}#${encodeURIComponent(reference.candidate_id)}`}
             >
               <span className={styles.mono}>{reference.target}</span>
             </Link>
@@ -149,7 +149,7 @@ function MissionLinks({ finding, runId }: { finding: MerchantFinding; runId: str
           {index > 0 ? ", " : ""}
           <Link
             className={styles.rowLink}
-            href={`/runs/${encodeURIComponent(runId)}/missions/${encodeURIComponent(missionRunId)}`}
+            href={`/lab/runs/${encodeURIComponent(runId)}/missions/${encodeURIComponent(missionRunId)}`}
           >
             {finding.mission_keys[index] ?? "mission"}
           </Link>

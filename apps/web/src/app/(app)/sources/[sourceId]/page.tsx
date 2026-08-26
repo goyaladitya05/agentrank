@@ -141,7 +141,7 @@ function Runs({ snapshot }: { snapshot: SourceSnapshot }) {
                 <td>
                   <Link
                     className={styles.rowLinkStrong}
-                    href={`/compiler/runs/${encodeURIComponent(run.run_id)}`}
+                    href={`/fixes/${encodeURIComponent(run.run_id)}`}
                   >
                     Review this run
                   </Link>

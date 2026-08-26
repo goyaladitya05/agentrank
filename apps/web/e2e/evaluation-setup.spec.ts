@@ -73,7 +73,7 @@ function nav(page: Page, name: string) {
 async function signIn(page: Page, context: BrowserContext): Promise<void> {
   if (key === undefined) throw new Error("AGENTRANK_E2E_SETUP_KEY is required");
   await establishSession(page, context, key);
-  await expect(nav(page, "Evaluation")).toBeVisible();
+  await expect(nav(page, "Overview")).toBeVisible();
 }
 
 test("a merchant with only source evidence builds their own evaluation setup", async ({
@@ -81,11 +81,11 @@ test("a merchant with only source evidence builds their own evaluation setup", a
   context,
 }) => {
   await signIn(page, context);
-  await nav(page, "Evaluation").click();
+  await page.goto("/evaluations");
 
   // The zero state names the thing that is missing and offers the action that creates it. This
   // is what used to say an operator publishes a benchmark suite from a command line.
-  const setup = page.getByRole("region", { name: "Evaluation setup" });
+  const setup = page.getByRole("region", { name: "What AgentRank tests" });
   await expect(setup.getByText("Setup needed")).toBeVisible();
   await expect(setup.getByText("merchant-source@1")).toBeVisible();
 
@@ -122,9 +122,9 @@ test("a merchant with only source evidence builds their own evaluation setup", a
   await expect(page.getByRole("heading", { name: "Run your first evaluation" })).toBeVisible();
   await expect(page.getByText("Prepare your evaluation setup first")).toHaveCount(0);
   await expect(page.getByText("deterministic reference buyer").first()).toBeVisible();
-  await page.getByRole("button", { name: "Review first evaluation" }).click();
+  await page.getByRole("button", { name: "Run evaluation" }).click();
   const launch = page.getByRole("form", { name: "Confirm first evaluation" });
-  await expect(launch).toContainText("9 missions are executed");
+  await expect(launch).toContainText("9 shopping scenarios are executed");
   await expect(launch).toContainText("The buyer reads the ordinary storefront");
   // Queued is an honest state: the browser request admitted work and executed none of it.
   await launch.getByRole("button", { name: "Request first evaluation" }).click();
@@ -134,7 +134,7 @@ test("a merchant with only source evidence builds their own evaluation setup", a
   // merchant, because this merchant has no authored world anywhere on disk.
   expect(dispatch()).toContain("COMPLETED");
 
-  await page.goto("/runs");
+  await page.goto("/lab/runs");
   await expect(page.locator("table tbody tr")).toHaveCount(1);
   await page.locator("table tbody tr a").first().click();
   await expect(page.getByRole("heading", { name: "Run detail" })).toBeVisible();
@@ -149,9 +149,9 @@ test("building an evaluation setup twice does not build a second one", async ({
   // the merchant, the snapshot and the generation configuration, so a reload and a second press
   // resolve to the setup that already exists rather than to a second world.
   await signIn(page, context);
-  await nav(page, "Evaluation").click();
+  await page.goto("/evaluations");
 
-  const setup = page.getByRole("region", { name: "Evaluation setup" });
+  const setup = page.getByRole("region", { name: "What AgentRank tests" });
   await expect(setup.getByText("Ready", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Prepare evaluation setup" })).toHaveCount(0);
 });

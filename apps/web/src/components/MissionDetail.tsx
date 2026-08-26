@@ -92,7 +92,10 @@ export function MissionDetailContent({
           label={status.label}
           description={`Mission status: ${diagnosis.status}`}
         />
-        <Link className={styles.textLink} href={`/runs/${encodeURIComponent(diagnosis.run_id)}`}>
+        <Link
+          className={styles.textLink}
+          href={`/lab/runs/${encodeURIComponent(diagnosis.run_id)}`}
+        >
           Back to run
         </Link>
       </div>
@@ -317,7 +320,7 @@ function TracePager({
   if (params === null || trace.total_events <= params.limit) {
     return null;
   }
-  const base = `/runs/${encodeURIComponent(runId)}/missions/${encodeURIComponent(missionRunId)}`;
+  const base = `/lab/runs/${encodeURIComponent(runId)}/missions/${encodeURIComponent(missionRunId)}`;
   const withParams = (offset: number) =>
     `${base}?limit=${String(params.limit)}&offset=${String(offset)}`;
   const previousOffset = Math.max(params.offset - params.limit, 0);

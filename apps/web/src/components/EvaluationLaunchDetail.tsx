@@ -69,9 +69,13 @@ export function EvaluationLaunchDetailContent({
                     term: "Merchant state",
                     value: `Your merchant through the ordinary storefront, from ${launch.source_snapshot_label ?? "your merchant information"}`,
                   }
-                : { term: "Representation", value: launch.representation_label ?? "" },
+                : {
+                    term: "What was measured",
+                    value:
+                      "Your published store description, exactly as you reviewed and published it",
+                  },
               { term: "Benchmark suite", value: launch.suite_label },
-              { term: "Missions", value: String(launch.mission_count) },
+              { term: "Shopping scenarios", value: String(launch.mission_count) },
               { term: "Benchmark world", value: launch.environment_label },
               { term: "Buyer", value: buyerSentence(launch) },
               { term: "Requested", value: formatTimestamp(launch.requested_at) },
@@ -83,6 +87,7 @@ export function EvaluationLaunchDetailContent({
             <IdRow label="Evaluation id" value={launch.launch_id} />
             <IdRow label="Source snapshot id" value={launch.source_snapshot_id} />
             <IdRow label="Representation id" value={launch.representation_id} />
+            <IdRow label="Representation label" value={launch.representation_label} />
             <IdRow label="Compiler run id" value={launch.compiler_run_id} />
             <IdRow label="Suite id" value={launch.suite_id} />
             <IdRow label="Benchmark run id" value={launch.run_id} />
@@ -128,11 +133,11 @@ function NextStep({ launch }: { launch: EvaluationLaunchDetail }) {
     }
     return (
       <p className={styles.reviewMeta}>
-        Your diagnostics are on the run above.{" "}
-        <Link className={styles.rowLink} href="/sources">
-          Review your merchant source
+        Your results are ready.{" "}
+        <Link className={styles.rowLink} href="/issues">
+          Review your issues
         </Link>{" "}
-        when you want to compile an agent-ready representation from it.
+        to see what stopped the agents and what you can fix.
       </p>
     );
   }
@@ -143,9 +148,9 @@ function NextStep({ launch }: { launch: EvaluationLaunchDetail }) {
     <p className={styles.reviewMeta}>
       <Link
         className={styles.rowLink}
-        href={`/compiler/runs/${encodeURIComponent(launch.compiler_run_id)}`}
+        href={`/fixes/${encodeURIComponent(launch.compiler_run_id)}`}
       >
-        Review the compiler facts behind this representation
+        Review the fixes this measurement tested
       </Link>
     </p>
   );
@@ -186,8 +191,8 @@ function ExecutionState({ launch }: { launch: EvaluationLaunchDetail }) {
       <p>
         {launch.status === "EXECUTING" ? "Running" : "Completed"}:{" "}
         {launch.missions_completed === null
-          ? "no missions recorded yet"
-          : `${String(launch.missions_completed)} of ${String(launch.mission_count)} missions finished`}
+          ? "no scenarios recorded yet"
+          : `${String(launch.missions_completed)} of ${String(launch.mission_count)} scenarios finished`}
         .
       </p>
       <RunLink launch={launch} />
@@ -247,8 +252,8 @@ function RunLink({ launch }: { launch: EvaluationLaunchDetail }) {
   const run = launch.run_status === null ? null : statusLabel(launch.run_status);
   return (
     <p className={styles.reviewMeta}>
-      <Link className={styles.rowLink} href={`/runs/${encodeURIComponent(launch.run_id)}`}>
-        Open the benchmark run and its findings
+      <Link className={styles.rowLink} href={`/lab/runs/${encodeURIComponent(launch.run_id)}`}>
+        Open the full run detail in the Lab
       </Link>
       {run === null ? "" : ` (run status ${run.label.toLowerCase()})`}
     </p>

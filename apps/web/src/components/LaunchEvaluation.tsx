@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useActionState, useState } from "react";
 
 import styles from "@/components/console.module.css";
+import merchant from "@/components/merchant.module.css";
 import { IDLE_LAUNCH, type LaunchState } from "@/lib/evaluation-mutation";
 import type { EvaluationPreflight } from "@/lib/evaluation";
 
@@ -52,8 +53,12 @@ export function LaunchEvaluation({
   const initial = preflight.purpose === "INITIAL";
   if (!confirming) {
     return (
-      <button className={styles.button} type="button" onClick={() => setConfirming(true)}>
-        {initial ? "Review first evaluation" : "Review re-evaluation"}
+      <button
+        className={merchant.primaryButton}
+        type="button"
+        onClick={() => setConfirming(true)}
+      >
+        {initial ? "Run evaluation" : "Measure again"}
       </button>
     );
   }
@@ -124,15 +129,14 @@ export function LaunchConfirmation({
         </p>
       ) : (
         <p>
-          Run {preflight.suite_label ?? "the benchmark suite"} against representation{" "}
-          <span className={styles.mono}>{preflight.representation_label}</span> with {model}?
+          Run the same shopping scenarios against your published store description with {model}?
         </p>
       )}
       <ul className={styles.launchTerms}>
         <li>
           {preflight.mission_count === null
-            ? "Every mission in the suite is executed."
-            : `${String(preflight.mission_count)} missions are executed, one at a time.`}
+            ? "Every shopping scenario in the suite is executed."
+            : `${String(preflight.mission_count)} shopping scenarios are executed, one at a time.`}
         </li>
         {initial ? (
           <li>

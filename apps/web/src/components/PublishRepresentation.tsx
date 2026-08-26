@@ -19,11 +19,9 @@ export type PublishAction = (
 ) => CompilerMutationState | Promise<CompilerMutationState>;
 
 export function PublishRepresentation({
-  runId,
   sourceLabel,
   action,
 }: {
-  runId: string;
   sourceLabel: string;
   action: PublishAction;
 }) {
@@ -32,13 +30,12 @@ export function PublishRepresentation({
   if (!confirming) {
     return (
       <button className={styles.button} type="button" onClick={() => setConfirming(true)}>
-        Review publication
+        Publish fixes
       </button>
     );
   }
   return (
     <PublishConfirmation
-      runId={runId}
       sourceLabel={sourceLabel}
       action={formAction}
       state={state}
@@ -49,14 +46,12 @@ export function PublishRepresentation({
 }
 
 export function PublishConfirmation({
-  runId,
   sourceLabel,
   action,
   state,
   pending,
   onCancel,
 }: {
-  runId: string;
   sourceLabel: string;
   action: string | (() => void);
   state: CompilerMutationState;
@@ -65,17 +60,15 @@ export function PublishConfirmation({
 }) {
   return (
     <form action={action} aria-label="Confirm representation publication">
-      <p>
-        Publish the immutable agent-ready representation for source {sourceLabel} from compiler run{" "}
-        <span className={styles.mono}>{runId}</span>?
-      </p>
+      <p>Publish your reviewed fixes from {sourceLabel}?</p>
       <p className={styles.reviewMeta}>
-        Your reviewed facts become a new representation that never changes afterwards. This does not
-        rerun a benchmark and it does not change any price, stock level or order.
+        The facts you approved become a new agent-ready description of your store, which never
+        changes afterwards. This does not rerun a benchmark and it does not change any price, stock
+        level or order. Measuring the difference is the next, separate step.
       </p>
       <div className={styles.buttonRow}>
         <button className={styles.button} type="submit" disabled={pending}>
-          Publish representation
+          Publish fixes
         </button>
         <button className={styles.textLink} type="button" onClick={onCancel} disabled={pending}>
           Cancel

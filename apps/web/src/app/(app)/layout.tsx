@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import { signOut } from "@/lib/auth/actions";
 import { NavLinks } from "@/components/NavLinks";
 
@@ -8,13 +10,20 @@ export default function ConsoleLayout({ children }: { children: React.ReactNode 
     <>
       <header className={styles.header}>
         <div className={styles.brandRow}>
-          <span className={styles.wordmark}>AgentRank</span>
+          <Link href="/overview" className={styles.wordmark}>
+            AgentRank
+          </Link>
           <NavLinks />
-          <form action={signOut} className={styles.sessionForm}>
-            <button className={styles.signOut} type="submit">
-              Sign out
-            </button>
-          </form>
+          <div className={styles.sessionArea}>
+            <Link href="/lab" className={styles.labLink}>
+              Lab
+            </Link>
+            <form action={signOut} className={styles.sessionForm}>
+              <button className={styles.signOut} type="submit">
+                Sign out
+              </button>
+            </form>
+          </div>
         </div>
       </header>
       <main className={styles.main}>{children}</main>

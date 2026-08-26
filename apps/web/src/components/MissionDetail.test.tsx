@@ -34,13 +34,13 @@ describe("<MissionDetailContent>", () => {
   it("addresses the exact compiler fact behind an attribute finding", () => {
     const html = renderMission(CATALOG_MISSION, null);
     expect(html).toContain(
-      "/compiler/runs/01a0aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa1#01a0bbbb-bbbb-7bbb-8bbb-bbbbbbbbbbb1",
+      "/fixes/01a0aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa1#01a0bbbb-bbbb-7bbb-8bbb-bbbbbbbbbbb1",
     );
   });
 
   it("offers no compiler action on a provider outage", () => {
     const html = renderMission(OUTAGE_MISSION, null);
-    expect(html).not.toContain("/compiler/runs/");
+    expect(html).not.toContain("/fixes/");
   });
 
   it("presents a provider outage as external with no merchant action", () => {

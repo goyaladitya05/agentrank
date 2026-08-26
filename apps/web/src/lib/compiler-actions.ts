@@ -101,8 +101,8 @@ async function command(path: string, body?: unknown): Promise<Refusal | null> {
 }
 
 function refreshed(runId: string): void {
-  revalidatePath(`/compiler/runs/${runId}`);
-  revalidatePath("/compiler");
+  revalidatePath(`/fixes/${runId}`);
+  revalidatePath("/fixes");
   revalidatePath("/overview");
 }
 

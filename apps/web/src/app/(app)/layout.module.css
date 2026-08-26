@@ -1,41 +1,73 @@
 .header {
-  border-bottom: 1px solid var(--border-strong);
-  background: var(--surface-header);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-raised);
 }
 
 .brandRow {
   display: flex;
   align-items: center;
-  gap: 28px;
-  max-width: 1280px;
+  gap: 32px;
+  max-width: 1200px;
   margin: 0 auto;
-  padding: 10px 24px;
+  padding: 14px 28px;
 }
 
 .wordmark {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
+  color: var(--text);
+  text-decoration: none;
 }
 
-.sessionForm {
+.wordmark:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.sessionArea {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.labLink {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  text-decoration: none;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.labLink:hover {
+  color: var(--text);
+  background: var(--surface-sunken);
+}
+
+.labLink:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .signOut {
   padding: 5px 12px;
-  border: 1px solid var(--border-strong);
-  border-radius: 3px;
-  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
   color: var(--text-muted);
+  font: inherit;
   font-size: 12px;
   cursor: pointer;
 }
 
 .signOut:hover {
-  color: var(--state-fail);
-  border-color: var(--state-fail);
+  color: var(--text);
+  border-color: var(--border-strong);
 }
 
 .signOut:focus-visible {
@@ -44,17 +76,20 @@
 }
 
 .main {
-  max-width: 1280px;
+  max-width: 1200px;
   margin: 0 auto;
-  padding: 20px 24px 48px;
+  padding: 28px 28px 64px;
 }
 
 @media (max-width: 720px) {
   .brandRow {
     flex-wrap: wrap;
-    gap: 8px 16px;
+    gap: 10px 20px;
   }
-  .sessionForm {
+  .sessionArea {
     margin-left: 0;
+  }
+  .main {
+    padding: 20px 16px 48px;
   }
 }

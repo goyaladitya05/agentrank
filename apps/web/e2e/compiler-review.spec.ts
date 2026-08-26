@@ -45,7 +45,7 @@ function captureAction(page: Page, captured: CapturedAction[]): void {
   page.on("request", (request) => {
     const headers = request.headers();
     if (request.method() !== "POST" || headers["next-action"] === undefined) return;
-    if (!request.url().includes("/compiler/runs/")) return;
+    if (!request.url().includes("/fixes/")) return;
     if (captured.length > 0) return;
     const replay: Record<string, string> = {};
     for (const [name, value] of Object.entries(headers)) {
@@ -62,22 +62,17 @@ function reviewOf(page: Page, target: string) {
 }
 
 function rowOf(page: Page, target: string) {
-  // The variant alone appears in every row for that variant, and the attribute alone appears in
-  // rows for other variants, so a fact is only addressable by both.
-  const parts = target.split(".");
-  return page
-    .getByRole("row")
-    .filter({ hasText: parts.slice(0, 2).join(".") })
-    .filter({ hasText: parts[parts.length - 1] ?? target });
+  // Each proposed fact is one labelled card, addressable by its full target.
+  return page.getByRole("article", { name: `Fix ${target}` });
 }
 
 async function signIn(page: Page, context: BrowserContext): Promise<void> {
   if (key === undefined) throw new Error("AGENTRANK_E2E_KEY is required");
   await establishSession(page, context, key);
-  await page.getByRole("link", { name: "Compiler" }).click();
-  await expect(page.getByText("4 semantic fact(s) need review.")).toBeVisible();
-  await page.getByRole("link", { name: /voltedge-merchant-source@1/ }).click();
-  await expect(page.getByRole("heading", { name: "Review compiler run" })).toBeVisible();
+  await page.getByRole("navigation", { name: "Console" }).getByRole("link", { name: "Fixes" }).click();
+  await expect(page.getByText("AgentRank found 4 facts you can review")).toBeVisible();
+  await page.getByRole("link", { name: "Review 4 fixes" }).click();
+  await expect(page.getByRole("heading", { name: "Review fixes" })).toBeVisible();
 }
 
 async function correct(page: Page, target: string, value: string, excerpt: string): Promise<void> {
@@ -101,7 +96,7 @@ test("a merchant reviews every kind of fact and publishes one immutable represen
 
   // Evidence first: the exact source field and excerpt behind the claim.
   const claim = rowOf(page, COMPATIBILITY_SHORT);
-  await claim.getByText("Inspect source evidence").click();
+  await claim.getByText("View evidence").click();
   await expect(claim.getByText("products[VE-CBL-USBC].description").first()).toBeVisible();
   await expect(claim).toContainText("USB-PD");
 
@@ -129,31 +124,35 @@ test("a merchant reviews every kind of fact and publishes one immutable represen
   await expect(rowOf(page, WATTAGE_WHITE).getByText("Corrected by you")).toBeVisible();
 
   // The review is separate evidence: the compiler proposal is still shown beside the decision.
-  await rowOf(page, WATTAGE_BLACK).getByText("Inspect source evidence").click();
+  await rowOf(page, WATTAGE_BLACK).getByText("View evidence").click();
   await expect(
     rowOf(page, WATTAGE_BLACK).getByText("CORRECT recorded by MERCHANT_CREDENTIAL"),
   ).toBeVisible();
   await expect(page.getByText("which is unchanged").first()).toBeVisible();
 
-  await page.getByRole("button", { name: "Review publication" }).click();
+  await page.getByRole("button", { name: "Publish fixes" }).click();
   await expect(page.getByText("does not rerun a benchmark")).toBeVisible();
-  await page.getByRole("button", { name: "Publish representation" }).click();
+  await page.getByRole("button", { name: "Publish fixes" }).click();
 
-  const publication = page.getByRole("region", { name: "Publication" });
-  await expect(publication).toContainText("Agent-ready representation published:");
+  const publication = page.getByRole("region", { name: "Publish" });
+  await expect(publication).toContainText("These fixes are published.");
+  // The next natural step is measuring, and the identifier stays behind the disclosure.
+  await expect(publication.getByRole("link", { name: "Measure again" })).toBeVisible();
+  await publication.getByText("Technical details").click();
   const identity = ((await publication.innerText()).match(/[0-9a-f]{8}-[0-9a-f-]{27}/) ?? [])[0];
   expect(identity).toBeDefined();
 
   // Nothing is left to decide, and no form offers to change a published run.
   await expect(page.getByRole("button", { name: "Accept fact" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Confirm correction" })).toHaveCount(0);
-  await expect(page.getByText("can no longer change")).toBeVisible();
+  await expect(page.getByText("never change")).toBeVisible();
 
   // Publishing again is refused rather than producing a second representation.
   await page.reload();
-  await expect(page.getByRole("button", { name: "Review publication" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Publish fixes" })).toHaveCount(0);
 
-  await page.getByRole("link", { name: "Compiler" }).click();
+  // The Lab keeps the technical view of the same publication.
+  await page.goto("/lab/compiler");
   await expect(page.getByText("All required reviews are resolved.")).toBeVisible();
   await expect(page.getByText(`Published representation: ${String(identity)}`)).toBeVisible();
 
@@ -181,7 +180,7 @@ test("the console shows nothing about a compiler run without a signed in session
   // Nothing here holds a credential, so this one records from the top.
   await record(context);
   await context.clearCookies();
-  await page.goto("/compiler");
+  await page.goto("/fixes");
   await expect(page).toHaveURL(/\/login/);
   await expect(page.getByLabel("Merchant API key")).toBeVisible();
 });

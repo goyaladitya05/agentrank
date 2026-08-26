@@ -37,7 +37,7 @@ function nav(page: Page, name: string) {
 async function signIn(page: Page, context: BrowserContext): Promise<void> {
   if (key === undefined) throw new Error("AGENTRANK_E2E_IMPORT_KEY is required");
   await establishSession(page, context, key);
-  await expect(nav(page, "Source")).toBeVisible();
+  await expect(nav(page, "Overview")).toBeVisible();
 }
 
 test("a merchant imports their own public pages into their first source snapshot", async ({
@@ -45,7 +45,10 @@ test("a merchant imports their own public pages into their first source snapshot
   context,
 }) => {
   await signIn(page, context);
-  await nav(page, "Source").click();
+
+  // A brand new merchant's overview leads with the import, before any source page is visited.
+  await expect(page.getByRole("link", { name: "Import your store" })).toBeVisible();
+  await page.goto("/sources");
 
   // A merchant with nothing is offered the import rather than only a JSON editor.
   await expect(page.getByText("You have no source snapshot yet.")).toBeVisible();
@@ -123,8 +126,8 @@ test("a merchant imports their own public pages into their first source snapshot
 
   // And the ordinary Phase 5C bootstrap builds an evaluation setup from it, with no compiler run,
   // no published representation and no operator anywhere in the workflow.
-  await nav(page, "Evaluation").click();
-  const setup = page.getByRole("region", { name: "Evaluation setup" });
+  await page.goto("/evaluations");
+  const setup = page.getByRole("region", { name: "What AgentRank tests" });
   await expect(setup.getByText("Setup needed")).toBeVisible();
   await expect(setup.getByText("merchant-source@1")).toBeVisible();
   await page

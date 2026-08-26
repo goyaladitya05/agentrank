@@ -85,10 +85,7 @@ export function AlreadyCompiled({ existingRunId }: { existingRunId: string | nul
       </p>
       {existingRunId === null ? null : (
         <p className={styles.reviewMeta}>
-          <Link
-            className={styles.rowLink}
-            href={`/compiler/runs/${encodeURIComponent(existingRunId)}`}
-          >
+          <Link className={styles.rowLink} href={`/fixes/${encodeURIComponent(existingRunId)}`}>
             Review the compiler run for this snapshot
           </Link>
         </p>
@@ -112,10 +109,7 @@ export function CompileAccepted({ state }: { state: CompileState }) {
       <p>{outcome(state)}</p>
       {state.runId === null ? null : (
         <p className={styles.reviewMeta}>
-          <Link
-            className={styles.rowLink}
-            href={`/compiler/runs/${encodeURIComponent(state.runId)}`}
-          >
+          <Link className={styles.rowLink} href={`/fixes/${encodeURIComponent(state.runId)}`}>
             {state.pendingReviews === null || state.pendingReviews === 0
               ? "Open this compiler run"
               : "Review this compiler run"}

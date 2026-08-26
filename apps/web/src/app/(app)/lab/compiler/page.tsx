@@ -9,7 +9,7 @@ import { loadInsight } from "@/lib/insights/load";
 import { InsightFailure } from "@/components/InsightFailure";
 
 export const dynamic = "force-dynamic";
-export const metadata = { title: "Compiler review | AgentRank" };
+export const metadata = { title: "Compiler runs | AgentRank" };
 
 export default async function CompilerPage() {
   const outcome = await loadInsight("/api/v1/compiler/overview", decodeCompilerOverview);
@@ -18,7 +18,7 @@ export default async function CompilerPage() {
   return (
     <>
       <div className={styles.pageHeader}>
-        <h1 className={styles.pageTitle}>Compiler review</h1>
+        <h1 className={styles.pageTitle}>Compiler runs</h1>
       </div>
       <Section title="Current representation">
         <Panel>
@@ -32,6 +32,9 @@ export default async function CompilerPage() {
           {data.review_required_count === 0
             ? "All required reviews are resolved."
             : `${String(data.review_required_count)} semantic fact(s) need review.`}
+          <p className={styles.finePrintTight}>
+            Reviews are made on the merchant Fixes pages; each run below links to its own.
+          </p>
         </Panel>
       </Section>
       <Section
@@ -95,7 +98,7 @@ function RunTable({ runs }: { runs: Awaited<ReturnType<typeof decodeCompilerOver
               <td>
                 <Link
                   className={styles.rowLinkStrong}
-                  href={`/compiler/runs/${encodeURIComponent(run.run_id)}`}
+                  href={`/fixes/${encodeURIComponent(run.run_id)}`}
                 >
                   {run.source_label}
                 </Link>

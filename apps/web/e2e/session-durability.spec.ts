@@ -119,9 +119,9 @@ test("a console session outlives the process that issued it and is revoked every
   // And it serves an ordinary merchant screen rather than only rendering the shell.
   await page
     .getByRole("navigation", { name: "Console" })
-    .getByRole("link", { name: "Compiler" })
+    .getByRole("link", { name: "Fixes" })
     .click();
-  await expect(page.getByRole("heading", { name: "Compiler review" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Fixes" })).toBeVisible();
 
   // Signing out on the second console. If revocation were process local this would leave the
   // first console still serving the session, which is exactly the defect being fixed.

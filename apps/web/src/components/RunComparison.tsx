@@ -2,7 +2,9 @@ import Link from "next/link";
 
 import { StatusMark } from "@/components/Primitives";
 import styles from "@/components/console.module.css";
+import merchant from "@/components/merchant.module.css";
 import { formatMoney, formatRate } from "@/lib/format";
+import { compareSummary } from "@/lib/insights/merchant";
 import {
   comparisonCountLabel,
   comparisonRateLabel,
@@ -39,20 +41,21 @@ export function RunComparisonPanel({ comparison }: { comparison: RunComparison }
           Comparing run{" "}
           <Link
             className={styles.rowLink}
-            href={`/runs/${encodeURIComponent(comparison.baseline_run_id)}`}
+            href={`/lab/runs/${encodeURIComponent(comparison.baseline_run_id)}`}
           >
             before
           </Link>{" "}
           with run{" "}
           <Link
             className={styles.rowLink}
-            href={`/runs/${encodeURIComponent(comparison.candidate_run_id)}`}
+            href={`/lab/runs/${encodeURIComponent(comparison.candidate_run_id)}`}
           >
             after
           </Link>
           .
         </p>
         <Warnings comparison={comparison} />
+        <MerchantCompare comparison={comparison} />
         {comparison.comparable ? (
           <>
             <Rates comparison={comparison} />
@@ -65,6 +68,82 @@ export function RunComparisonPanel({ comparison }: { comparison: RunComparison }
         ) : null}
       </div>
     </div>
+  );
+}
+
+/**
+ * The payoff, in the terms a merchant asked the question in: how many purchase scenarios
+ * completed before and after, what moved, and what the simulated captured demand did.
+ *
+ * Renders nothing when the comparison engine said the two runs cannot be read together;
+ * the conclusion above already says that, and no summary is fabricated past it.
+ */
+function MerchantCompare({ comparison }: { comparison: RunComparison }) {
+  const summary = compareSummary(comparison);
+  if (summary === null) {
+    return null;
+  }
+  const changes: { text: string; tone: "ok" | "warn" | "neutral"; delta: string }[] = [];
+  if (summary.improved > 0) {
+    changes.push({
+      delta: `+${String(summary.improved)}`,
+      tone: "ok",
+      text:
+        summary.improved === 1
+          ? "previously failed scenario now succeeds"
+          : "previously failed scenarios now succeed",
+    });
+  }
+  if (summary.regressed > 0) {
+    changes.push({
+      delta: `−${String(summary.regressed)}`,
+      tone: "warn",
+      text:
+        summary.regressed === 1 ? "scenario no longer completes" : "scenarios no longer complete",
+    });
+  }
+  for (const demand of summary.capturedDemand) {
+    if (demand.beforeMinor !== demand.afterMinor) {
+      changes.push({
+        delta: `${formatMoney(demand.beforeMinor, demand.currency)} → ${formatMoney(demand.afterMinor, demand.currency)}`,
+        tone: demand.afterMinor > demand.beforeMinor ? "ok" : "warn",
+        text: "simulated captured demand",
+      });
+    }
+  }
+  return (
+    <>
+      <div className={merchant.compare}>
+        <div className={merchant.compareSide}>
+          <span className={merchant.compareLabel}>Before</span>
+          <span className={merchant.compareValue}>
+            {String(summary.succeededBefore)} / {String(summary.purchasesBefore)}{" "}
+            <small>purchase scenarios completed</small>
+          </span>
+        </div>
+        <div className={merchant.compareSide}>
+          <span className={merchant.compareLabel}>After</span>
+          <span className={merchant.compareValue}>
+            {String(summary.succeededAfter)} / {String(summary.purchasesAfter)}{" "}
+            <small>purchase scenarios completed</small>
+          </span>
+        </div>
+      </div>
+      {changes.length === 0 ? (
+        <p className={styles.reviewMeta}>No scenario changed its outcome between the two runs.</p>
+      ) : (
+        <ul className={merchant.compareChanges}>
+          {changes.map((change) => (
+            <li key={`${change.delta}:${change.text}`}>
+              <span className={merchant.compareDelta} data-tone={change.tone}>
+                {change.delta}
+              </span>
+              <span>{change.text}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
   );
 }
 
