@@ -42,12 +42,20 @@ PRODUCER = Enum(
 class SourceOrigin(StrEnum):
     """Which mechanism supplied one piece of merchant source evidence.
 
-    One member, and that is deliberate rather than unfinished. AgentRank has exactly one
-    merchant-facing intake, and an enum that already listed a storefront integration nobody has
-    written would be a column describing a capability this system does not have.
+    Two members, and the second one earns its place by being a genuinely different answer to
+    "where did this come from" rather than a second name for the same act. A console submission
+    is a merchant writing their catalog down. An import is a merchant naming their own public
+    pages, AgentRank retrieving them and extracting a draft deterministically, and the merchant
+    confirming what came out. The evidence behind an imported snapshot is a set of URLs and
+    digests that `merchant_source_import` holds; the evidence behind a console one is the
+    merchant.
+
+    Both produce ordinary snapshots through one intake. This column says which mechanism, and
+    nothing downstream reads it to behave differently.
     """
 
     MERCHANT_CONSOLE = "MERCHANT_CONSOLE"
+    MERCHANT_IMPORT = "MERCHANT_IMPORT"
 
 
 ORIGIN = Enum(

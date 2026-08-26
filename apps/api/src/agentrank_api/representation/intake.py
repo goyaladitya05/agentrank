@@ -141,8 +141,15 @@ class MerchantSourceIntakeService:
         *,
         request_key: str,
         document: SourceDocumentInput,
+        origin: SourceOrigin = SourceOrigin.MERCHANT_CONSOLE,
     ) -> SubmissionOutcome:
         """Take one piece of merchant source evidence in, and say what became of it.
+
+        `origin` records which mechanism supplied the evidence and changes nothing else. The
+        console editor and a confirmed merchant import both arrive here, are validated by the
+        same schema, allocate a version the same way and deduplicate against the current snapshot
+        by the same content identity. A second intake for imported evidence would be a second set
+        of rules for what a source document is.
 
         Everything after the first read happens under a per-merchant advisory lock. Version
         allocation and the comparison against the current snapshot are both read-then-write, and
@@ -162,7 +169,7 @@ class MerchantSourceIntakeService:
         merchant_slug = merchant.slug
         submitted = canonical_json(document.evidence())
 
-        settled = await self._by_request_key(merchant_id, request_key)
+        settled = await self.by_request_key(merchant_id, request_key)
         if settled is not None:
             return _same_request(settled, submitted, request_key)
 
@@ -170,7 +177,7 @@ class MerchantSourceIntakeService:
             await self._claim(merchant_id)
             # Read again under the lock: an identical submit may have committed between the read
             # above and the lock, and answering with its outcome is what a request key is for.
-            settled = await self._by_request_key(merchant_id, request_key)
+            settled = await self.by_request_key(merchant_id, request_key)
             if settled is not None:
                 return _same_request(settled, submitted, request_key)
 
@@ -183,14 +190,14 @@ class MerchantSourceIntakeService:
             )
             if current is not None and _evidence(current.payload) == submitted:
                 return await self._record(
-                    merchant_id, request_key, current, submitted, created=False
+                    merchant_id, request_key, current, submitted, created=False, origin=origin
                 )
             try:
                 snapshot = await MerchantSourceRepository(self._session).create(
                     merchant, definition
                 )
                 return await self._record(
-                    merchant_id, request_key, snapshot, submitted, created=True
+                    merchant_id, request_key, snapshot, submitted, created=True, origin=origin
                 )
             except IntegrityError:
                 # A version this command had already allocated. Unreachable between two callers
@@ -363,13 +370,14 @@ class MerchantSourceIntakeService:
         submitted: str,
         *,
         created: bool,
+        origin: SourceOrigin,
     ) -> SubmissionOutcome:
         """Write the submission beside whatever snapshot it resolved to, in one transaction."""
         submission = MerchantSourceSubmission(
             merchant_id=merchant_id,
             request_key=request_key,
             source_snapshot_id=snapshot.id,
-            origin=SourceOrigin.MERCHANT_CONSOLE,
+            origin=origin,
             created_snapshot=created,
         )
         self._session.add(submission)
@@ -381,7 +389,7 @@ class MerchantSourceIntakeService:
             # the request key is the deterministic answer either way, and the rollback takes the
             # snapshot insert with it so no orphan version is left behind.
             await self._session.rollback()
-            duplicate = await self._by_request_key(merchant_id, request_key)
+            duplicate = await self.by_request_key(merchant_id, request_key)
             if duplicate is not None:
                 # Checked here too, so there is no path on which a reused key answers with
                 # another command's outcome. Unreachable while the lock is held, and one line.
@@ -389,10 +397,15 @@ class MerchantSourceIntakeService:
             raise
         return SubmissionOutcome(submission=submission, snapshot=snapshot)
 
-    async def _by_request_key(
+    async def by_request_key(
         self, merchant_id: uuid.UUID, request_key: str
     ) -> SubmissionOutcome | None:
-        """The submission this key already produced, with the snapshot it resolved to."""
+        """The submission this key already produced, with the snapshot it resolved to.
+
+        Public because the merchant import workflow derives its submission key from the import it
+        is confirming and needs to read back what that key already did. A second copy of this
+        query over there would be a second answer to which snapshot a key produced.
+        """
         found = (
             await self._session.execute(
                 select(MerchantSourceSubmission, MerchantSourceSnapshot)

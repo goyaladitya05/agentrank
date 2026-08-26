@@ -20,6 +20,7 @@ from agentrank_api.checkout import models as checkout_models  # noqa: F401
 from agentrank_api.commerce import models as commerce_models  # noqa: F401
 from agentrank_api.compiler import models as compiler_models  # noqa: F401
 from agentrank_api.constraints import models as constraint_models  # noqa: F401
+from agentrank_api.importer import models as importer_models  # noqa: F401
 from agentrank_api.inventory import models as inventory_models  # noqa: F401
 from agentrank_api.mandates import models as mandate_models  # noqa: F401
 from agentrank_api.models import Base

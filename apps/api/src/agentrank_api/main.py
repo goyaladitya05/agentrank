@@ -20,6 +20,10 @@ from agentrank_api.errors import (
     NotFoundError,
     UpstreamError,
 )
+from agentrank_api.importer.schemas import (
+    MAX_IMPORT_REQUEST_BYTES,
+    MAX_IMPORT_REQUEST_DEPTH,
+)
 from agentrank_api.limits import BodyLimit, RequestBodyLimit
 from agentrank_api.payments.provider import PaymentProvider
 from agentrank_api.payments.wiring import build_payment_provider
@@ -36,6 +40,7 @@ from agentrank_api.routes import (
     console,
     constraints,
     evaluations,
+    imports,
     insights,
     mandates,
     payments,
@@ -277,6 +282,11 @@ def create_app(
     app.include_router(razorpay.router)
     app.include_router(insights.router)
     app.include_router(compiler.router)
+    # Before the source router, and that order is load bearing rather than tidy. Starlette matches
+    # in registration order, and `/api/v1/sources/{source_snapshot_id}` would otherwise swallow
+    # `/api/v1/sources/imports` and answer it with "imports is not a UUID". A test asserts that
+    # listing imports works, which is what pins this.
+    app.include_router(imports.router)
     app.include_router(sources.router)
     if benchmark_commands:
         app.include_router(evaluations.router)
@@ -294,7 +304,14 @@ def create_app(
         limits={
             ("POST", sources.router.prefix): BodyLimit(
                 max_bytes=MAX_SOURCE_REQUEST_BYTES, max_depth=MAX_SOURCE_REQUEST_DEPTH
-            )
+            ),
+            # The import command is a list of URLs rather than a document, so it is bounded far
+            # more tightly. It is here for the same reason the source document is: it is a body a
+            # caller composes freely, and finding out that it is not an import command should not
+            # require receiving and parsing it.
+            ("POST", imports.router.prefix): BodyLimit(
+                max_bytes=MAX_IMPORT_REQUEST_BYTES, max_depth=MAX_IMPORT_REQUEST_DEPTH
+            ),
         },
     )
     return app

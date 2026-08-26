@@ -66,6 +66,26 @@ BLOCKERS: tuple[DowngradeBlocker, ...] = (
             " requires a representation and a compiler run on every launch"
         ),
     ),
+    DowngradeBlocker(
+        revision="e5b7c93af142",
+        code="merchant_source_imports",
+        table="merchant_source_import",
+        probe="SELECT count(*) FROM merchant_source_import",
+        reason=(
+            "merchant source imports record which public pages produced which source snapshot,"
+            " and nothing below this revision can hold that provenance"
+        ),
+    ),
+    DowngradeBlocker(
+        revision="e5b7c93af142",
+        code="imported_source_submissions",
+        table="merchant_source_submission",
+        probe="SELECT count(*) FROM merchant_source_submission WHERE origin = 'MERCHANT_IMPORT'",
+        reason=(
+            "imported source submissions cannot be described before this revision, which is the"
+            " one that admits an origin other than the console"
+        ),
+    ),
 )
 
 
