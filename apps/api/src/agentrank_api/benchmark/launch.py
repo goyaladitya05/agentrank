@@ -106,7 +106,7 @@ RESOURCE = "benchmark_evaluation_launch"
 # repository is a value nobody can check a historical run against. OpenAI first when both are
 # configured, so the choice is stated rather than incidental.
 OPENAI_MODEL = "gpt-5.6-terra"
-GEMINI_MODEL = "gemini-3.7-flash"
+GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 # Which executor kind each profile records on the run it produces. The model buyer's kind is
 # derived from its provider the same way the operator command line derives it, so a run launched
