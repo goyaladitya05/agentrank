@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -455,25 +455,6 @@ class MerchantSourceImportService:
         if merchant is None:
             raise NotFoundError("merchant", str(merchant_id))
         return merchant
-
-    async def snapshot_counts(
-        self, imports: Sequence[MerchantSourceImport]
-    ) -> dict[uuid.UUID, int]:
-        """How many imports each of these records shares a snapshot with, in one query.
-
-        One statement rather than one per row, because a history page renders ten of these and a
-        read per row is the shape that turns a list into a query storm as a merchant's history
-        grows.
-        """
-        ids = [record.source_snapshot_id for record in imports if record.source_snapshot_id]
-        if not ids:
-            return {}
-        rows = await self._session.execute(
-            select(MerchantSourceImport.source_snapshot_id, func.count())
-            .where(MerchantSourceImport.source_snapshot_id.in_(ids))
-            .group_by(MerchantSourceImport.source_snapshot_id)
-        )
-        return {row[0]: int(row[1]) for row in rows.all()}
 
 
 def blockers_for(

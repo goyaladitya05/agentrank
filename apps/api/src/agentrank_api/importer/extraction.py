@@ -79,7 +79,7 @@ OUT_OF_STOCK_TOKENS = frozenset(
 
 # What a page's own metadata calls a price, in the order a page carrying several should be read.
 # The `product:` namespace is the more specific statement and wins over the generic Open Graph one.
-PRICE_AMOUNT_TAGS = ("product:price:amount", "og:price:amount", "twitter:data1")
+PRICE_AMOUNT_TAGS = ("product:price:amount", "og:price:amount")
 PRICE_CURRENCY_TAGS = ("product:price:currency", "og:price:currency")
 AVAILABILITY_TAGS = ("product:availability", "og:availability", "availability")
 IDENTIFIER_TAGS = ("product:retailer_item_id", "product:sku", "product:mpn", "og:sku")
@@ -87,9 +87,9 @@ TITLE_TAGS = ("og:title", "twitter:title")
 DESCRIPTION_TAGS = ("og:description", "description", "twitter:description")
 CATEGORY_TAGS = ("product:category", "article:section")
 
-# The generic Open Graph price tag is read only when the specific one is absent, and the Twitter
-# card field is read only for a currency this repository can already see stated elsewhere. Listed
-# separately so the precedence above is not silently doing something the reader cannot see.
+# A Twitter card's first data field is conventionally a price and is conventionally nothing of the
+# sort. It is read only when the page states a currency somewhere the tags above name, so a page
+# has to have published a currency deliberately before this is consulted at all.
 _TWITTER_PRICE_TAG = "twitter:data1"
 
 MAX_AVAILABILITY_TEXT = 120
@@ -444,22 +444,17 @@ def _variant(
             " one is the price",
         )
     offer = offers[0]
-    if AGGREGATE_OFFER_TYPE in _types(offer):
-        low, high = offer.get("lowPrice"), offer.get("highPrice")
-        if low is not None and high is not None and str(low) != str(high):
-            return Omission(
-                source_url,
-                "price_conflict",
-                "this page publishes a price range rather than a price",
-            )
-        published = low if low is not None else offer.get("price")
-    else:
-        published = offer.get("price")
     try:
         currency = normalize_currency(offer.get("priceCurrency") or product.get("priceCurrency"))
-        amount = minor_units(published, currency)
+        amount = _offered_amount(offer, currency)
     except RefusedAmountError as refused:
         return Omission(source_url, refused.reason, refused.detail)
+    if amount is None:
+        return Omission(
+            source_url,
+            "price_conflict",
+            "this page publishes a price range rather than a price",
+        )
 
     # The offer's own identifier first. An offer that names a SKU is naming the thing being
     # sold, while the product node's SKU is the family it belongs to, and a page publishing both
@@ -501,6 +496,28 @@ def _variant(
         availability=availability,
         availability_text=text,
     )
+
+
+def _offered_amount(offer: dict[str, Any], currency: str) -> int | None:
+    """One offer's price in minor units, or None when it is a range rather than a price.
+
+    An `AggregateOffer` is a summary and its two figures are compared as amounts rather than as
+    spellings. `10` and `10.00` are one price written twice, and refusing that pair as a
+    disagreement would exclude a product over a formatting choice; `10` and `20` are two prices and
+    there is no basis for picking between them.
+    """
+    if AGGREGATE_OFFER_TYPE not in _types(offer):
+        return minor_units(offer.get("price"), currency)
+    low, high = offer.get("lowPrice"), offer.get("highPrice")
+    if low is None and high is None:
+        return minor_units(offer.get("price"), currency)
+    if low is None or high is None:
+        # Half a range is not a price. The page states a bound and leaves the other end open.
+        raise RefusedAmountError(
+            "price_missing", "the page publishes one end of a price range and not a price"
+        )
+    lowest = minor_units(low, currency)
+    return lowest if lowest == minor_units(high, currency) else None
 
 
 def _variant_label(owner: dict[str, Any], product: dict[str, Any]) -> str | None:
@@ -562,7 +579,7 @@ def _metadata_price_conflict(
     """
     if len(variants) != 1:
         return None
-    published = reading.meta(*PRICE_AMOUNT_TAGS[:2])
+    published = reading.meta(*PRICE_AMOUNT_TAGS)
     declared = reading.meta(*PRICE_CURRENCY_TAGS)
     if published is None or declared is None:
         return None
@@ -591,7 +608,7 @@ def _from_metadata(
     nodes: list[dict[str, Any]],
 ) -> ProductExtraction:
     """A product from the page's own metadata tags, for a page publishing no product node."""
-    published = reading.meta(*PRICE_AMOUNT_TAGS[:2])
+    published = reading.meta(*PRICE_AMOUNT_TAGS)
     if published is None and reading.meta(*PRICE_CURRENCY_TAGS) is not None:
         published = reading.meta(_TWITTER_PRICE_TAG)
     declared = reading.meta(*PRICE_CURRENCY_TAGS)

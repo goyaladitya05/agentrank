@@ -30,6 +30,7 @@ import pytest
 from conftest import CredentialIssuer, bearer
 from importer_support import (
     IMPORTS,
+    CannedResponse,
     MerchantFixtureServer,
     Storefront,
     import_command,
@@ -40,6 +41,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+import agentrank_api.importer.service as service_module
 from agentrank_api.commerce.repository import MerchantRepository
 from agentrank_api.config import Settings
 from agentrank_api.importer.models import MerchantSourceImport
@@ -883,3 +885,107 @@ async def test_an_import_history_row_carries_counts_and_never_the_draft(
     assert len(listed) == 2
     assert all("products" not in entry for entry in listed)
     assert all(entry["product_count"] == 1 for entry in listed)
+
+
+async def test_an_import_that_runs_out_of_bytes_stops_and_says_which_pages_it_did_not_read(
+    settings: Settings,
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+    issue_credential: CredentialIssuer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole-import byte budget, which the per page bound does not cover.
+
+    Twelve pages each just inside the per page bound is twenty four megabytes of markup to parse
+    inside one request. The budget is spent in the order the merchant listed their URLs, which is
+    why pages are fetched one at a time: two imports of one list stop at the same page.
+    """
+    monkeypatch.setattr(service_module, "MAX_IMPORT_TOTAL_BYTES", 1)
+    shop = await merchant(session, "import-byte-budget")
+    token = await issue_credential(shop.id)
+    async with MerchantFixtureServer(Storefront.voltedge().routes) as server:
+        async for http in api(settings, factory):
+            body = (
+                await http.post(
+                    IMPORTS,
+                    headers=bearer(token),
+                    json=import_command(
+                        [page(server.url("/p/charger")), page(server.url("/p/cable"))], FIRST
+                    ),
+                )
+            ).json()
+        # The first page was read and the second was never requested.
+        assert [target for target, _ in server.requests] == ["/p/charger"]
+
+    assert body["summary"]["product_count"] == 1
+    assert body["pages"][1]["reason"] == "import_byte_budget"
+    assert body["pages"][1]["retrieved"] is False
+
+
+async def test_an_import_that_runs_out_of_time_is_a_failure_rather_than_a_partial_draft(
+    settings: Settings,
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+    issue_credential: CredentialIssuer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deadline produces no draft at all, because half a catalog is not a catalog.
+
+    A page level failure is a fact to report beside the pages that worked. Running out of time is
+    not: which pages were reached would then depend on how slow somebody's server was that
+    minute, and confirming the result would write a source snapshot missing products for a reason
+    the merchant could not see.
+    """
+    monkeypatch.setattr(service_module, "IMPORT_DEADLINE_SECONDS", 0.4)
+    shop = await merchant(session, "import-deadline")
+    token = await issue_credential(shop.id)
+    routes = dict(Storefront.voltedge().routes)
+    routes["/p/slow"] = CannedResponse(body=b"<html></html>", delay_seconds=5.0)
+    async with MerchantFixtureServer(routes) as server:
+        async for http in api(settings, factory):
+            body = (
+                await http.post(
+                    IMPORTS,
+                    headers=bearer(token),
+                    json=import_command(
+                        [page(server.url("/p/slow")), page(server.url("/p/charger"))], FIRST
+                    ),
+                )
+            ).json()
+
+    assert body["summary"]["state"] == "FAILED"
+    assert body["summary"]["failure_reason"] == "deadline"
+    assert body["summary"]["product_count"] == 0
+    assert [entry["reason"] for entry in body["pages"]] == ["import_deadline", "import_deadline"]
+    assert [blocker["code"] for blocker in body["blockers"]] == ["import_failed"]
+
+
+async def test_a_failed_import_cannot_be_confirmed_into_anything(
+    settings: Settings,
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+    issue_credential: CredentialIssuer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(service_module, "IMPORT_DEADLINE_SECONDS", 0.4)
+    shop = await merchant(session, "import-failed-confirm")
+    token = await issue_credential(shop.id)
+    routes = dict(Storefront.voltedge().routes)
+    routes["/p/slow"] = CannedResponse(body=b"<html></html>", delay_seconds=5.0)
+    async with MerchantFixtureServer(routes) as server:
+        async for http in api(settings, factory):
+            record = (
+                await http.post(
+                    IMPORTS,
+                    headers=bearer(token),
+                    json=import_command([page(server.url("/p/slow"))], FIRST),
+                )
+            ).json()
+            refused = await http.post(
+                f"{IMPORTS}/{record['summary']['import_id']}/confirm",
+                headers=bearer(token),
+                json={"stock_level": 1},
+            )
+    assert refused.status_code == 409
+    assert refused.json()["error"] == "import_failed"
+    assert await MerchantSourceIntakeService(session).current(shop.id) is None

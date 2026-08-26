@@ -212,6 +212,50 @@ def test_a_page_that_cannot_be_read_without_guessing_is_omitted_by_name(
     assert refused == reason
 
 
+def test_an_aggregate_offer_is_read_as_a_price_only_when_its_ends_agree_as_amounts() -> None:
+    """A range is two prices and is refused. One price written twice is one price.
+
+    Comparing the two figures as strings would refuse `10` beside `10.00`, which is a formatting
+    choice rather than a disagreement, and would exclude a product over it.
+    """
+    equal = (
+        '{"@type":"Product","name":"X","sku":"S","offers":{"@type":"AggregateOffer",'
+        '"lowPrice":"10","highPrice":"10.00","priceCurrency":"INR"}}'
+    )
+    found, refused = product(structured(equal))
+    assert refused is None
+    assert found is not None
+    assert found.variants[0].price_amount_minor == 1000
+
+    spread = equal.replace('"highPrice":"10.00"', '"highPrice":"20"')
+    assert product(structured(spread))[1] == "price_conflict"
+
+
+def test_one_end_of_a_price_range_is_not_a_price() -> None:
+    found, refused = product(
+        structured(
+            '{"@type":"Product","name":"X","sku":"S","offers":{"@type":"AggregateOffer",'
+            '"lowPrice":"10","priceCurrency":"INR"}}'
+        )
+    )
+    assert found is None
+    assert refused == "price_missing"
+
+
+def test_an_aggregate_offer_that_contains_real_offers_is_read_through_to_them() -> None:
+    found, refused = product(
+        structured(
+            '{"@type":"Product","name":"X","offers":{"@type":"AggregateOffer",'
+            '"priceCurrency":"INR","offers":['
+            '{"@type":"Offer","sku":"A","price":"10","priceCurrency":"INR"},'
+            '{"@type":"Offer","sku":"B","price":"20","priceCurrency":"INR"}]}}'
+        )
+    )
+    assert refused is None
+    assert found is not None
+    assert [variant.price_amount_minor for variant in found.variants] == [1000, 2000]
+
+
 def test_a_refused_structured_price_does_not_fall_back_to_a_different_number() -> None:
     """Refusing an ambiguous price and then using another one is guessing with an extra step."""
     markup = (
