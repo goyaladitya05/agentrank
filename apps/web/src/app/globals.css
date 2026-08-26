@@ -1,55 +1,65 @@
 :root {
   color-scheme: light dark;
 
-  /* Warm paper neutrals rather than default gray. The surface carries the product's
-     seriousness; color is reserved for status and for the one accent. */
-  --surface: #f7f6f3;
-  --surface-raised: #fffefc;
-  --surface-header: #efede8;
-  --surface-sunken: #f1efeb;
-  --border: #e0ddd6;
-  --border-strong: #aaa69d;
-  --text: #1c1b18;
-  --text-muted: #67645c;
-  --accent: #1f5673;
-  --accent-strong: #17435a;
-  --accent-surface: #eef3f6;
+  /* Warm paper and ink. The surface is the product's ground; boxes are rare and color is
+     reserved for status and for the one accent below. */
+  --surface: #f6f4ef;
+  --surface-raised: #fdfcf9;
+  --surface-header: #efece5;
+  --surface-sunken: #efede7;
+  --border: #e0dcd2;
+  --border-strong: #a6a196;
+  --rule-strong: #35322c;
+  --text: #1e1c18;
+  --text-muted: #6b675e;
 
-  --state-ok: #226b46;
-  --state-ok-surface: #edf4ee;
+  /* The accent: a deep racing green. It is the color of a completed purchase, which is the
+     one thing this product exists to make happen, so success and identity share a family. */
+  --accent: #1c5b3f;
+  --accent-strong: #123f2b;
+  --accent-surface: #e8efe7;
+
+  --state-ok: #1e6947;
+  --state-ok-surface: #e8efe7;
   --state-warn: #8a5f10;
-  --state-warn-surface: #f7f1e4;
+  --state-warn-surface: #f6f0e0;
   --state-fail: #99312e;
-  --state-fail-surface: #f8eeec;
+  --state-fail-surface: #f7edea;
+  /* Quiet informational slate, deliberately not the accent. */
+  --state-info: #4c6172;
 
-  --shadow-raised: 0 1px 2px rgba(28, 27, 24, 0.04);
+  --shadow-raised: 0 1px 2px rgba(30, 28, 24, 0.05);
 
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   --sans:
     -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial,
     sans-serif;
+  --serif: var(--font-serif), Georgia, "Times New Roman", serif;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --surface: #131413;
-    --surface-raised: #1b1c1a;
-    --surface-header: #201f1d;
-    --surface-sunken: #181917;
-    --border: #2e2f2c;
-    --border-strong: #4c4d48;
-    --text: #e8e7e2;
-    --text-muted: #9c9a92;
-    --accent: #7db4d4;
-    --accent-strong: #a3cbe2;
-    --accent-surface: #1b2830;
+    --surface: #161512;
+    --surface-raised: #1d1c18;
+    --surface-header: #22201b;
+    --surface-sunken: #1a1915;
+    --border: #302e28;
+    --border-strong: #504d44;
+    --rule-strong: #c9c5ba;
+    --text: #e9e6de;
+    --text-muted: #9d998c;
 
-    --state-ok: #5cb488;
-    --state-ok-surface: #1a2620;
+    --accent: #7cbf9c;
+    --accent-strong: #a3d6bb;
+    --accent-surface: #1d2a22;
+
+    --state-ok: #6cb890;
+    --state-ok-surface: #1d2a22;
     --state-warn: #d2a648;
-    --state-warn-surface: #2a2419;
+    --state-warn-surface: #2b2519;
     --state-fail: #df7b71;
-    --state-fail-surface: #2c1d1b;
+    --state-fail-surface: #2d1e1b;
+    --state-info: #8aa4b5;
 
     --shadow-raised: none;
   }
@@ -82,4 +92,40 @@ h2,
 h3 {
   margin: 0;
   font-weight: 600;
+}
+
+::selection {
+  background: var(--accent-surface);
+  color: var(--text);
+}
+
+/* The one entrance the merchant pages make: content settles onto the paper once. */
+@keyframes settle {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Scenario blocks stamp in one after another after a measurement. */
+@keyframes stamp {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
 }

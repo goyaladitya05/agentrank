@@ -53,25 +53,24 @@ function Lead({ data }: { data: CompilerOverview }) {
   if (waiting !== null) {
     const open = waiting.review_required_count - waiting.reviewed_count;
     return (
-      <Section title="Waiting for you">
-        <Panel>
-          <p>
-            AgentRank found {String(open)} {open === 1 ? "fact" : "facts"} you can review, from{" "}
-            {waiting.source_label}.
+      <aside className={merchant.slip} aria-label="Waiting for you">
+        <div className={merchant.slipText}>
+          <p className={merchant.slipEyebrow}>Waiting for you</p>
+          <h2 className={merchant.slipTitle}>
+            AgentRank found {String(open)} {open === 1 ? "fact" : "facts"} you can review
+          </h2>
+          <p className={merchant.slipBody}>
+            From {waiting.source_label}. Accept, correct or reject each one. Nothing is published
+            until you decide.
           </p>
-          <p className={styles.finePrintTight}>
-            Accept, correct or reject each one. Nothing is published until you decide.
-          </p>
-          <p className={styles.finePrintTight}>
-            <Link
-              className={merchant.primaryButton}
-              href={`/fixes/${encodeURIComponent(waiting.run_id)}`}
-            >
-              Review {String(open)} {open === 1 ? "fix" : "fixes"}
-            </Link>
-          </p>
-        </Panel>
-      </Section>
+        </div>
+        <Link
+          className={merchant.primaryButton}
+          href={`/fixes/${encodeURIComponent(waiting.run_id)}`}
+        >
+          Review {String(open)} {open === 1 ? "fix" : "fixes"}
+        </Link>
+      </aside>
     );
   }
   const publishable = data.runs.find(
@@ -82,48 +81,44 @@ function Lead({ data }: { data: CompilerOverview }) {
   );
   if (publishable !== undefined) {
     return (
-      <Section title="Waiting for you">
-        <Panel>
-          <p>
+      <aside className={merchant.slip} aria-label="Waiting for you">
+        <div className={merchant.slipText}>
+          <p className={merchant.slipEyebrow}>Waiting for you</p>
+          <h2 className={merchant.slipTitle}>Your fixes are ready to publish</h2>
+          <p className={merchant.slipBody}>
             {publishable.review_required_count === 0
               ? `No fact from ${publishable.source_label} needs your decision. The fixes can be published.`
               : `Every fact from ${publishable.source_label} is reviewed. The fixes can be published.`}
           </p>
-          <p className={styles.finePrintTight}>
-            <Link
-              className={merchant.primaryButton}
-              href={`/fixes/${encodeURIComponent(publishable.run_id)}`}
-            >
-              Publish fixes
-            </Link>
-          </p>
-        </Panel>
-      </Section>
+        </div>
+        <Link
+          className={merchant.primaryButton}
+          href={`/fixes/${encodeURIComponent(publishable.run_id)}`}
+        >
+          Publish fixes
+        </Link>
+      </aside>
     );
   }
   if (data.current_representation_id !== null) {
     return (
-      <Section title="Where you stand">
-        <Panel>
-          <p>
-            Your reviewed fixes are published. Shopping agents evaluated against your published
-            description read them.
-          </p>
-          <p className={styles.finePrintTight}>
-            <Link className={merchant.primaryButton} href="/evaluations">
-              Measure again
-            </Link>
-          </p>
-          <p className={styles.finePrint}>
-            To change what is published, supply newer store information and review the new facts it
-            produces.{" "}
+      <aside className={merchant.slip} aria-label="Where you stand">
+        <div className={merchant.slipText}>
+          <p className={merchant.slipEyebrow}>Where you stand</p>
+          <h2 className={merchant.slipTitle}>Your reviewed fixes are published</h2>
+          <p className={merchant.slipBody}>
+            Shopping agents evaluated against your published description read them. To change what
+            is published, supply newer{" "}
             <Link className={styles.rowLink} href="/sources">
-              Your store information
-            </Link>
-            .
+              store information
+            </Link>{" "}
+            and review the new facts it produces.
           </p>
-        </Panel>
-      </Section>
+        </div>
+        <Link className={merchant.primaryButton} href="/evaluations">
+          Measure again
+        </Link>
+      </aside>
     );
   }
   return null;

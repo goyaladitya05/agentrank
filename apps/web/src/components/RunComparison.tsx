@@ -33,9 +33,9 @@ export function RunComparisonPanel({ comparison }: { comparison: RunComparison }
   return (
     <div className={styles.panel}>
       <div className={styles.panelBody}>
-        <div className={styles.findingTop}>
+        <div className={merchant.verdict}>
           <StatusMark tone={conclusion.tone} label={conclusion.label} />
-          <p className={styles.findingTitle}>{comparison.conclusion.statement}</p>
+          <p className={merchant.verdictStatement}>{comparison.conclusion.statement}</p>
         </div>
         <p className={styles.reviewMeta}>
           Comparing run{" "}
@@ -117,14 +117,17 @@ function MerchantCompare({ comparison }: { comparison: RunComparison }) {
         <div className={merchant.compareSide}>
           <span className={merchant.compareLabel}>Before</span>
           <span className={merchant.compareValue}>
-            {String(summary.succeededBefore)} / {String(summary.purchasesBefore)}{" "}
+            {String(summary.succeededBefore)} / {String(summary.purchasesBefore)}
             <small>purchase scenarios completed</small>
           </span>
         </div>
+        <span className={merchant.compareArrow} aria-hidden="true">
+          &rarr;
+        </span>
         <div className={merchant.compareSide}>
           <span className={merchant.compareLabel}>After</span>
           <span className={merchant.compareValue}>
-            {String(summary.succeededAfter)} / {String(summary.purchasesAfter)}{" "}
+            {String(summary.succeededAfter)} / {String(summary.purchasesAfter)}
             <small>purchase scenarios completed</small>
           </span>
         </div>

@@ -7,18 +7,30 @@
   display: flex;
   align-items: center;
   gap: 32px;
-  max-width: 1200px;
+  max-width: 1120px;
   margin: 0 auto;
   padding: 14px 28px;
 }
 
 .wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
   font-size: 14px;
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--text);
   text-decoration: none;
+}
+
+/* The mark: one scenario block, filled. The same stamp the track is made of. */
+.wordmark::before {
+  content: "";
+  width: 9px;
+  height: 12px;
+  border-radius: 1.5px;
+  background: var(--accent);
 }
 
 .wordmark:focus-visible {
@@ -76,9 +88,9 @@
 }
 
 .main {
-  max-width: 1200px;
+  max-width: 1120px;
   margin: 0 auto;
-  padding: 28px 28px 64px;
+  padding: 28px 28px 72px;
 }
 
 @media (max-width: 720px) {

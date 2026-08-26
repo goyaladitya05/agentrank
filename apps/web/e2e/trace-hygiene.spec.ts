@@ -43,7 +43,7 @@ test("a retained trace of a signed in session carries no credential material", a
     .getByRole("navigation", { name: "Console" })
     .getByRole("link", { name: "Fixes" })
     .click();
-  await expect(page.getByRole("heading", { name: "Fixes" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Fixes", exact: true })).toBeVisible();
 
   const trace = testInfo.outputPath("signed-in-trace.zip");
   await context.tracing.stop({ path: trace });

@@ -29,16 +29,26 @@ export function Section({
   hint,
   children,
   actions,
+  index,
 }: {
   title: string;
   hint?: string;
   actions?: ReactNode;
   children: ReactNode;
+  /** Editorial section number, e.g. "01". Merchant pages number their sections. */
+  index?: string;
 }) {
   return (
     <section className={styles.section} aria-label={title}>
       <div className={styles.sectionHeader}>
-        <h2 className={styles.sectionTitle}>{title}</h2>
+        <h2 className={styles.sectionTitle}>
+          {index !== undefined ? (
+            <span className={styles.sectionIndex} aria-hidden="true">
+              {index}
+            </span>
+          ) : null}
+          {title}
+        </h2>
         {actions}
         {hint !== undefined ? <span className={styles.sectionHint}>{hint}</span> : null}
       </div>

@@ -17,13 +17,14 @@ import { groupFindings } from "@/lib/insights/merchant";
 import type { MerchantFinding, RunDiagnostics } from "@/lib/insights/types";
 
 /**
- * The merchant Issues page: the latest evaluation's findings, split into what needs the
- * merchant and what does not.
+ * The merchant Issues page, set as a ledger: a fixed evidence gutter on the left of every
+ * entry, the finding itself in the serif, and two piles a merchant can tell apart from
+ * across the room.
  *
  * The split is the diagnostics engine's actionability verbatim. Provider and system
- * failures live in their own group under a heading that says no action is required, so
- * they can never read as merchant problems, and every claim links to the evidence that
- * establishes it rather than asserting it bare.
+ * failures live under a quieter rule whose heading says no action is required, so they can
+ * never read as merchant problems, and every claim links to the evidence that establishes
+ * it rather than asserting it bare.
  */
 export function IssuesContent({ data }: { data: RunDiagnostics }) {
   const grouped = groupFindings(data.findings);
@@ -45,44 +46,42 @@ export function IssuesContent({ data }: { data: RunDiagnostics }) {
         </TechnicalDetails>
       </div>
 
-      <section className={styles.section} aria-label="Needs your attention">
-        <h2 className={merchant.issueGroupTitle} data-tone="warn">
-          Needs your attention
-          <span className={merchant.issueGroupCount}>{String(grouped.needsAttention.length)}</span>
-        </h2>
-        <div className={styles.panel}>
-          {grouped.needsAttention.length === 0 ? (
-            <div className={styles.emptyState}>
-              <p className={styles.emptyTitle}>Nothing needs your attention</p>
-              <p>This evaluation produced no finding that requires action from you.</p>
-            </div>
-          ) : (
-            grouped.needsAttention.map((finding) => (
-              <IssueCard key={finding.key} finding={finding} />
-            ))
-          )}
+      <section aria-label="Needs your attention">
+        <div className={merchant.groupHead} data-tone="warn">
+          <h2 className={merchant.groupTitle}>Needs your attention</h2>
+          <span className={merchant.groupCount}>{String(grouped.needsAttention.length)}</span>
         </div>
+        {grouped.needsAttention.length === 0 ? (
+          <div className={styles.emptyState}>
+            <p className={styles.emptyTitle}>Nothing needs your attention</p>
+            <p>This evaluation produced no finding that requires action from you.</p>
+          </div>
+        ) : (
+          <div className={merchant.entryList}>
+            {grouped.needsAttention.map((finding) => (
+              <IssueEntry key={finding.key} finding={finding} />
+            ))}
+          </div>
+        )}
       </section>
 
-      <section className={styles.section} aria-label="No action required">
-        <h2 className={merchant.issueGroupTitle} data-tone="neutral">
-          No action required from you
-          <span className={merchant.issueGroupCount}>
-            {String(grouped.noActionRequired.length)}
-          </span>
-        </h2>
-        <div className={styles.panel}>
-          {grouped.noActionRequired.length === 0 ? (
-            <div className={styles.emptyState}>
-              <p className={styles.emptyTitle}>No provider or system findings</p>
-              <p>Nothing external affected this evaluation.</p>
-            </div>
-          ) : (
-            grouped.noActionRequired.map((finding) => (
-              <IssueCard key={finding.key} finding={finding} />
-            ))
-          )}
+      <section aria-label="No action required">
+        <div className={merchant.groupHead} data-tone="quiet">
+          <h2 className={merchant.groupTitle}>No action required from you</h2>
+          <span className={merchant.groupCount}>{String(grouped.noActionRequired.length)}</span>
         </div>
+        {grouped.noActionRequired.length === 0 ? (
+          <div className={styles.emptyState}>
+            <p className={styles.emptyTitle}>No provider or system findings</p>
+            <p>Nothing external affected this evaluation.</p>
+          </div>
+        ) : (
+          <div className={merchant.entryList}>
+            {grouped.noActionRequired.map((finding) => (
+              <IssueEntry key={finding.key} finding={finding} />
+            ))}
+          </div>
+        )}
       </section>
 
       <p className={styles.finePrint}>
@@ -96,58 +95,71 @@ export function IssuesContent({ data }: { data: RunDiagnostics }) {
   );
 }
 
-function IssueCard({ finding }: { finding: MerchantFinding }) {
+function IssueEntry({ finding }: { finding: MerchantFinding }) {
   const lost = finding.simulated_demand.filter(
     (effect) => effect.bucket.toUpperCase() === "AT_RISK" || effect.bucket.toUpperCase() === "LOST",
   );
   return (
-    <article className={merchant.issueCard}>
-      <div className={merchant.issueTitleRow}>
+    <article className={merchant.entry}>
+      <div className={merchant.entryGutter}>
         <StatusMark
           tone={severityTone(finding.severity)}
           label={severityLabel(finding.severity)}
           description={`Diagnostic code ${finding.code}`}
         />
-        <h3 className={merchant.issueTitle}>
+        <span>
+          {finding.mission_run_ids.length === 1
+            ? "1 scenario"
+            : `${String(finding.mission_run_ids.length)} scenarios`}
+        </span>
+        {finding.product_ids.length > 0 ? (
+          <span>
+            {finding.product_ids.length === 1
+              ? "1 product"
+              : `${String(finding.product_ids.length)} products`}
+          </span>
+        ) : null}
+      </div>
+      <div>
+        <h3 className={merchant.entryTitle}>
           <Link
-            className={merchant.issueTitleLink}
+            className={merchant.entryTitleLink}
             href={`/issues/${encodeURIComponent(finding.key)}`}
           >
             {finding.title}
           </Link>
         </h3>
-        <StatusMark tone="neutral" label={actionabilityLabel(finding.actionability)} />
-      </div>
-      <div className={merchant.issueFacts}>
-        <span>{affectedSentence(finding)}</span>
-        {lost.length > 0 ? (
-          <span className={merchant.issueConsequence}>
-            Simulated demand at risk:{" "}
-            {lost
-              .map((effect) => formatMoney(effect.simulated_amount_minor, effect.currency))
-              .join(" ")}
-          </span>
+        <div className={merchant.entryMeta}>
+          <span>{actionabilityLabel(finding.actionability)}</span>
+          {lost.length > 0 ? (
+            <span className={merchant.entryConsequence}>
+              simulated demand at risk{" "}
+              {lost
+                .map((effect) => formatMoney(effect.simulated_amount_minor, effect.currency))
+                .join(" ")}
+            </span>
+          ) : null}
+        </div>
+        {finding.recommendation !== null ? (
+          <p className={merchant.entryBody}>{finding.recommendation}</p>
         ) : null}
+        <p className={merchant.entryActions}>
+          <Link className={styles.rowLink} href={`/issues/${encodeURIComponent(finding.key)}`}>
+            Open this issue
+          </Link>
+          {finding.compiler_references.length > 0 ? (
+            <>
+              {" · "}
+              <Link
+                className={styles.rowLink}
+                href={`/fixes/${encodeURIComponent(finding.compiler_references[0]?.compiler_run_id ?? "")}`}
+              >
+                Review the proposed fix
+              </Link>
+            </>
+          ) : null}
+        </p>
       </div>
-      {finding.recommendation !== null ? (
-        <p className={merchant.issueRecommendation}>{finding.recommendation}</p>
-      ) : null}
-      <p className={styles.finePrintTight}>
-        <Link className={styles.rowLink} href={`/issues/${encodeURIComponent(finding.key)}`}>
-          Open this issue
-        </Link>
-        {finding.compiler_references.length > 0 ? (
-          <>
-            {" \u00b7 "}
-            <Link
-              className={styles.rowLink}
-              href={`/fixes/${encodeURIComponent(finding.compiler_references[0]?.compiler_run_id ?? "")}`}
-            >
-              Review the proposed fix
-            </Link>
-          </>
-        ) : null}
-      </p>
     </article>
   );
 }
@@ -199,24 +211,22 @@ export function IssueDetailContent({
   );
   return (
     <>
-      <div className={styles.pageHeader}>
-        <div>
-          <p className={merchant.eyebrow}>
-            <Link className={merchant.secondaryAction} href="/issues">
-              Issues
-            </Link>{" "}
-            / {severityLabel(finding.severity)}
-          </p>
-          <h1 className={styles.pageTitle}>{finding.title}</h1>
-        </div>
-        <StatusMark
-          tone={severityTone(finding.severity)}
-          label={severityLabel(finding.severity)}
-          description={`Diagnostic code ${finding.code}`}
-        />
-      </div>
+      <header className={merchant.masthead}>
+        <p className={merchant.eyebrow}>
+          <Link className={merchant.secondaryAction} href="/issues">
+            Issues
+          </Link>{" "}
+          / {severityLabel(finding.severity)}
+        </p>
+        <h1 className={merchant.mastStatementSub}>{finding.title}</h1>
+        <p className={merchant.mastReading}>
+          {yours
+            ? "This is something you can change."
+            : "No merchant action is required. This is not a problem with your store."}
+        </p>
+      </header>
 
-      <Section title="Who owns this">
+      <Section index="01" title="Who owns this">
         <Panel>
           <p>
             <StatusMark
@@ -224,16 +234,11 @@ export function IssueDetailContent({
               label={actionabilityLabel(finding.actionability)}
             />
           </p>
-          <p className={styles.finePrintTight}>
-            Attributed to: {ownerLabel(finding.owner)}.{" "}
-            {yours
-              ? "This is something you can change."
-              : "No merchant action is required. This is not a problem with your store."}
-          </p>
+          <p className={styles.finePrintTight}>Attributed to: {ownerLabel(finding.owner)}.</p>
         </Panel>
       </Section>
 
-      <Section title="What was affected">
+      <Section index="02" title="What was affected">
         <Panel>
           <p>{affectedSentence(finding)}.</p>
           {finding.mission_keys.length > 0 ? (
@@ -275,7 +280,7 @@ export function IssueDetailContent({
         </Panel>
       </Section>
 
-      <Section title="Why AgentRank believes this">
+      <Section index="03" title="Why AgentRank believes this">
         <Panel>
           <p>{evidenceSentence(finding.evidence_level)}</p>
           <p className={styles.finePrintTight}>
@@ -285,7 +290,7 @@ export function IssueDetailContent({
         </Panel>
       </Section>
 
-      <Section title="What you can do">
+      <Section index="04" title="What you can do">
         <Panel>
           {finding.recommendation !== null ? (
             <p>{finding.recommendation}</p>

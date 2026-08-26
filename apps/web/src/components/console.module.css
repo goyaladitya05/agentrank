@@ -10,9 +10,10 @@
 }
 
 .pageTitle {
-  font-size: 22px;
-  font-weight: 650;
-  letter-spacing: -0.015em;
+  font-family: var(--serif);
+  font-size: 27px;
+  font-weight: 580;
+  letter-spacing: -0.012em;
 }
 
 .panelHead {
@@ -59,9 +60,12 @@
 
 .quote {
   margin: 0 0 10px;
-  padding-left: 12px;
+  padding-left: 14px;
   border-left: 3px solid var(--border-strong);
-  font-size: 14px;
+  font-family: var(--serif);
+  font-size: 16.5px;
+  font-weight: 480;
+  line-height: 1.45;
 }
 
 .warnLine {
@@ -91,15 +95,24 @@
   align-items: baseline;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-strong);
 }
 
 .sectionTitle {
-  font-size: 13px;
+  font-family: var(--mono);
+  font-size: 11.5px;
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--text-muted);
+}
+
+.sectionIndex {
+  margin-right: 10px;
+  color: var(--accent);
+  font-weight: 700;
 }
 
 .sectionHint {
@@ -109,7 +122,7 @@
 
 .panel {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 6px;
   background: var(--surface-raised);
   box-shadow: var(--shadow-raised);
 }
@@ -152,7 +165,7 @@
   --mark: var(--state-fail);
 }
 .mark[data-tone="info"] {
-  --mark: var(--accent);
+  --mark: var(--state-info);
 }
 .mark[data-tone="neutral"] {
   --mark: var(--border-strong);
@@ -174,9 +187,10 @@
   padding: 8px 12px;
   border-bottom: 1px solid var(--border-strong);
   text-align: left;
-  font-size: 11px;
+  font-family: var(--mono);
+  font-size: 10.5px;
   font-weight: 600;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-muted);
   white-space: nowrap;
@@ -344,7 +358,7 @@
   background: var(--state-ok);
 }
 .barSegment[data-outcome="ABSTAINED"] {
-  background: var(--accent);
+  background: var(--state-info);
 }
 .barSegment[data-outcome="FAILED"] {
   background: var(--state-warn);
@@ -412,20 +426,23 @@
 }
 
 .emptyState {
-  padding: 24px 16px;
+  padding: 28px 16px;
   text-align: center;
   color: var(--text-muted);
 }
 
 .emptyTitle {
-  font-weight: 600;
+  font-family: var(--serif);
+  font-size: 18px;
+  font-weight: 580;
+  letter-spacing: -0.008em;
   color: var(--text);
   margin: 0 0 4px;
 }
 
 .emptyState p {
   margin: 0;
-  font-size: 12px;
+  font-size: 12.5px;
 }
 
 .errorBox {
@@ -539,14 +556,13 @@
 
 .warningItem {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   align-items: baseline;
-  padding: 6px 12px;
-  border: 1px solid var(--state-warn);
-  border-radius: 3px;
+  padding: 5px 0 5px 12px;
+  border-left: 2px solid var(--state-warn);
   margin-bottom: 6px;
-  font-size: 12px;
-  background: var(--surface-raised);
+  font-size: 12.5px;
+  color: var(--text-muted);
 }
 
 .warningCode {
@@ -607,7 +623,8 @@
   display: inline-block;
   padding: 7px 14px;
   border: 1px solid var(--border-strong);
-  border-radius: 6px;
+  border-radius: 4px;
+  transition: background 120ms ease-out;
   background: var(--surface-raised);
   color: var(--text);
   font: inherit;

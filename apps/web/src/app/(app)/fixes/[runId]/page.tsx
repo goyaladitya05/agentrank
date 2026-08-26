@@ -184,50 +184,48 @@ function FactCards({ run }: { run: CompilerRun }) {
       </Panel>
     );
   return (
-    <div className={styles.panel}>
+    <div className={merchant.entryList}>
       {orderedCandidates(run).map((candidate) => (
         // Addressable by identifier, so a diagnostic finding that names this exact
-        // candidate can link straight to the card rather than to the page.
+        // candidate can link straight to the entry rather than to the page.
         <article
           key={candidate.candidate_id}
           id={candidate.candidate_id}
-          className={merchant.fixCard}
+          className={merchant.factEntry}
           aria-label={`Fix ${candidate.target}`}
         >
-          <div className={merchant.fixHead}>
-            <h3 className={merchant.fixSubject}>
+          <div className={merchant.factHead}>
+            <h3 className={merchant.factSubject}>
               {subjectOf(candidate)}{" "}
-              <span className={merchant.fixAttribute}>{candidate.attribute}</span>
+              <span className={merchant.factAttribute}>{candidate.attribute}</span>
             </h3>
-            <span className={styles.cellMuted}>
+            <span className={merchant.factConfidence}>
               {CONFIDENCE[candidate.confidence] ?? candidate.confidence}
             </span>
           </div>
-          <div className={merchant.fixComparison}>
-            <div className={merchant.fixSide}>
-              <span className={merchant.fixSideLabel}>
+          <div className={merchant.factCompare}>
+            <div>
+              <span className={merchant.factColLabel}>
                 {published ? "Before these fixes" : "Current information"}
               </span>
-              <span className={merchant.fixSideValue}>
+              <p className={merchant.factBeforeValue}>
                 {candidate.requires_correction
-                  ? "Your source states more than one value"
-                  : "Not agent-readable"}
-              </span>
-              <span className={merchant.fixSideMeta}>
-                {candidate.requires_correction
-                  ? "AgentRank will not choose between them. The correct one is your call."
+                  ? "Your source states more than one value. AgentRank will not choose between them; the correct one is your call."
                   : published
-                    ? "Shopping agents had no structured value for this before you published."
-                    : "Shopping agents have no structured value for this until you publish one."}
-              </span>
+                    ? "Not agent-readable. Shopping agents had no structured value for this before you published."
+                    : "Not agent-readable. Shopping agents have no structured value for this until you publish one."}
+              </p>
             </div>
-            <div className={`${merchant.fixSide} ${merchant.fixSideProposed}`}>
-              <span className={merchant.fixSideLabel}>Proposed agent-ready fact</span>
-              <span className={merchant.fixSideValue}>
+            <span className={merchant.factArrow} aria-hidden="true">
+              &rarr;
+            </span>
+            <div className={merchant.factProposed}>
+              <span className={merchant.factColLabel}>Proposed agent-ready fact</span>
+              <span className={merchant.factValue}>
                 {renderValue(candidate.proposed_value)}
                 {candidate.unit === null ? "" : ` ${candidate.unit}`}
               </span>
-              <span className={merchant.fixSideMeta}>
+              <span className={merchant.factMeta}>
                 {candidate.attribute_kind ?? "fact"}
                 {candidate.unit === null ? "" : ` in ${candidate.unit}`}
               </span>

@@ -1,8 +1,8 @@
 import Link from "next/link";
 
 import { DemandTable } from "@/components/Demand";
-import { OutcomeBar } from "@/components/OutcomeBar";
 import { Panel, Section, StatusMark } from "@/components/Primitives";
+import { ScenarioTrack } from "@/components/ScenarioTrack";
 import { IdRow, TechnicalDetails } from "@/components/TechnicalDetails";
 import styles from "@/components/console.module.css";
 import merchant from "@/components/merchant.module.css";
@@ -15,13 +15,15 @@ import type { EvaluationPreflight } from "@/lib/evaluation";
 import type { MerchantFinding, MerchantOverview, RunSummary } from "@/lib/insights/types";
 
 /**
- * The merchant overview: what happened when AI shopping agents tried to buy from this
- * store, what needs attention, and the one action to take next.
+ * The merchant overview, composed as one editorial surface: the verdict set large, the
+ * scenario track under it, one row of figures between hairlines, and the next step as a
+ * full-width band under the strong rule. No number here is invented: every count is the
+ * API's, the demand figures always say simulated, and an aborted run is labelled before
+ * its numbers.
  *
  * The preflight is the server's answer about what this merchant can launch and whether one
  * is pending; it may be null when that read failed, and the page still renders everything
- * the overview insight carries. No number here is invented: every count is the API's, the
- * demand figures always say simulated, and an aborted run is labelled before its numbers.
+ * the overview insight carries.
  */
 export function OverviewContent({
   data,
@@ -44,15 +46,18 @@ export function OverviewContent({
       </div>
 
       {run === null ? (
-        <NewMerchantHero action={action} />
+        <NewMerchantMasthead action={action} />
       ) : (
-        <MeasuredHero run={run} findings={data.top_findings} action={action} />
+        <MeasuredMasthead run={run} findings={data.top_findings} />
       )}
+
+      <NextStepSlip action={action} />
 
       {run !== null ? <AttentionSection data={data} run={run} /> : null}
 
       {run !== null ? (
         <Section
+          index="02"
           title="Simulated demand"
           hint="Simulated benchmark figures across recent evaluations. Not revenue."
         >
@@ -90,42 +95,46 @@ const JOURNEY = [
   { step: "See your results", kinds: [] },
 ] as const;
 
-function NewMerchantHero({ action }: { action: NextAction }) {
+function NewMerchantMasthead({ action }: { action: NextAction }) {
   const currentIndex = JOURNEY.findIndex((entry) =>
     (entry.kinds as readonly string[]).includes(action.kind),
   );
   return (
-    <div className={merchant.hero}>
-      <div className={merchant.heroPerformance}>
-        <p className={merchant.eyebrow}>AI shopping performance</p>
-        <h2 className={merchant.heroHeadline}>Can AI shopping agents buy from your store?</h2>
-        <p className={merchant.heroSub}>
-          AgentRank sends shopping agents through realistic purchase scenarios against your store,
-          shows you exactly where they fail, and separates what you can fix from what is not your
-          problem.
-        </p>
-        <ol className={styles.launchTerms} aria-label="Setup steps">
-          {JOURNEY.map((entry, index) => (
-            <li key={entry.step}>
-              {index === currentIndex ? <strong>{entry.step}</strong> : entry.step}
-              {index === currentIndex ? " (you are here)" : ""}
-            </li>
-          ))}
-        </ol>
-      </div>
-      <ActionCard action={action} />
-    </div>
+    <header className={merchant.masthead}>
+      <p className={merchant.eyebrow}>AI shopping performance</p>
+      <h2 className={merchant.mastStatement}>Can AI shopping agents buy from your store?</h2>
+      <p className={merchant.mastReading}>
+        AgentRank sends shopping agents through realistic purchase scenarios against your store,
+        shows you exactly where they fail, and separates what you can fix from what is not your
+        problem.
+      </p>
+      <ol className={merchant.journey} aria-label="Setup steps">
+        {JOURNEY.map((entry, index) => (
+          <li
+            key={entry.step}
+            className={merchant.journeyStep}
+            data-state={
+              index === currentIndex ? "current" : index < currentIndex ? "done" : undefined
+            }
+          >
+            <span className={merchant.journeyIndex}>0{index + 1}</span>
+            {entry.step}
+            {index === currentIndex ? (
+              <span className={merchant.journeyNow}>you are here</span>
+            ) : null}
+          </li>
+        ))}
+      </ol>
+    </header>
   );
 }
 
-function MeasuredHero({
+function MeasuredMasthead({
   run,
   findings,
-  action,
 }: {
   run: RunSummary;
   findings: readonly MerchantFinding[];
-  action: NextAction;
 }) {
   const grouped = groupFindings(findings);
   const merchantScenarios = distinctMissionCount(grouped.needsAttention);
@@ -133,69 +142,63 @@ function MeasuredHero({
     run.missions_total -
     (run.missions_succeeded + run.missions_failed + run.missions_abstained + run.missions_errored);
   return (
-    <div className={merchant.hero}>
-      <div className={merchant.heroPerformance}>
-        <p className={merchant.eyebrow}>AI shopping performance</p>
-        <h2 className={merchant.heroHeadline}>
-          <strong>{String(run.missions_succeeded)}</strong> of{" "}
-          <strong>{String(run.purchase_missions)}</strong> purchase scenarios completed
-        </h2>
-        <p className={merchant.heroSub}>
-          {heroSentence(run, merchantScenarios)}{" "}
-          {run.status === "ABORTED"
-            ? "This evaluation stopped before it finished, so these numbers describe only the scenarios that executed."
-            : ""}
-        </p>
-        <div className={merchant.heroTrack}>
-          <OutcomeBar
-            counts={{
-              succeeded: run.missions_succeeded,
-              failed: run.missions_failed,
-              abstained: run.missions_abstained,
-              errored: run.missions_errored,
-              unfinished: Math.max(unfinished, 0),
-            }}
-          />
+    <header className={merchant.masthead}>
+      <p className={merchant.eyebrow}>
+        AI shopping performance · {run.status === "ABORTED" ? "stopped" : "measured"}{" "}
+        {formatTimestamp(run.completed_at)}
+      </p>
+      <h2 className={merchant.mastStatement}>
+        <strong>{String(run.missions_succeeded)}</strong> of{" "}
+        <strong>{String(run.purchase_missions)}</strong> purchase scenarios completed
+      </h2>
+      <p className={merchant.mastReading}>
+        {heroSentence(run, merchantScenarios)}{" "}
+        {run.status === "ABORTED"
+          ? "This evaluation stopped before it finished, so these numbers describe only the scenarios that executed."
+          : ""}
+      </p>
+      <ScenarioTrack
+        counts={{
+          succeeded: run.missions_succeeded,
+          failed: run.missions_failed,
+          abstained: run.missions_abstained,
+          errored: run.missions_errored,
+          unfinished: Math.max(unfinished, 0),
+        }}
+      />
+      <div className={merchant.statRow}>
+        <div className={merchant.stat}>
+          <span className={merchant.statValue}>{String(run.missions_total)}</span>
+          <span className={merchant.statLabel}>Scenarios tested</span>
         </div>
-        <div className={merchant.statStrip}>
-          <div className={merchant.stat}>
-            <span className={merchant.statValue}>{String(run.missions_total)}</span>
-            <span className={merchant.statLabel}>Scenarios tested</span>
-          </div>
-          <div className={merchant.stat}>
-            <span className={merchant.statValue} data-tone="ok">
-              {String(run.missions_succeeded)}
-            </span>
-            <span className={merchant.statLabel}>Successful purchases</span>
-          </div>
-          <div className={merchant.stat}>
-            <span
-              className={merchant.statValue}
-              data-tone={merchantScenarios > 0 ? "warn" : undefined}
-            >
-              {String(merchantScenarios)}
-            </span>
-            <span className={merchant.statLabel}>Need your attention</span>
-          </div>
-          <div className={merchant.stat}>
-            <span className={merchant.statValue}>{String(run.provider_failure_missions)}</span>
-            <span className={merchant.statLabel}>Provider or system failures</span>
-          </div>
-          <div className={merchant.stat}>
-            <span className={merchant.statValue}>
-              {String(run.correct_abstentions)} of {String(run.control_missions)}
-            </span>
-            <span className={merchant.statLabel}>Correct declines</span>
-          </div>
-          <CapturedDemandStat run={run} />
+        <div className={merchant.stat}>
+          <span className={merchant.statValue} data-tone="ok">
+            {String(run.missions_succeeded)}
+          </span>
+          <span className={merchant.statLabel}>Successful purchases</span>
         </div>
-        <p className={styles.finePrint}>
-          Latest evaluation {run.status === "ABORTED" ? "stopped" : "completed"}{" "}
-          {formatTimestamp(run.completed_at)}.
-        </p>
+        <div className={merchant.stat}>
+          <span
+            className={merchant.statValue}
+            data-tone={merchantScenarios > 0 ? "warn" : undefined}
+          >
+            {String(merchantScenarios)}
+          </span>
+          <span className={merchant.statLabel}>Need your attention</span>
+        </div>
+        <div className={merchant.stat}>
+          <span className={merchant.statValue}>{String(run.provider_failure_missions)}</span>
+          <span className={merchant.statLabel}>Provider or system failures</span>
+        </div>
+        <div className={merchant.stat}>
+          <span className={merchant.statValue}>
+            {String(run.correct_abstentions)} of {String(run.control_missions)}
+          </span>
+          <span className={merchant.statLabel}>Correct declines</span>
+        </div>
+        <CapturedDemandStat run={run} />
       </div>
-      <ActionCard action={action} />
-    </div>
+    </header>
   );
 }
 
@@ -253,17 +256,18 @@ function CapturedDemandStat({ run }: { run: RunSummary }) {
   );
 }
 
-function ActionCard({ action }: { action: NextAction }) {
+/** The one action the page leads to, as a band under the strong rule. */
+function NextStepSlip({ action }: { action: NextAction }) {
   return (
-    <aside className={merchant.actionCard} aria-label="Next step">
-      <p className={merchant.actionEyebrow}>Next step</p>
-      <h2 className={merchant.actionTitle}>{action.title}</h2>
-      <p className={merchant.actionBody}>{action.body}</p>
-      <p className={merchant.actionFoot}>
-        <Link className={merchant.primaryButton} href={action.href}>
-          {action.label}
-        </Link>
-      </p>
+    <aside className={merchant.slip} aria-label="Next step">
+      <div className={merchant.slipText}>
+        <p className={merchant.slipEyebrow}>Next step</p>
+        <h2 className={merchant.slipTitle}>{action.title}</h2>
+        <p className={merchant.slipBody}>{action.body}</p>
+      </div>
+      <Link className={merchant.primaryButton} href={action.href}>
+        {action.label}
+      </Link>
     </aside>
   );
 }
@@ -274,6 +278,7 @@ function AttentionSection({ data, run }: { data: MerchantOverview; run: RunSumma
   const providerNote = providerSentence(run.provider_failure_missions);
   return (
     <Section
+      index="01"
       title="What needs attention"
       actions={
         grouped.needsAttention.length > 0 ? (
@@ -283,38 +288,28 @@ function AttentionSection({ data, run }: { data: MerchantOverview; run: RunSumma
         ) : undefined
       }
     >
-      <div className={styles.panel}>
-        {grouped.needsAttention.length === 0 ? (
-          <div className={styles.emptyState}>
-            <p className={styles.emptyTitle}>Nothing needs your attention</p>
-            <p>
-              {run.status === "ABORTED"
-                ? "No merchant-fixable finding came out of the part of this evaluation that executed."
-                : "Your latest evaluation produced no finding that requires action from you."}
-            </p>
-          </div>
-        ) : (
-          grouped.needsAttention.slice(0, 5).map((finding) => (
-            <article key={finding.key} className={merchant.issueCard}>
-              <div className={merchant.issueTitleRow}>
+      {grouped.needsAttention.length === 0 ? (
+        <div className={styles.emptyState}>
+          <p className={styles.emptyTitle}>Nothing needs your attention</p>
+          <p>
+            {run.status === "ABORTED"
+              ? "No merchant-fixable finding came out of the part of this evaluation that executed."
+              : "Your latest evaluation produced no finding that requires action from you."}
+          </p>
+        </div>
+      ) : (
+        <div className={merchant.entryList}>
+          {grouped.needsAttention.slice(0, 5).map((finding) => (
+            <article key={finding.key} className={merchant.entry}>
+              <div className={merchant.entryGutter}>
                 <StatusMark
                   tone={severityTone(finding.severity)}
                   label={severityLabel(finding.severity)}
                 />
-                <h3 className={merchant.issueTitle}>
-                  <Link
-                    className={merchant.issueTitleLink}
-                    href={`/issues/${encodeURIComponent(finding.key)}`}
-                  >
-                    {finding.title}
-                  </Link>
-                </h3>
-              </div>
-              <div className={merchant.issueFacts}>
                 <span>
                   {finding.mission_run_ids.length === 1
-                    ? "1 scenario affected"
-                    : `${String(finding.mission_run_ids.length)} scenarios affected`}
+                    ? "1 scenario"
+                    : `${String(finding.mission_run_ids.length)} scenarios`}
                 </span>
                 {finding.product_ids.length > 0 ? (
                   <span>
@@ -324,10 +319,20 @@ function AttentionSection({ data, run }: { data: MerchantOverview; run: RunSumma
                   </span>
                 ) : null}
               </div>
+              <div>
+                <h3 className={merchant.entryTitle}>
+                  <Link
+                    className={merchant.entryTitleLink}
+                    href={`/issues/${encodeURIComponent(finding.key)}`}
+                  >
+                    {finding.title}
+                  </Link>
+                </h3>
+              </div>
             </article>
-          ))
-        )}
-      </div>
+          ))}
+        </div>
+      )}
       {providerNote !== null ? (
         <p className={styles.finePrintTight}>
           <StatusMark tone="neutral" label="Provider" /> {providerNote}
@@ -354,7 +359,11 @@ function ExperimentNote({ data }: { data: MerchantOverview }) {
   }
   const conclusion = conclusionKindLabel(experiment.conclusion_kind);
   return (
-    <Section title="Controlled experiment" hint="Run by your operator. Detail is in the Lab.">
+    <Section
+      index="03"
+      title="Controlled experiment"
+      hint="Run by your operator. Detail is in the Lab."
+    >
       <Panel>
         <div className={styles.panelHead}>
           <StatusMark tone={conclusion.tone} label={conclusion.label} />
