@@ -76,6 +76,8 @@ test-browser: migrate build-frontend ## Run critical browser workflows against l
 		setup_key="$$(printf '%s\n' "$$setup" | sed -n 1p)"; \
 		import_seed="$$($(UV) run python scripts/seed_import_e2e.py)"; \
 		import_key="$$(printf '%s\n' "$$import_seed" | sed -n 1p)"; \
+		buildathon="$$($(UV) run python scripts/seed_buildathon_e2e.py)"; \
+		buildathon_key="$$(printf '%s\n' "$$buildathon" | sed -n 1p)"; \
 		status=0; \
 		AGENTRANK_E2E_KEY="$$compiler_key" \
 		AGENTRANK_E2E_REEVALUATION_KEY="$$reevaluation_key" \
@@ -87,8 +89,10 @@ test-browser: migrate build-frontend ## Run critical browser workflows against l
 		AGENTRANK_E2E_SETUP_KEY="$$setup_key" \
 		AGENTRANK_E2E_SETUP_MERCHANT="$$(printf '%s\n' "$$setup" | sed -n 2p)" \
 		AGENTRANK_E2E_IMPORT_KEY="$$import_key" \
+		AGENTRANK_E2E_BUILDATHON_KEY="$$buildathon_key" \
+		AGENTRANK_E2E_BUILDATHON_WORLD="$$(printf '%s\n' "$$buildathon" | sed -n 2p)" \
 		$(PNPM) $(WEB) test:e2e || status=$$?; \
-		AGENTRANK_E2E_SECRETS="$$compiler_key $$reevaluation_key $$source_key $$first_key $$setup_key $$import_key" \
+		AGENTRANK_E2E_SECRETS="$$compiler_key $$reevaluation_key $$source_key $$first_key $$setup_key $$import_key $$buildathon_key" \
 		$(UV) run python scripts/check-e2e-artifacts.py \
 			apps/web/test-results apps/web/playwright-report; \
 		exit $$status
