@@ -25,9 +25,10 @@ identifier, and the size bound is answered by `agentrank_api.limits` before the 
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Query, status
 
 from agentrank_api.dependencies import OperatorDep, SessionDep
+from agentrank_api.errors import invalid_request
 from agentrank_api.representation.intake import MerchantSourceIntakeService
 from agentrank_api.representation.schemas import (
     SourceOverviewView,
@@ -81,9 +82,8 @@ async def submit_source(
             merchant.merchant_id,
             request_key=request.request_key,
             document=request,
+            base_source_snapshot_id=request.base_source_snapshot_id,
         )
     except ValueError as error:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
-        ) from error
+        raise invalid_request(error) from error
     return await service.submission_view(outcome)

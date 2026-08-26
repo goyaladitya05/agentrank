@@ -33,7 +33,6 @@ from agentrank_api.importer.models import ImportState, MerchantSourceImport
 from agentrank_api.importer.service import (
     MAX_IMPORT_PAGES,
     MAX_IMPORT_URL_LENGTH,
-    MAX_STOCK_LEVEL,
     ImportBlocker,
     ImportSummary,
     RequestedPage,
@@ -113,16 +112,17 @@ class SourceImportRequest(BaseModel):
 class ConfirmImportRequest(BaseModel):
     """The merchant's decision to turn one inspected import into source history.
 
-    `stock_level` is the one number in this workflow that is not evidence, and it is here rather
-    than in the import command because the merchant states it after seeing what was found. It is
-    the stock the isolated evaluation world will hold for every variant whose page said what is
-    available and not how much of it. It is not a claim about the merchant's warehouse and it
-    changes nothing in the commerce runtime.
+    Deliberately empty. A confirmation names an import and states nothing about it, because every
+    fact in the snapshot it produces came off the merchant's own pages. It used to carry a stock
+    level, which was the one number in this workflow that was not evidence; a source variant can
+    now hold the availability state a storefront actually publishes, so there is nothing left for
+    a merchant to supply here.
+
+    A body is still accepted and still refuses unknown fields, so a caller who sends the old one
+    is told that the field no longer exists rather than having it silently ignored.
     """
 
     model_config = ConfigDict(extra="forbid", strict=True)
-
-    stock_level: int | None = Field(default=None, ge=0, le=MAX_STOCK_LEVEL)
 
 
 class ImportPageView(BaseModel):
@@ -150,7 +150,11 @@ class ImportPageView(BaseModel):
 
 
 class ImportVariantView(BaseModel):
-    """One extracted variant, with the availability the page published and no quantity."""
+    """One extracted variant, with the stock precision the page actually published.
+
+    `inventory_quantity` is null on nearly every real page, because nearly no storefront publishes
+    a count. Null here means the page did not say, never that there are none.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -160,6 +164,7 @@ class ImportVariantView(BaseModel):
     currency: str
     availability: AvailabilityEvidence
     availability_text: str | None
+    inventory_quantity: int | None
 
 
 class ImportProductView(BaseModel):
@@ -192,6 +197,7 @@ class ImportProductView(BaseModel):
                     currency=variant.currency,
                     availability=variant.availability,
                     availability_text=variant.availability_text,
+                    inventory_quantity=variant.inventory_quantity,
                 )
                 for variant in product.variants
             ],
@@ -292,19 +298,17 @@ class SourceImportView(BaseModel):
     omissions: list[ImportNoteView]
     findings: list[ImportNoteView]
     blockers: list[ImportBlockerView]
-    stock_level_required: bool
-    stock_level: int | None
+    # Every variant this import found whose page said nothing about whether it can be bought,
+    # as its SKU. The snapshot records that honestly and an evaluation world cannot hold it, so
+    # this is where a merchant learns which of their own lines they will have to state a stock
+    # state for before they can be measured.
+    unstated_availability: list[str]
     confirmable: bool
-    max_stock_level: int = MAX_STOCK_LEVEL
 
     @classmethod
     def of(cls, record: MerchantSourceImport) -> Self:
         draft = SourceDraft.of(record.draft)
-        # Blockers are computed as though the merchant had already stated a stock level, because
-        # this read is what tells them whether stating one is all that is left. The number itself
-        # is checked again by the confirm command, which is where it actually arrives.
-        assumed = 0 if draft.stock_level_required else None
-        blockers = blockers_for(record, draft, stock_level=assumed)
+        blockers = blockers_for(record, draft)
         return cls(
             summary=SourceImportSummaryView.of(ImportSummary.of(record)),
             pages=[ImportPageView.model_validate(page) for page in record.pages],
@@ -337,8 +341,7 @@ class SourceImportView(BaseModel):
                 for item in draft.findings
             ],
             blockers=[ImportBlockerView.of(blocker) for blocker in blockers],
-            stock_level_required=draft.stock_level_required,
-            stock_level=record.stock_level,
+            unstated_availability=[sku for _, sku in draft.unstated_availability],
             confirmable=not blockers and record.confirmed_at is None,
         )
 

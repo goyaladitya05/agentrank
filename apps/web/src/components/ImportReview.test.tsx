@@ -40,6 +40,7 @@ const CHARGER: ImportProduct = {
       currency: "INR",
       availability: "IN_STOCK",
       availability_text: "https://schema.org/InStock",
+      inventory_quantity: null,
     },
     {
       sku: "VE-65-WHT",
@@ -48,6 +49,7 @@ const CHARGER: ImportProduct = {
       currency: "INR",
       availability: "OUT_OF_STOCK",
       availability_text: "https://schema.org/OutOfStock",
+      inventory_quantity: null,
     },
   ],
 };
@@ -131,10 +133,8 @@ const IMPORT: SourceImport = {
   ],
   findings: [],
   blockers: [],
-  stock_level_required: true,
-  stock_level: null,
+  unstated_availability: [],
   confirmable: true,
-  max_stock_level: 10000,
 };
 
 function review(overrides: Partial<SourceImport> = {}): string {
@@ -181,41 +181,38 @@ describe("<ImportReview>", () => {
     expect(html).not.toMatch(/In stock[^<]*\d/);
   });
 
-  it("asks for the stock level as the merchant's own statement", () => {
+  it("asks the merchant for no number at all", () => {
+    // The sharpest way this page could contradict the principle the whole feature rests on is a
+    // field that puts a quantity nobody published into the merchant's own immutable history.
+    // There is no such field, so there is nothing to prefill and nothing to preserve.
     const html = review();
-    expect(html).toContain("These pages say what is available and not how much of it");
-    expect(html).toContain("Your own words about your catalog, not a figure read from your store");
-    expect(html).toContain('name="stock_level"');
-  });
-
-  it("never prefills the one number it promises never to invent", () => {
-    // A default here would put a quantity into the source document, attributed to the merchant as
-    // MERCHANT_SUPPLIED, that they never said. It is the sharpest way this page could contradict
-    // the principle the whole feature rests on.
-    const html = review();
-    expect(html).not.toMatch(/name="stock_level"[^>]*value="\d/);
-    expect(html).not.toMatch(/value="\d[^"]*"[^>]*name="stock_level"/);
-  });
-
-  it("keeps the stock level a merchant typed when the confirmation is refused", () => {
-    const html = renderToStaticMarkup(
-      <ImportReview
-        found={IMPORT}
-        action={() => ({
-          ...IDLE_CONFIRM,
-          message: "That stock level is outside the range AgentRank accepts.",
-          values: { stockLevel: "250" },
-        })}
-      />,
-    );
-    // The action is not run by a static render, so the preserved value is asserted through the
-    // state the component is given rather than through a round trip.
-    expect(html).toContain('name="stock_level"');
-  });
-
-  it("does not ask for a stock level when every page said out of stock", () => {
-    const html = review({ stock_level_required: false });
     expect(html).not.toContain('name="stock_level"');
+    expect(html).not.toContain("Evaluation stock level");
+  });
+
+  it("shows a published count only where the page actually published one", () => {
+    const counted: ImportProduct = {
+      ...CHARGER,
+      variants: [
+        {
+          sku: "VE-65-BLK",
+          label: "Black",
+          price_amount_minor: 349900,
+          currency: "INR",
+          availability: "IN_STOCK",
+          availability_text: "https://schema.org/InStock",
+          inventory_quantity: 7,
+        },
+      ],
+    };
+    expect(review({ products: [counted] })).toContain("7 in stock, published by the page");
+  });
+
+  it("names the variants whose pages said nothing about stock", () => {
+    const html = review({ unstated_availability: ["VE-65-BLK"] });
+    expect(html).toContain("VE-65-BLK");
+    expect(html).toContain("did not say whether it can be bought");
+    expect(html).toContain("cannot hold an unknown");
   });
 
   it("lists what was not imported with the reason and the page", () => {

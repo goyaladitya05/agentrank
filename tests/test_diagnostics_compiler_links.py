@@ -39,6 +39,7 @@ from agentrank_api.representation.definitions import (
     MerchantSourceDefinition,
     SourceProduct,
     SourceVariant,
+    availability_of,
 )
 from agentrank_api.representation.models import CommerceRepresentation
 from agentrank_api.representation.service import MerchantRepresentationService
@@ -73,6 +74,7 @@ def source(slug: str) -> MerchantSourceDefinition:
                         label="Black",
                         price_amount_minor=PRICE,
                         currency=CURRENCY,
+                        availability=availability_of(4),
                         inventory_quantity=4,
                         merchant_metadata={"finish": "black"},
                     ),

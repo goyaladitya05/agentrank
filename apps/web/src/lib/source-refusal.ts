@@ -26,6 +26,8 @@ export const SOURCE_REFUSALS: Record<string, string> = {
     "This form has already stored a different source document. Reload to start a new submission, then submit your changes.",
   source_version_conflict:
     "Another process is publishing source snapshots for your merchant. Reload and try again.",
+  source_superseded:
+    "Your merchant information changed after this page was opened, so submitting this would write over evidence you have not seen. Reload to edit your current source, then make your change again.",
   not_found: "Reload this page and try again.",
   unauthenticated: "Your session has expired. Sign in again to continue.",
 };
@@ -49,9 +51,6 @@ export const CONFIRM_REFUSALS: Record<string, string> = {
   no_products:
     "No product could be imported from these pages, so there is no source snapshot to create.",
   import_failed: "This import did not finish, so there is nothing to confirm. Run a new one.",
-  stock_level_required:
-    "State the stock level the evaluation world should hold before creating the snapshot.",
-  stock_level_out_of_range: "That stock level is outside the range AgentRank accepts.",
   source_version_conflict:
     "Another process is publishing source snapshots for your merchant. Reload and try again.",
   not_found: "This import is no longer available. Reload to see your imports.",

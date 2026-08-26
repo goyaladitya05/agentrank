@@ -51,6 +51,7 @@ from agentrank_api.representation.schemas import (
     IDENTIFIER_PATTERN,
     MAX_CATEGORY_LENGTH,
     MAX_DESCRIPTION_LENGTH,
+    MAX_INVENTORY_QUANTITY,
     MAX_LABEL_LENGTH,
     MAX_TITLE_LENGTH,
     MAX_VARIANTS_PER_PRODUCT,
@@ -543,6 +544,20 @@ def _variant(
                 " cannot give them stable identities",
             )
     availability, text = _availability(offer, owner)
+    quantity = _inventory_level(offer, owner)
+    if quantity is not None and availability is not AvailabilityEvidence.UNKNOWN:
+        implied = (
+            AvailabilityEvidence.OUT_OF_STOCK if quantity == 0 else AvailabilityEvidence.IN_STOCK
+        )
+        if implied is not availability:
+            # Two published facts about one thing that contradict each other. Picking either
+            # would be deciding which of a merchant's own statements to believe, which is the
+            # decision this importer exists without.
+            return Omission(
+                source_url,
+                "availability_conflict",
+                "this page publishes an availability and an inventory level that disagree",
+            )
     label = _variant_label(owner, product)
     for value in (label, text):
         if value is not None and instruction_like(value):
@@ -556,8 +571,17 @@ def _variant(
         label=None if label is None else label[:MAX_LABEL_LENGTH],
         price_amount_minor=amount,
         currency=currency,
-        availability=availability,
+        availability=(
+            availability
+            if quantity is None
+            else (
+                AvailabilityEvidence.OUT_OF_STOCK
+                if quantity == 0
+                else AvailabilityEvidence.IN_STOCK
+            )
+        ),
         availability_text=text,
+        inventory_quantity=quantity,
     )
 
 
@@ -636,6 +660,28 @@ def _availability(
     if token in OUT_OF_STOCK_TOKENS:
         return AvailabilityEvidence.OUT_OF_STOCK, bounded
     return AvailabilityEvidence.UNKNOWN, bounded
+
+
+def _inventory_level(offer: dict[str, Any], owner: dict[str, Any]) -> int | None:
+    """An exact stock count, on the rare page that publishes one, and None on every other.
+
+    schema.org publishes this as a `QuantitativeValue`, and only a whole non-negative `value` is
+    read. A fraction of a unit, a range, a string and a negative are all left as None rather than
+    interpreted: this is stock, the state beside it already says whether there is any, and a
+    number that had to be massaged into shape is not a number a merchant published.
+
+    Read the same way a price is, from the offer first and the product it belongs to second, so
+    a variant that states its own count is not given its family's.
+    """
+    for holder in (offer, owner):
+        raw = holder.get("inventoryLevel")
+        if isinstance(raw, dict):
+            raw = raw.get("value")
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            continue
+        if 0 <= raw <= MAX_INVENTORY_QUANTITY:
+            return raw
+    return None
 
 
 def _metadata_price_conflict(

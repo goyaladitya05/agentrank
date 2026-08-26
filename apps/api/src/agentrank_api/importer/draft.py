@@ -21,8 +21,10 @@ failure and is not something to resolve by choosing. It is a product AgentRank c
 honestly from public evidence, so it is left out and said out loud, and the merchant can supply
 it themselves through the source document they were always able to write.
 
-The one number in a draft that is not evidence is the stock level, and it is deliberately not in
-one. See `canonical_document`.
+Stock is evidence here like everything else. A page that publishes a count has it read as a
+count, a page that publishes only a state has that state recorded, and a page that publishes
+neither says `UNKNOWN`, which is a fact about the merchant rather than a gap to fill in. Nothing
+in this module ever turns one of those into another. See `canonical_document`.
 """
 
 from dataclasses import dataclass
@@ -78,18 +80,6 @@ class ExtractionMethod(StrEnum):
     PAGE_TEXT = "PAGE_TEXT"
 
 
-class StockLevelSource(StrEnum):
-    """Where the stock number in a variant came from, recorded in the source document itself.
-
-    This exists because the number cannot come from the page, and a source document that did not
-    say so would be a document asserting an inventory level as though a merchant had published
-    one. See `canonical_document`.
-    """
-
-    PAGE_OUT_OF_STOCK = "PAGE_OUT_OF_STOCK"
-    MERCHANT_SUPPLIED = "MERCHANT_SUPPLIED"
-
-
 @dataclass(frozen=True, slots=True)
 class DraftVariant:
     """One purchasable thing, as far as public evidence establishes it."""
@@ -100,6 +90,9 @@ class DraftVariant:
     currency: str
     availability: AvailabilityEvidence
     availability_text: str | None
+    # The exact count, on the rare page that publishes one. Almost always None, and None is not a
+    # gap: it says this merchant published a state and no number, which is what storefronts do.
+    inventory_quantity: int | None = None
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -109,6 +102,7 @@ class DraftVariant:
             "currency": self.currency,
             "availability": self.availability.value,
             "availability_text": self.availability_text,
+            "inventory_quantity": self.inventory_quantity,
         }
 
     @classmethod
@@ -120,6 +114,7 @@ class DraftVariant:
             currency=str(entry["currency"]),
             availability=AvailabilityEvidence(str(entry["availability"])),
             availability_text=_optional_str(entry.get("availability_text")),
+            inventory_quantity=_optional_int(entry.get("inventory_quantity")),
         )
 
 
@@ -259,16 +254,19 @@ class SourceDraft:
         return sum(len(product.variants) for product in self.products)
 
     @property
-    def stock_level_required(self) -> bool:
-        """Whether any imported variant needs a number no public page published.
+    def unstated_availability(self) -> tuple[tuple[str, str], ...]:
+        """Every imported variant whose page said nothing about whether it can be bought.
 
-        True for every variant whose page did not say the thing is out of stock, which is most of
-        them. See `canonical_document` for why that number is the merchant's to state.
+        A page URL and a SKU each, because this is what a merchant has to act on before the
+        variant can be part of an evaluation world: an isolated world holds an exact number of
+        units and `UNKNOWN` is not one. Reported at review time rather than discovered at setup
+        time, and never resolved here in either direction.
         """
-        return any(
-            variant.availability is not AvailabilityEvidence.OUT_OF_STOCK
+        return tuple(
+            (product.source_url, variant.sku)
             for product in self.products
             for variant in product.variants
+            if variant.availability is AvailabilityEvidence.UNKNOWN
         )
 
     def payload(self) -> dict[str, Any]:
@@ -289,7 +287,7 @@ class SourceDraft:
         )
 
 
-def canonical_document(draft: SourceDraft, *, stock_level: int | None) -> dict[str, Any]:
+def canonical_document(draft: SourceDraft) -> dict[str, Any]:
     """The draft as the ordinary source document body a merchant could have written by hand.
 
     This is the only place the importer produces AgentRank's canonical source shape, and it
@@ -297,24 +295,17 @@ def canonical_document(draft: SourceDraft, *, stock_level: int | None) -> dict[s
     `SourceDocumentInput` accepts, so the existing validation, the existing bounds, the existing
     instruction-like guard and the existing content identity all apply unchanged.
 
-    **The stock level.** `SourceVariant` requires an exact `inventory_quantity` and no public
-    storefront publishes one. That is not an oversight in either place. The number is the stock
-    the isolated evaluation world will hold, which a real commerce runtime then reserves against
-    and decrements, so it has to be a number; and a page saying "In stock" has told you that
-    something is buyable and nothing whatsoever about how many there are. Turning "In stock" into
-    999, or into 1, would be this importer inventing merchant truth, which is the one thing it
-    must never do.
+    **Stock.** A source variant records an availability state and, where the merchant published
+    one, an exact quantity. That is exactly the shape of what a storefront publishes, so nothing
+    here has to be invented and nothing here is: a page saying "In stock" becomes `IN_STOCK` with
+    no count, a page saying "Out of stock" becomes a count of zero, a page publishing an
+    inventory level becomes that number, and a page saying nothing becomes `UNKNOWN`.
 
-    So it is not imported. It is stated by the merchant, once, as an evaluation parameter, and
-    every variant that got it says so in `stock_level_source`. A variant whose page said it is
-    out of stock needs nothing: zero is what the page means, and it is recorded as coming from
-    the page rather than from the merchant.
-
-    `stock_level` may be None only for a draft where no variant needs one. A caller that passes
-    None for a draft that does is asking this function to invent the number, and it raises.
+    `UNKNOWN` survives into the source document. It is refused later, by name, when a merchant
+    asks for an evaluation world to be built from it, because a simulated shelf holds an exact
+    number of units and unknown is not one. Refusing it here instead would be refusing to record
+    a true thing about the merchant.
     """
-    if stock_level is None and draft.stock_level_required:
-        raise ValueError("this draft has variants whose stock level the merchant has not stated")
     names = [policy.name for policy in draft.policies]
     if len(names) != len(set(names)):
         # A dictionary comprehension would keep the last of them and lose the rest, silently. The
@@ -322,12 +313,12 @@ def canonical_document(draft: SourceDraft, *, stock_level: int | None) -> dict[s
         # public function rather than a reachable state, and it raises rather than choosing.
         raise ValueError("this draft has two policies under one name")
     return {
-        "products": [_product(product, stock_level) for product in draft.products],
+        "products": [_product(product) for product in draft.products],
         "policy_text": {policy.name: policy.body for policy in draft.policies},
     }
 
 
-def _product(product: DraftProduct, stock_level: int | None) -> dict[str, Any]:
+def _product(product: DraftProduct) -> dict[str, Any]:
     return {
         "external_id": product.external_id,
         "title": product.title[:MAX_TITLE_LENGTH],
@@ -335,7 +326,7 @@ def _product(product: DraftProduct, stock_level: int | None) -> dict[str, Any]:
             None if product.description is None else product.description[:MAX_DESCRIPTION_LENGTH]
         ),
         "category": None if product.category is None else product.category[:MAX_CATEGORY_LENGTH],
-        "variants": [_variant(variant, stock_level) for variant in product.variants],
+        "variants": [_variant(variant) for variant in product.variants],
         # Provenance that survives into source history, and deliberately only the part of it that
         # is stable. The URL and the method are properties of the merchant's page; a retrieval
         # timestamp is a property of the fetch, and putting one here would make every re-import of
@@ -347,21 +338,20 @@ def _product(product: DraftProduct, stock_level: int | None) -> dict[str, Any]:
     }
 
 
-def _variant(variant: DraftVariant, stock_level: int | None) -> dict[str, Any]:
-    out_of_stock = variant.availability is AvailabilityEvidence.OUT_OF_STOCK
-    quantity = 0 if out_of_stock else stock_level
-    if quantity is None:  # pragma: no cover - guarded by canonical_document
-        raise ValueError("a variant needs a stock level and none was stated")
-    source = (
-        StockLevelSource.PAGE_OUT_OF_STOCK if out_of_stock else StockLevelSource.MERCHANT_SUPPLIED
-    )
-    metadata: dict[str, str | int | bool] = {
-        "import_availability": variant.availability.value,
-        "import_stock_level_source": source.value,
-    }
+def _variant(variant: DraftVariant) -> dict[str, Any]:
+    """One extracted variant as a canonical source variant, stock included.
+
+    Out of stock is written as a count of zero rather than as a state with no count, because that
+    is the canonical form a source document holds it in and because zero is what the page means.
+    Everything else keeps whatever precision the page published.
+    """
+    quantity = variant.inventory_quantity
+    if quantity is None and variant.availability is AvailabilityEvidence.OUT_OF_STOCK:
+        quantity = 0
+    metadata: dict[str, str | int | bool] = {"import_availability": variant.availability.value}
     if variant.availability_text is not None:
         metadata["import_availability_text"] = variant.availability_text
-    return {
+    body: dict[str, Any] = {
         "sku": variant.sku,
         "label": None if variant.label is None else variant.label[:MAX_LABEL_LENGTH],
         "price_amount_minor": variant.price_amount_minor,
@@ -369,6 +359,9 @@ def _variant(variant: DraftVariant, stock_level: int | None) -> dict[str, Any]:
         "inventory_quantity": quantity,
         "merchant_metadata": metadata,
     }
+    if quantity is None:
+        body["availability"] = variant.availability.value
+    return body
 
 
 def bounded_policy_body(text: str) -> tuple[str, bool]:
@@ -380,3 +373,7 @@ def bounded_policy_body(text: str) -> tuple[str, bool]:
 
 def _optional_str(value: object) -> str | None:
     return None if value is None else str(value)
+
+
+def _optional_int(value: object) -> int | None:
+    return None if value is None else int(value)  # type: ignore[call-overload]

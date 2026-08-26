@@ -32,14 +32,16 @@ import uuid
 from datetime import datetime
 from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from agentrank_api.money import CURRENCY_PATTERN
 from agentrank_api.representation.definitions import (
     MerchantSourceDefinition,
+    SourceAvailability,
     SourceProduct,
     SourceVariant,
     instruction_like,
+    read_availability,
 )
 from agentrank_api.representation.models import SUBMISSION_KEY_PATTERN
 
@@ -93,6 +95,12 @@ NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
 Identifier = Annotated[str, Field(pattern=IDENTIFIER_PATTERN)]
 MetadataValue = str | int | bool
 
+# `strict=True` on the model means an enum field would only accept an actual enum member, and a
+# JSON body carries a string. The exemption is per field and it is the narrowest one available:
+# the value is still checked against the enum's own members, so an unknown state is a refusal
+# naming the field rather than a value quietly admitted.
+AvailabilityField = Annotated[SourceAvailability, Field(strict=False)]
+
 
 def _plain(value: str | None, name: str) -> str | None:
     """One merchant string, refused if it addresses whatever reads it next."""
@@ -102,7 +110,16 @@ def _plain(value: str | None, name: str) -> str | None:
 
 
 class SourceVariantInput(BaseModel):
-    """One purchasable variant as the merchant describes it, not as the runtime holds it."""
+    """One purchasable variant as the merchant describes it, not as the runtime holds it.
+
+    Stock is the one field a merchant may answer at two precisions. `inventory_quantity` is an
+    exact count they published; `availability` is the qualitative state an ordinary storefront
+    publishes instead. A body may carry either, and one carrying both is accepted only where the
+    two agree, so this schema never has to decide which of two contradicting numbers was meant.
+
+    A body carrying neither is refused. That is deliberate: leaving both out would be a merchant
+    saying nothing about stock and this schema deciding what nothing means.
+    """
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -110,7 +127,8 @@ class SourceVariantInput(BaseModel):
     label: str | None = Field(default=None, max_length=MAX_LABEL_LENGTH)
     price_amount_minor: int = Field(ge=0, le=MAX_PRICE_AMOUNT_MINOR)
     currency: str = Field(pattern=CURRENCY_PATTERN)
-    inventory_quantity: int = Field(ge=0, le=MAX_INVENTORY_QUANTITY)
+    availability: AvailabilityField | None = None
+    inventory_quantity: int | None = Field(default=None, ge=0, le=MAX_INVENTORY_QUANTITY)
     merchant_metadata: dict[str, MetadataValue] = Field(default_factory=dict)
 
     @field_validator("merchant_metadata")
@@ -123,12 +141,31 @@ class SourceVariantInput(BaseModel):
     def plain_label(cls, value: str | None) -> str | None:
         return _plain(value, "a variant label")
 
+    @model_validator(mode="after")
+    def stated_stock(self) -> SourceVariantInput:
+        """Refuse a variant whose stock fields say nothing, or say two different things.
+
+        Here rather than only in the domain object, so a merchant gets a 422 naming the variant
+        instead of the 500 an unvalidated domain refusal inside `domain()` would become.
+        """
+        read_availability(
+            self.inventory_quantity,
+            None if self.availability is None else self.availability.value,
+            where=f"variant {self.sku!r}",
+        )
+        return self
+
     def domain(self) -> SourceVariant:
         return SourceVariant(
             sku=self.sku,
             label=self.label,
             price_amount_minor=self.price_amount_minor,
             currency=self.currency,
+            availability=read_availability(
+                self.inventory_quantity,
+                None if self.availability is None else self.availability.value,
+                where=f"variant {self.sku!r}",
+            ),
             inventory_quantity=self.inventory_quantity,
             merchant_metadata=dict(self.merchant_metadata),
         )
@@ -233,9 +270,18 @@ RESERVED_KEY_PREFIX = "import-"
 
 
 class SourceSubmissionRequest(SourceDocumentInput):
-    """One submission command: the evidence, and the key that makes a retry the same command."""
+    """One submission command: the evidence, the key that makes a retry the same command, and
+    the snapshot this evidence was edited from.
+
+    `base_source_snapshot_id` is the one identity a browser may state here, and it selects
+    nothing. It is the snapshot the editor was prefilled from, and the server refuses the
+    submission when that is no longer the merchant's current one. It is optional because a
+    merchant with no source yet is editing nothing, and a caller that omits it is taking the
+    behaviour that existed before this field: last write wins.
+    """
 
     request_key: str = Field(pattern=SUBMISSION_KEY_PATTERN)
+    base_source_snapshot_id: uuid.UUID | None = None
 
     @field_validator("request_key")
     @classmethod

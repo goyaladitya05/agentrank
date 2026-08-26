@@ -162,6 +162,7 @@ class TestRunSummaries:
             MerchantSourceDefinition,
             SourceProduct,
             SourceVariant,
+            availability_of,
         )
 
         built = await build_shop(session, SLUG)
@@ -196,6 +197,7 @@ class TestRunSummaries:
                             label="Black",
                             price_amount_minor=499900,
                             currency=CURRENCY,
+                            availability=availability_of(1),
                             inventory_quantity=1,
                             merchant_metadata={},
                         ),

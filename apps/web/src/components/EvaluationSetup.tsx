@@ -6,7 +6,7 @@ import { KeyValueList, Panel, StatusMark } from "@/components/Primitives";
 import { IdRow, TechnicalDetails } from "@/components/TechnicalDetails";
 import styles from "@/components/console.module.css";
 import { missionFamilyLabel } from "@/lib/labels";
-import type { EvaluationSetup, PlannedWorkspace } from "@/lib/workspace";
+import type { EvaluationCatalogSummary, EvaluationSetup, PlannedWorkspace } from "@/lib/workspace";
 import { IDLE_SETUP, type SetupState } from "@/lib/workspace-mutation";
 
 /**
@@ -93,6 +93,7 @@ function BuiltSetup({ setup, action }: { setup: EvaluationSetup; action: SetupAc
             term: "Evaluation catalog",
             value: `${String(workspace.catalog.products)} products, ${String(workspace.catalog.purchasable_variants)} of ${String(workspace.catalog.variants)} variants in stock`,
           },
+          { term: "Simulated stock", value: simulatedStock(workspace.catalog) },
           {
             term: "Currencies",
             value:
@@ -181,6 +182,7 @@ function BuildableSetup({ setup, action }: { setup: EvaluationSetup; action: Set
             term: "Evaluation catalog",
             value: `${String(planned.catalog.products)} products, ${String(planned.catalog.purchasable_variants)} of ${String(planned.catalog.variants)} variants in stock`,
           },
+          { term: "Simulated stock", value: simulatedStock(planned.catalog) },
           { term: "Missions", value: String(planned.mission_count) },
         ]}
       />
@@ -192,6 +194,21 @@ function BuildableSetup({ setup, action }: { setup: EvaluationSetup; action: Set
       <BuildForm planned={planned} action={action} label="Prepare evaluation setup" />
     </Panel>
   );
+}
+
+/**
+ * How much of this evaluation world's stock is a simulation rather than the merchant's evidence.
+ *
+ * Said plainly and in both directions. A merchant whose pages all publish counts reads that
+ * nothing was assumed, which is worth stating rather than leaving as an absent row; a merchant
+ * whose pages publish only "In stock" reads exactly how many of their lines got a depth from
+ * AgentRank and what that depth is.
+ */
+function simulatedStock(catalog: EvaluationCatalogSummary): string {
+  const { simulated_stock_variants: simulated, assumed_stock_units: units } = catalog;
+  if (simulated === null || units === null) return "Not recorded for this setup";
+  if (simulated === 0) return "None. Every stock level came from your own merchant information";
+  return `${String(simulated)} of ${String(catalog.variants)} variants hold ${String(units)} units, because your merchant information says they are in stock without saying how many. This is an evaluation assumption and not your stock`;
 }
 
 /** A merchant who cannot be set up, told exactly which fact about their evidence stops it. */

@@ -38,6 +38,8 @@ class MerchantEvaluationWorkspaceRepository:
         suite_hash: str,
         catalog_fixture: dict[str, Any],
         composition: dict[str, Any],
+        configuration: dict[str, Any],
+        stock_assumption: dict[str, Any],
     ) -> MerchantEvaluationWorkspace:
         """Write one workspace and flush. The caller owns the transaction."""
         workspace = MerchantEvaluationWorkspace(
@@ -51,6 +53,8 @@ class MerchantEvaluationWorkspaceRepository:
             suite_hash=suite_hash,
             catalog_fixture=catalog_fixture,
             composition=composition,
+            configuration=configuration,
+            stock_assumption=stock_assumption,
         )
         self._session.add(workspace)
         await self._session.flush()

@@ -360,6 +360,8 @@ class MerchantEvaluationWorkspaceService:
                     suite_hash=suite_content_hash(suite.definition),
                     catalog_fixture=catalog.fixture.to_payload(),
                     composition=suite.to_payload(),
+                    configuration=settings.to_payload(),
+                    stock_assumption=_stock_assumption(catalog),
                 )
         except ConflictError as conflict:
             if conflict.reason != WORKSPACE_ALREADY_BUILT:
@@ -661,6 +663,7 @@ def _build(
         merchant_slug=merchant.slug,
         merchant_name=merchant.name,
         version=version,
+        assumed_stock_units=configuration.assumed_stock_units,
     )
     suite = generate_suite(
         catalog,
@@ -669,6 +672,36 @@ def _build(
         configuration=configuration,
     )
     return catalog, suite
+
+
+def _stock_assumption(catalog: EvaluationCatalog) -> dict[str, Any]:
+    """What this world assumed about stock, as the record a merchant reads it back from.
+
+    Written for every workspace, including one where nothing was assumed, because "no line
+    needed a simulated depth" is a fact about the merchant's evidence and an absent document
+    would be indistinguishable from a workspace built before this was recorded.
+    """
+    return {
+        "assumed_stock_units": catalog.assumed_stock_units,
+        "simulated": [entry.to_payload() for entry in catalog.simulated_stock],
+    }
+
+
+def _stored_stock_assumption(workspace: MerchantEvaluationWorkspace) -> tuple[int, int] | None:
+    """The assumed depth and how many lines took it, or None for a workspace that recorded none.
+
+    None is rendered as an absence rather than as zero. A workspace generated before availability
+    existed was generated from a document in which every variant carried a count, so nothing was
+    assumed, but this reader cannot prove that from the row and does not claim it.
+    """
+    stored = workspace.stock_assumption
+    if not isinstance(stored, dict):
+        return None
+    units = stored.get("assumed_stock_units")
+    simulated = stored.get("simulated")
+    if not isinstance(units, int) or isinstance(units, bool) or not isinstance(simulated, list):
+        return None
+    return units, len(simulated)
 
 
 def _stored_catalog(workspace: MerchantEvaluationWorkspace) -> CatalogSummary:
@@ -680,6 +713,7 @@ def _stored_catalog(workspace: MerchantEvaluationWorkspace) -> CatalogSummary:
     """
     products = workspace.catalog_fixture.get("products", [])
     variants = [variant for product in products for variant in product.get("variants", [])]
+    assumption = _stored_stock_assumption(workspace)
     return CatalogSummary(
         products=len(products),
         variants=len(variants),
@@ -688,6 +722,8 @@ def _stored_catalog(workspace: MerchantEvaluationWorkspace) -> CatalogSummary:
             for variant in variants
             if variant.get("is_active", True) and variant.get("inventory_quantity", 0) > 0
         ),
+        simulated_stock_variants=None if assumption is None else assumption[1],
+        assumed_stock_units=None if assumption is None else assumption[0],
         currencies=tuple(sorted({str(variant["currency"]) for variant in variants})),
         categories=tuple(
             sorted(

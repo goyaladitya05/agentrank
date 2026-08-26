@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 # The Alembic head this build was written against. Every migration updates it, and a test refuses
 # a build where it disagrees with the migration chain.
-EXPECTED_REVISION = "e5b7c93af142"
+EXPECTED_REVISION = "d4a7c1e93b62"
 
 
 async def applied_revision(engine: AsyncEngine) -> str | None:

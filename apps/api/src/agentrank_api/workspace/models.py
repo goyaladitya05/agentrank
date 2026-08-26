@@ -117,6 +117,14 @@ class MerchantEvaluationWorkspace(Base):
         CheckConstraint(f"suite_hash ~ '{HASH_PATTERN}'", name="suite_hash_format"),
         CheckConstraint("jsonb_typeof(catalog_fixture) = 'object'", name="catalog_fixture_object"),
         CheckConstraint("jsonb_typeof(composition) = 'object'", name="composition_object"),
+        CheckConstraint(
+            "configuration IS NULL OR jsonb_typeof(configuration) = 'object'",
+            name="configuration_object",
+        ),
+        CheckConstraint(
+            "stock_assumption IS NULL OR jsonb_typeof(stock_assumption) = 'object'",
+            name="stock_assumption_object",
+        ),
         Index(None, "merchant_id"),
         Index(None, "source_snapshot_id", "merchant_id"),
         Index(None, "suite_id"),
@@ -142,6 +150,12 @@ class MerchantEvaluationWorkspace(Base):
     suite_hash: Mapped[str] = mapped_column(String(HASH_LENGTH), nullable=False)
     catalog_fixture: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     composition: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    # The frozen bootstrap choices as a document rather than as the digest beside them, and which
+    # of this world's lines hold a depth AgentRank supplied rather than one the merchant stated.
+    # Nullable because a workspace built before this build recorded them says nothing about them,
+    # and a row saying nothing is honest where a row backfilled with a guess would not be.
+    configuration: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    stock_assumption: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

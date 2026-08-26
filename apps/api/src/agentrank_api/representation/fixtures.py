@@ -23,6 +23,7 @@ from agentrank_api.representation.definitions import (
     SourceProduct,
     SourceReference,
     SourceVariant,
+    read_availability,
 )
 
 
@@ -81,6 +82,13 @@ def _source_product(value: Any) -> SourceProduct:
 
 
 def _source_variant(value: Any) -> SourceVariant:
+    """One stored or authored variant, with its availability read rather than assumed.
+
+    A document written before availability existed carries a quantity and no state, and the
+    quantity already says which state it is. A document written since carries a state and a
+    quantity that may be null. Both are read here, and a document carrying two facts that
+    disagree is refused rather than resolved.
+    """
     entry = _object(value, "source variant")
     _only(
         entry,
@@ -93,13 +101,19 @@ def _source_variant(value: Any) -> SourceVariant:
             "merchant_metadata",
         },
         "source variant",
+        {"availability"},
     )
+    quantity = _nullable_integer(entry, "inventory_quantity")
+    sku = _string(entry, "sku")
     return SourceVariant(
-        sku=_string(entry, "sku"),
+        sku=sku,
         label=_optional_string(entry, "label"),
         price_amount_minor=_integer(entry, "price_amount_minor"),
         currency=_string(entry, "currency"),
-        inventory_quantity=_integer(entry, "inventory_quantity"),
+        availability=read_availability(
+            quantity, _optional_string(entry, "availability"), where=f"source variant {sku!r}"
+        ),
+        inventory_quantity=quantity,
         merchant_metadata=_object(entry.get("merchant_metadata", {}), "merchant metadata"),
     )
 
@@ -190,8 +204,17 @@ def _document(path: Path) -> dict[str, Any]:
         raise RepresentationFixtureError(f"{path}: invalid JSON") from error
 
 
-def _only(entry: dict[str, Any], allowed: set[str], name: str) -> None:
-    extra = set(entry) - allowed
+def _only(
+    entry: dict[str, Any], allowed: set[str], name: str, optional: set[str] | None = None
+) -> None:
+    """Refuse a document that carries a key this format lacks, or lacks one it defines.
+
+    `optional` is for a key the canonical form writes only where it carries information. A
+    variant that states an exact quantity has already stated its availability, so the canonical
+    payload omits the availability key; requiring it would refuse every document written before
+    the field existed, and allowing it as an extra everywhere would let a typo through.
+    """
+    extra = set(entry) - allowed - (optional or set())
     missing = allowed - set(entry)
     if extra or missing:
         raise RepresentationFixtureError(f"{name} has unsupported or missing fields")
@@ -228,6 +251,23 @@ def _integer(entry: dict[str, Any], name: str) -> int:
     value = entry.get(name)
     if not isinstance(value, int) or isinstance(value, bool):
         raise RepresentationFixtureError(f"{name} must be an integer")
+    return value
+
+
+def _nullable_integer(entry: dict[str, Any], name: str) -> int | None:
+    """An integer or an explicit null, with an absent key refused rather than read as null.
+
+    A canonical source document always writes this key, so a document missing it is a document
+    this reader was not given. Reading the absence as null would make a misspelled key a variant
+    with no stock quantity, which is a document that reads correctly and means something else.
+    """
+    if name not in entry:
+        raise RepresentationFixtureError(f"{name} must be present, as an integer or null")
+    value = entry[name]
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise RepresentationFixtureError(f"{name} must be an integer or null")
     return value
 
 

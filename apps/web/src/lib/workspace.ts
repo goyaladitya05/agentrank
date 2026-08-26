@@ -27,6 +27,20 @@ export interface EvaluationCatalogSummary {
   readonly variants: number;
   /** What a buyer could actually take away today, which is not how many were listed. */
   readonly purchasable_variants: number;
+  /**
+   * How many of those lines hold a depth AgentRank supplied, and the depth it supplied.
+   *
+   * A merchant who published that something is in stock published no count, and an evaluation
+   * world holds an exact number of units, so the bootstrap states one. It is a simulation
+   * parameter frozen into the setup's identity and it is rendered as one: reporting those lines
+   * as ordinary stock would be the console presenting AgentRank's own assumption as the
+   * merchant's fact.
+   *
+   * Both are null on a setup built before a source document could omit a quantity. That is an
+   * absence rather than a zero.
+   */
+  readonly simulated_stock_variants: number | null;
+  readonly assumed_stock_units: number | null;
   readonly currencies: readonly string[];
   readonly categories: readonly string[];
 }
@@ -127,6 +141,10 @@ function integer(value: unknown, where: string): number {
   return value;
 }
 
+function nullableInteger(value: unknown, where: string): number | null {
+  return value === null ? null : integer(value, where);
+}
+
 function bool(value: unknown, where: string): boolean {
   if (typeof value !== "boolean") throw new DecodeError(`${where}: expected a boolean`);
   return value;
@@ -142,6 +160,11 @@ function catalog(value: unknown): EvaluationCatalogSummary {
     products: integer(source.products, "catalog products"),
     variants: integer(source.variants, "catalog variants"),
     purchasable_variants: integer(source.purchasable_variants, "catalog purchasable_variants"),
+    simulated_stock_variants: nullableInteger(
+      source.simulated_stock_variants,
+      "catalog simulated_stock_variants",
+    ),
+    assumed_stock_units: nullableInteger(source.assumed_stock_units, "catalog assumed_stock_units"),
     currencies: strings(source.currencies, "catalog currencies"),
     categories: strings(source.categories, "catalog categories"),
   };

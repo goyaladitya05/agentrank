@@ -27,8 +27,10 @@ of the titles would expect, which is exactly the finding a first evaluation exis
 
 from agentrank_api.representation.definitions import (
     MerchantSourceDefinition,
+    SourceAvailability,
     SourceProduct,
     SourceVariant,
+    read_availability,
 )
 
 CURRENCY = "INR"
@@ -40,14 +42,24 @@ def variant(
     label: str | None = None,
     price: int = 100000,
     currency: str = CURRENCY,
-    stock: int = 10,
+    stock: int | None = 10,
+    availability: SourceAvailability | None = None,
     metadata: dict[str, object] | None = None,
 ) -> SourceVariant:
+    """One source variant, with its availability read off the stock the caller stated.
+
+    A test that names a quantity says everything about stock the model needs, so it does not have
+    to restate the state as well. A test about a merchant who published no quantity passes
+    `stock=None` and the state it wants.
+    """
     return SourceVariant(
         sku=sku,
         label=label,
         price_amount_minor=price,
         currency=currency,
+        availability=read_availability(
+            stock, None if availability is None else availability.value, where=f"variant {sku!r}"
+        ),
         inventory_quantity=stock,
         merchant_metadata=dict(metadata or {}),
     )

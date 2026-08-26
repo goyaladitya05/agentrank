@@ -31,6 +31,21 @@ workspace has ever been able to change what the commerce runtime decides. This m
 row at all: it produces a `BenchmarkFixture`, which is a description of a world, and the existing
 benchmark preparation is the only thing that ever puts one into a catalog.
 
+Stock is the one field where the source and the world cannot be the same kind of fact, and this
+is where the two are separated rather than confused.
+
+```text
+SOURCE            IN_STOCK with a count, IN_STOCK with none, OUT_OF_STOCK, or UNKNOWN
+EVALUATION WORLD  an exact number of units, always, because a shelf has to hold something
+```
+
+A count is carried across unchanged. A merchant who published only that something is in stock
+gets `assumed_stock_units` from the bootstrap configuration, which is a simulation parameter
+frozen into the workspace identity and reported as one; nothing writes it back into the source
+and nothing anywhere describes it as the merchant's stock. And `UNKNOWN` is refused by name,
+because a shelf cannot hold an unknown quantity of anything: a merchant who published no
+availability is asked to state one rather than having one chosen for them in either direction.
+
 Money stays an integer count of minor units with its currency beside it, exactly as it arrived.
 Nothing here converts, rounds, sums across currencies or infers an exponent.
 """
@@ -44,12 +59,14 @@ from agentrank_api.benchmark.fixtures import BenchmarkFixture
 from agentrank_api.commerce.catalog_fixture import SeedProduct, SeedVariant
 from agentrank_api.representation.definitions import (
     MerchantSourceDefinition,
+    SourceAvailability,
     SourceProduct,
     SourceVariant,
     instruction_like,
 )
 from agentrank_api.representation.schemas import MAX_PRODUCTS, MAX_TOTAL_VARIANTS
 from agentrank_api.workspace.definitions import (
+    DEFAULT_ASSUMED_STOCK_UNITS,
     BootstrapBlocker,
     BootstrapRefusedError,
     workspace_key,
@@ -84,6 +101,21 @@ _LIMITS = {
 
 
 @dataclass(frozen=True, slots=True)
+class SimulatedStock:
+    """One evaluation world line whose depth is a simulation rather than merchant evidence.
+
+    Recorded per variant rather than as a count, so a merchant reading their setup can see
+    exactly which of their own lines AgentRank had to assume a depth for and which ones it read.
+    """
+
+    sku: str
+    units: int
+
+    def to_payload(self) -> dict[str, Any]:
+        return {"sku": self.sku, "units": self.units}
+
+
+@dataclass(frozen=True, slots=True)
 class CatalogSummary:
     """What the projected evaluation catalog holds, as counts rather than as content.
 
@@ -95,6 +127,11 @@ class CatalogSummary:
     products: int
     variants: int
     purchasable_variants: int
+    # Null for a workspace built before a source document could omit a stock quantity. Zero would
+    # say "nothing was simulated", which is probably true of those worlds and is not something
+    # this reader can prove from the row it was given.
+    simulated_stock_variants: int | None
+    assumed_stock_units: int | None
     currencies: tuple[str, ...]
     categories: tuple[str, ...]
 
@@ -103,6 +140,8 @@ class CatalogSummary:
             "products": self.products,
             "variants": self.variants,
             "purchasable_variants": self.purchasable_variants,
+            "simulated_stock_variants": self.simulated_stock_variants,
+            "assumed_stock_units": self.assumed_stock_units,
             "currencies": list(self.currencies),
             "categories": list(self.categories),
         }
@@ -127,6 +166,8 @@ class EvaluationCatalog:
     fixture: BenchmarkFixture
     entries: tuple[CatalogEntry, ...]
     omitted_fields: tuple[str, ...]
+    simulated_stock: tuple[SimulatedStock, ...] = ()
+    assumed_stock_units: int = DEFAULT_ASSUMED_STOCK_UNITS
 
     @property
     def summary(self) -> CatalogSummary:
@@ -137,6 +178,8 @@ class EvaluationCatalog:
             products=len(self.fixture.products),
             variants=len(self.entries),
             purchasable_variants=sum(1 for entry in self.entries if entry.can_supply(1)),
+            simulated_stock_variants=len(self.simulated_stock),
+            assumed_stock_units=self.assumed_stock_units,
             currencies=tuple(sorted({entry.currency for entry in self.entries})),
             categories=tuple(sorted(categories)),
         )
@@ -148,6 +191,7 @@ def project_catalog(
     merchant_slug: str,
     merchant_name: str,
     version: int,
+    assumed_stock_units: int = DEFAULT_ASSUMED_STOCK_UNITS,
 ) -> EvaluationCatalog:
     """Read one frozen source document as the isolated world a benchmark will be run against.
 
@@ -171,7 +215,10 @@ def project_catalog(
 
     _require_bounded(source)
     omitted: list[str] = []
-    products = tuple(_product(product, omitted) for product in source.products)
+    simulated: list[SimulatedStock] = []
+    products = tuple(
+        _product(product, omitted, simulated, assumed_stock_units) for product in source.products
+    )
     fixture = BenchmarkFixture(
         key=workspace_key(merchant_slug, CATALOG_KEY_SUFFIX),
         version=version,
@@ -188,7 +235,13 @@ def project_catalog(
                 " a buyer could be asked to buy. Add stock for at least one variant.",
             )
         )
-    return EvaluationCatalog(fixture=fixture, entries=entries, omitted_fields=tuple(omitted))
+    return EvaluationCatalog(
+        fixture=fixture,
+        entries=entries,
+        omitted_fields=tuple(omitted),
+        simulated_stock=tuple(simulated),
+        assumed_stock_units=assumed_stock_units,
+    )
 
 
 def catalog_entries(fixture: BenchmarkFixture) -> tuple[CatalogEntry, ...]:
@@ -237,7 +290,12 @@ def _require_bounded(source: MerchantSourceDefinition) -> None:
     )
 
 
-def _product(product: SourceProduct, omitted: list[str]) -> SeedProduct:
+def _product(
+    product: SourceProduct,
+    omitted: list[str],
+    simulated: list[SimulatedStock],
+    assumed_stock_units: int,
+) -> SeedProduct:
     """One source product as an evaluation catalog product, field for field."""
     address = f"products[{product.external_id}]"
     _bounded(product.external_id, "external_id", f"{address}.external_id")
@@ -258,12 +316,21 @@ def _product(product: SourceProduct, omitted: list[str]) -> SeedProduct:
         title=product.title,
         description=product.description,
         category=product.category,
-        variants=tuple(_variant(product, variant, omitted) for variant in product.variants),
+        variants=tuple(
+            _variant(product, variant, omitted, simulated, assumed_stock_units)
+            for variant in product.variants
+        ),
         is_active=True,
     )
 
 
-def _variant(product: SourceProduct, variant: SourceVariant, omitted: list[str]) -> SeedVariant:
+def _variant(
+    product: SourceProduct,
+    variant: SourceVariant,
+    omitted: list[str],
+    simulated: list[SimulatedStock],
+    assumed_stock_units: int,
+) -> SeedVariant:
     """One source variant as an evaluation catalog variant, with its metadata as attributes.
 
     `is_active` is true for every projected variant, and that is a statement rather than a
@@ -272,6 +339,7 @@ def _variant(product: SourceProduct, variant: SourceVariant, omitted: list[str])
     expressed the way the merchant expressed it, which is a stock level of zero.
     """
     address = f"products[{product.external_id}].variants[{variant.sku}]"
+    quantity = _stock(variant, address, simulated, assumed_stock_units)
     _bounded(variant.sku, "sku", f"{address}.sku")
     _bounded(variant.label, "label", f"{address}.label")
     _plain(variant.label, f"{address}.label")
@@ -290,10 +358,42 @@ def _variant(product: SourceProduct, variant: SourceVariant, omitted: list[str])
         label=variant.label,
         price_amount_minor=variant.price_amount_minor,
         currency=variant.currency,
-        inventory_quantity=variant.inventory_quantity,
+        inventory_quantity=quantity,
         attributes=attributes,
         is_active=True,
     )
+
+
+def _stock(
+    variant: SourceVariant,
+    address: str,
+    simulated: list[SimulatedStock],
+    assumed_stock_units: int,
+) -> int:
+    """How deep this line's shelf is in the evaluation world, and where that number came from.
+
+    Three cases and no fourth. A merchant who published a count has stated the depth and it is
+    carried across. A merchant who published only that something is in stock has stated that the
+    shelf is not empty and nothing about how full it is, so the configured simulation depth is
+    used and the line is recorded as simulated. A merchant who published nothing at all has
+    stated neither, and that is refused rather than resolved: turning it into zero would assert
+    they cannot supply something they never said they could not, and turning it into a positive
+    number would assert the opposite.
+    """
+    if variant.inventory_quantity is not None:
+        return variant.inventory_quantity
+    if variant.availability is SourceAvailability.UNKNOWN:
+        raise BootstrapRefusedError(
+            BootstrapBlocker(
+                "source_availability_unknown",
+                f"Your merchant information does not say whether {address} can be bought. An"
+                " evaluation world holds an exact number of units, and AgentRank will not decide"
+                " that one for you. State whether it is in stock, or give it a stock quantity,"
+                " and submit your source again.",
+            )
+        )
+    simulated.append(SimulatedStock(sku=variant.sku, units=assumed_stock_units))
+    return assumed_stock_units
 
 
 def _bounded(value: str | None, field: str, address: str) -> None:

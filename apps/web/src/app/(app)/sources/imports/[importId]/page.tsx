@@ -33,10 +33,7 @@ export default async function ImportDetailPage({
         hint="Review this before it becomes your source snapshot."
       >
         <Panel>
-          <ImportReview
-            found={found}
-            action={confirmImport.bind(null, importId, found.stock_level_required)}
-          />
+          <ImportReview found={found} action={confirmImport.bind(null, importId)} />
         </Panel>
       </Section>
       <Section title="Elsewhere">

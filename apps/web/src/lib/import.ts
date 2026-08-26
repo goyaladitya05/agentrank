@@ -42,6 +42,7 @@ export interface ImportVariant {
   readonly currency: string;
   readonly availability: Availability;
   readonly availability_text: string | null;
+  readonly inventory_quantity: number | null;
 }
 
 export interface ImportProduct {
@@ -97,10 +98,15 @@ export interface SourceImport {
   readonly omissions: readonly ImportNote[];
   readonly findings: readonly ImportNote[];
   readonly blockers: readonly ImportBlocker[];
-  readonly stock_level_required: boolean;
-  readonly stock_level: number | null;
+  /**
+   * Every variant whose page said nothing about whether it can be bought, by SKU.
+   *
+   * The snapshot records that honestly and an evaluation world cannot hold it, so this is where a
+   * merchant learns which of their own lines they will have to state a stock state for before
+   * they can be measured.
+   */
+  readonly unstated_availability: readonly string[];
   readonly confirmable: boolean;
-  readonly max_stock_level: number;
 }
 
 export interface ImportConfirmation {
@@ -188,6 +194,7 @@ function decodeVariant(value: unknown, where: string): ImportVariant {
     currency: string(entry.currency, `${where}.currency`),
     availability: member(entry.availability, AVAILABILITIES, `${where}.availability`),
     availability_text: nullableString(entry.availability_text, `${where}.availability_text`),
+    inventory_quantity: nullableInteger(entry.inventory_quantity, `${where}.inventory_quantity`),
   };
 }
 
@@ -277,10 +284,10 @@ export function decodeSourceImport(value: unknown): SourceImport {
         detail: string(blocker.detail, `import.blockers[${String(index)}].detail`),
       };
     }),
-    stock_level_required: boolean(entry.stock_level_required, "import.stock_level_required"),
-    stock_level: nullableInteger(entry.stock_level, "import.stock_level"),
+    unstated_availability: array(entry.unstated_availability, "import.unstated_availability").map(
+      (item, index) => string(item, `import.unstated_availability[${String(index)}]`),
+    ),
     confirmable: boolean(entry.confirmable, "import.confirmable"),
-    max_stock_level: integer(entry.max_stock_level, "import.max_stock_level"),
   };
 }
 
@@ -296,12 +303,19 @@ export function decodeImportConfirmation(value: unknown): ImportConfirmation {
 }
 
 /**
- * What one availability state means, in the words a merchant's own page justifies.
+ * What one variant's stock says, in the words the merchant's own page justifies and no more.
  *
- * "In stock" and nothing else, because that is all the page said. The console never renders a
- * quantity beside an imported variant, because there is not one until the merchant states it.
+ * A count is shown only where the page published one, which almost none do. Everything else is
+ * the state and nothing beside it, because a number the console rendered next to "In stock" would
+ * be a number nobody published.
  */
-export function availabilityLabel(availability: Availability): string {
+export function availabilityLabel(
+  availability: Availability,
+  quantity: number | null = null,
+): string {
+  if (quantity !== null && quantity > 0) {
+    return `${String(quantity)} in stock, published by the page`;
+  }
   switch (availability) {
     case "IN_STOCK":
       return "In stock, no quantity published";

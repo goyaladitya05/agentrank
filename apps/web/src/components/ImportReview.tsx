@@ -226,7 +226,7 @@ function Products({ products }: { products: readonly ImportProduct[] }) {
                   </td>
                   <td>{formatImportedPrice(variant.price_amount_minor, variant.currency)}</td>
                   <td>
-                    {availabilityLabel(variant.availability)}
+                    {availabilityLabel(variant.availability, variant.inventory_quantity)}
                     {variant.availability_text === null ? null : (
                       <>
                         <br />
@@ -368,31 +368,17 @@ function Confirm({ found, action }: { found: SourceImport; action: ConfirmImport
             your pages.
           </li>
         </ul>
-        {found.stock_level_required ? (
-          <>
-            <p>
-              These pages say what is available and not how much of it. State the stock level the
-              isolated evaluation world should hold for every variant whose page published no
-              quantity. Variants whose page said they are out of stock are stored as zero.
-            </p>
-            <label className={styles.field}>
-              Evaluation stock level
-              <input
-                name="stock_level"
-                type="number"
-                inputMode="numeric"
-                min={0}
-                max={found.max_stock_level}
-                step={1}
-                required
-                defaultValue={state.values?.stockLevel ?? ""}
-                aria-describedby={showsError ? "confirm-error" : "stock-level-hint"}
-              />
-            </label>
-            <p className={styles.reviewMeta} id="stock-level-hint">
-              Your own words about your catalog, not a figure read from your store.
-            </p>
-          </>
+        {found.unstated_availability.length > 0 ? (
+          <p className={styles.reviewMeta} id="unstated-availability">
+            {found.unstated_availability.length === 1
+              ? "One variant's page did not say whether it can be bought"
+              : `${String(found.unstated_availability.length)} variants' pages did not say whether they can be bought`}
+            {": "}
+            {found.unstated_availability.join(", ")}. That is stored exactly as it stands. An
+            evaluation world holds an exact number of units and cannot hold an unknown, so you will
+            be asked to state whether these are in stock before an evaluation setup can be built
+            from this snapshot.
+          </p>
         ) : null}
         <div className={styles.buttonRow}>
           <button className={styles.button} type="submit" disabled={pending || !found.confirmable}>

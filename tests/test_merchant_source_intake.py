@@ -23,6 +23,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from agentrank_api.commerce.repository import MerchantRepository
 from agentrank_api.errors import ConflictError, NotFoundError
 from agentrank_api.representation.intake import (
     DEFAULT_SOURCE_KEY,
@@ -34,7 +35,7 @@ from agentrank_api.representation.models import (
     MerchantSourceSubmission,
     SourceOrigin,
 )
-from agentrank_api.representation.schemas import SourceSubmissionRequest
+from agentrank_api.representation.schemas import SourceDocumentInput, SourceSubmissionRequest
 
 pytestmark = pytest.mark.anyio
 
@@ -491,3 +492,90 @@ async def test_a_writer_that_never_yields_is_refused_by_name(
 
     assert refused.value.reason == "source_version_conflict"
     assert await _snapshot_count(session, merchant.id) == 1
+
+
+def titled(title: str) -> SourceDocumentInput:
+    """One minimal submittable source document, distinguished only by its product title."""
+    return SourceDocumentInput.model_validate(
+        {
+            "products": [
+                {
+                    "external_id": "P1",
+                    "title": title,
+                    "variants": [
+                        {
+                            "sku": "S1",
+                            "price_amount_minor": 100,
+                            "currency": "INR",
+                            "availability": "IN_STOCK",
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+
+async def test_a_submission_whose_base_moved_is_refused_rather_than_written(
+    session: AsyncSession,
+) -> None:
+    """The stale editor tab, refused instead of silently reverting newer evidence.
+
+    The console editor prefills the whole current document and takes back a whole document, so a
+    merchant with it open in one tab who confirmed an import in another would submit the older
+    body over the top. History keeps both and nothing detects it afterwards: a new version
+    carrying older content is exactly what an ordinary edit looks like. Their current source
+    would simply have lost everything the import added, with the console reporting success.
+    """
+    merchant = await MerchantRepository(session).create(slug="stale-base", name="Stale Base")
+    await session.commit()
+    intake = MerchantSourceIntakeService(session)
+    first = await intake.submit(merchant.id, request_key="base-first-key", document=titled("One"))
+    await intake.submit(merchant.id, request_key="base-second-key", document=titled("Two"))
+
+    with pytest.raises(ConflictError) as refused:
+        await intake.submit(
+            merchant.id,
+            request_key="base-stale-key",
+            document=titled("Three"),
+            base_source_snapshot_id=first.snapshot.id,
+        )
+
+    assert refused.value.reason == "source_superseded"
+    current = await intake.current(merchant.id)
+    assert current is not None
+    assert current.payload["products"][0]["title"] == "Two"
+
+
+async def test_a_submission_naming_the_current_base_is_written(session: AsyncSession) -> None:
+    merchant = await MerchantRepository(session).create(slug="fresh-base", name="Fresh Base")
+    await session.commit()
+    intake = MerchantSourceIntakeService(session)
+    first = await intake.submit(merchant.id, request_key="base-first-key", document=titled("One"))
+
+    outcome = await intake.submit(
+        merchant.id,
+        request_key="base-second-key",
+        document=titled("Two"),
+        base_source_snapshot_id=first.snapshot.id,
+    )
+
+    assert outcome.submission.created_snapshot is True
+    assert outcome.snapshot.source_version == 2
+
+
+async def test_a_merchant_with_no_source_naming_a_base_is_refused(session: AsyncSession) -> None:
+    """Naming a base they do not have is the same fact: what they were editing is not what is
+    held now."""
+    merchant = await MerchantRepository(session).create(slug="no-base", name="No Base")
+    await session.commit()
+
+    with pytest.raises(ConflictError) as refused:
+        await MerchantSourceIntakeService(session).submit(
+            merchant.id,
+            request_key="base-absent-key",
+            document=titled("One"),
+            base_source_snapshot_id=uuid.uuid7(),
+        )
+
+    assert refused.value.reason == "source_superseded"

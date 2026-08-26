@@ -68,8 +68,18 @@ function failed(
   };
 }
 
+/**
+ * Submit an edited source document.
+ *
+ * `baseSnapshotId` is the snapshot this editor was prefilled from, carried back so the server can
+ * refuse a submission whose base has moved. The editor takes a whole document and gives back a
+ * whole document, so a merchant with this page open in one tab who confirmed an import in
+ * another would otherwise write the older body over the top: history keeps both, their current
+ * source silently loses what the import added, and the console reports success.
+ */
 export async function submitSource(
   requestKey: string,
+  baseSnapshotId: string | null,
   _: SourceSubmissionState,
   formData: FormData,
 ): Promise<SourceSubmissionState> {
@@ -89,15 +99,19 @@ export async function submitSource(
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     return failed("A source document is a JSON object with products and policy text.", values);
   }
-  if ("request_key" in parsed) {
+  if ("request_key" in parsed || "base_source_snapshot_id" in parsed) {
     return failed(
-      "Remove request_key from the document. The console supplies it with each submission.",
+      "Remove request_key and base_source_snapshot_id from the document. The console supplies both with each submission.",
       values,
     );
   }
 
   // Measured on the body that is actually sent, which is what the API bounds.
-  const encoded = JSON.stringify({ ...parsed, request_key: requestKey });
+  const encoded = JSON.stringify({
+    ...parsed,
+    request_key: requestKey,
+    base_source_snapshot_id: baseSnapshotId,
+  });
   const size = new TextEncoder().encode(encoded).length;
   if (size > MAX_DOCUMENT_BYTES) {
     return failed(

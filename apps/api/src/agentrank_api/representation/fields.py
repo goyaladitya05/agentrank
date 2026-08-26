@@ -14,7 +14,9 @@ string stops being a detail, so it lives here rather than in whichever module ne
 Only text is addressable, and that is deliberate rather than an omission. A price and a stock
 level are structured numbers the compiler copies rather than reads, and an excerpt of one would
 suggest a reading took place. They are still addressed, as their own decimal string, because a
-candidate that copies them has to be able to say where from.
+candidate that copies them has to be able to say where from. A variant whose merchant published
+availability without a count is addressed at `.availability` instead, for the same reason: the
+address has to name the field the document actually holds.
 
 Nothing here normalizes an identifier. A product is addressed by the external identifier the
 merchant supplied and a variant by its SKU, exactly as written, so an address is either exact or
@@ -42,7 +44,14 @@ def source_fields(source: MerchantSourceDefinition) -> dict[str, str]:
         for variant in product.variants:
             variant_prefix = f"{prefix}.variants[{variant.sku}]"
             fields[f"{variant_prefix}.price_amount_minor"] = str(variant.price_amount_minor)
-            fields[f"{variant_prefix}.inventory_quantity"] = str(variant.inventory_quantity)
+            # Stock is addressed where the merchant stated it and nowhere else. A variant with an
+            # exact count is cited at its count; one that published only a state is cited at the
+            # state. Addressing both would give a compiler candidate a choice of two provenance
+            # fields for one fact, one of which the document does not contain.
+            if variant.inventory_quantity is None:
+                fields[f"{variant_prefix}.availability"] = variant.availability.value
+            else:
+                fields[f"{variant_prefix}.inventory_quantity"] = str(variant.inventory_quantity)
             for key, value in variant.merchant_metadata.items():
                 if isinstance(value, str):
                     fields[f"{variant_prefix}.merchant_metadata.{key}"] = value

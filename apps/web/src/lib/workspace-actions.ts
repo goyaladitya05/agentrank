@@ -38,6 +38,8 @@ const REFUSALS: Record<string, string> = {
     "Newer merchant information has been published since this page loaded. Reload to build from your current source.",
   no_purchasable_variant:
     "Every variant in your merchant information is out of stock, so there is nothing a buyer could be asked to buy.",
+  source_availability_unknown:
+    "Your merchant information does not say whether one of your variants can be bought. An evaluation world holds an exact number of units and AgentRank will not decide that one for you. State whether it is in stock, or give it a stock quantity, and submit your source again.",
   no_mission_family:
     "AgentRank could not build a benchmark mission from your merchant information. A catalog needs at least one product a buyer could be asked to buy, with a price and stock.",
   source_unreadable:

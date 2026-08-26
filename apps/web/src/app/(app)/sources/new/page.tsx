@@ -72,7 +72,7 @@ export default async function NewSourcePage() {
           <SubmitSource
             initialDocument={initialDocument}
             hasCurrentSource={currentId !== null}
-            action={submitSource.bind(null, requestKey)}
+            action={submitSource.bind(null, requestKey, currentId)}
           />
         </Panel>
       </Section>

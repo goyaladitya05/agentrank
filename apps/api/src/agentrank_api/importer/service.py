@@ -42,7 +42,6 @@ from sqlalchemy import ColumnElement, func, literal_column, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from agentrank_api.benchmark.identity import canonical_json
 from agentrank_api.commerce.models import Merchant
 from agentrank_api.commerce.repository import MerchantRepository
 from agentrank_api.errors import ConflictError, NotFoundError
@@ -292,7 +291,9 @@ class MerchantSourceImportService:
         One origin because an import is a merchant importing their own store. A list that mixes
         hosts is either a mistake or somebody using an authenticated AgentRank endpoint to fetch
         a set of unrelated addresses, and neither is a thing to support. The first URL decides
-        which origin the rest are checked against, so the refusal names the one that disagreed.
+        which origin the rest are checked against, and the refusal carries the one that
+        disagreed, so a merchant who pasted twelve addresses is told which of them to fix rather
+        than being told that one of them is wrong.
         """
         if not pages:
             raise RefusedTargetError("no_pages", "an import must name at least one page")
@@ -308,8 +309,16 @@ class MerchantSourceImportService:
                 raise RefusedTargetError(
                     "url_too_long",
                     f"a merchant page URL may be at most {MAX_IMPORT_URL_LENGTH} characters",
+                    page.url,
                 )
-            target = validate_target(page.url, policy=self._policy)
+            try:
+                target = validate_target(page.url, policy=self._policy)
+            except RefusedTargetError as refused:
+                # Re-raised carrying the URL rather than caught to change the decision. Every
+                # refusal `validate_target` makes is about one address and it does not know which
+                # of a merchant's twelve it was given, because it is also the operator command
+                # line's validator and takes one URL at a time.
+                raise RefusedTargetError(refused.reason, refused.detail, page.url) from refused
             if len(target.text) > MAX_IMPORT_URL_LENGTH:
                 # Checked again after normalization, not only on what was submitted. Percent
                 # encoding a path expands it, so a URL inside the submitted bound can leave it,
@@ -319,6 +328,7 @@ class MerchantSourceImportService:
                     "url_too_long",
                     f"that URL is longer than {MAX_IMPORT_URL_LENGTH} characters once AgentRank"
                     " has normalized it",
+                    page.url,
                 )
             if origin is None:
                 origin = target.origin
@@ -326,10 +336,13 @@ class MerchantSourceImportService:
                 raise RefusedTargetError(
                     "several_origins",
                     "every page in one import must be on the same storefront origin",
+                    page.url,
                 )
             if target.text in seen:
                 raise RefusedTargetError(
-                    "duplicate_page", "the same URL is named more than once in this import"
+                    "duplicate_page",
+                    "the same URL is named more than once in this import",
+                    page.url,
                 )
             seen.add(target.text)
             resolved.append((target, page))
@@ -502,9 +515,7 @@ class MerchantSourceImportService:
             for row in rows.all()
         ]
 
-    async def confirm(
-        self, merchant_id: uuid.UUID, import_id: uuid.UUID, *, stock_level: int | None
-    ) -> ConfirmationOutcome:
+    async def confirm(self, merchant_id: uuid.UUID, import_id: uuid.UUID) -> ConfirmationOutcome:
         """Turn one inspected import into an ordinary immutable source snapshot.
 
         Explicit by construction. There is no path from running an import to a snapshot that does
@@ -522,12 +533,16 @@ class MerchantSourceImportService:
         it does not             check the blockers, submit, and link
         ```
 
-        Three situations that all used to be wrong resolve to the first branch. A retry after a
-        response nobody saw. A process that died between the two writes, including one whose retry
-        states a different stock level, which used to be a permanent 409 with the snapshot orphaned
-        from the import that produced it. And two simultaneous confirmations, where the loser used
-        to write over a row the immutability trigger then refused, surfacing to a merchant as "the
-        database is unavailable" on a command that had in fact succeeded.
+        Three situations resolve to the first branch. A retry after a response nobody saw. A
+        process that died between the two writes. And two simultaneous confirmations, where the
+        loser used to write over a row the immutability trigger then refused, surfacing to a
+        merchant as "the database is unavailable" on a command that had in fact succeeded.
+
+        This command takes no arguments beyond the import it names, and that is the whole of what
+        changed when a source variant learned to hold an availability state. A confirmation used
+        to carry a stock level, because a source variant needed an exact count and no public page
+        publishes one. It carries nothing now: every number in the snapshot this writes came off
+        the merchant's own pages.
         """
         record = await self.read(merchant_id, import_id)
         intake = MerchantSourceIntakeService(self._session)
@@ -535,14 +550,9 @@ class MerchantSourceImportService:
         draft = SourceDraft.of(record.draft)
         settled = await intake.by_request_key(merchant_id, key)
         if settled is not None:
-            # The stock level is recorded only when it is the one the settled snapshot actually
-            # carries, which is decided by rebuilding the document rather than assumed. Two
-            # simultaneous confirmations name the same number and both are right; a retry after a
-            # lost link may name a different one, and writing that against a snapshot built from
-            # another figure would have the row state something the snapshot does not.
-            record = await self._link(record, settled, _stated(draft, stock_level, settled))
+            record = await self._link(record, settled)
             return ConfirmationOutcome(record, settled, already_confirmed=True)
-        blockers = blockers_for(record, draft, stock_level=stock_level)
+        blockers = blockers_for(record, draft)
         if blockers:
             raise ConflictError(
                 blockers[0].code,
@@ -550,20 +560,15 @@ class MerchantSourceImportService:
                 resource=IMPORT_RESOURCE,
                 identifier=str(import_id),
             )
-        document = SourceDocumentInput.model_validate(
-            canonical_document(draft, stock_level=stock_level)
-        )
+        document = SourceDocumentInput.model_validate(canonical_document(draft))
         submission = await intake.submit(
             merchant_id, request_key=key, document=document, origin=SourceOrigin.MERCHANT_IMPORT
         )
-        record = await self._link(record, submission, stock_level)
+        record = await self._link(record, submission)
         return ConfirmationOutcome(record, submission, already_confirmed=False)
 
     async def _link(
-        self,
-        record: MerchantSourceImport,
-        submission: SubmissionOutcome,
-        stock_level: int | None,
+        self, record: MerchantSourceImport, submission: SubmissionOutcome
     ) -> MerchantSourceImport:
         """Record which snapshot this import became, exactly once, whoever gets there first.
 
@@ -581,11 +586,7 @@ class MerchantSourceImportService:
                     MerchantSourceImport.merchant_id == record.merchant_id,
                     MerchantSourceImport.confirmed_at.is_(None),
                 )
-                .values(
-                    source_snapshot_id=submission.snapshot.id,
-                    stock_level=stock_level,
-                    confirmed_at=func.now(),
-                )
+                .values(source_snapshot_id=submission.snapshot.id, confirmed_at=func.now())
             )
             await self._session.commit()
         return await self.read(record.merchant_id, record.id)
@@ -607,19 +608,6 @@ class MerchantSourceImportService:
         if merchant is None:
             raise NotFoundError("merchant", str(merchant_id))
         return merchant
-
-
-def _stated(draft: SourceDraft, stock_level: int | None, settled: SubmissionOutcome) -> int | None:
-    """The stock level to record, which is this caller's only if it produced this snapshot."""
-    try:
-        rebuilt = canonical_document(draft, stock_level=stock_level)
-    except ValueError:
-        return None
-    evidence = {
-        "products": settled.snapshot.payload.get("products", []),
-        "policy_text": settled.snapshot.payload.get("policy_text", {}),
-    }
-    return stock_level if canonical_json(rebuilt) == canonical_json(evidence) else None
 
 
 def _same_request(
@@ -681,9 +669,7 @@ def _duplicate_identity(product: DraftProduct, accepted: Sequence[DraftProduct])
     return None
 
 
-def blockers_for(
-    record: MerchantSourceImport, draft: SourceDraft, *, stock_level: int | None
-) -> list[ImportBlocker]:
+def blockers_for(record: MerchantSourceImport, draft: SourceDraft) -> list[ImportBlocker]:
     """Everything that stands between one import and a source snapshot, in the order to fix it.
 
     Stated as a list a console renders rather than as an exception, because the merchant is meant
@@ -715,21 +701,6 @@ def blockers_for(
         blockers.append(
             ImportBlocker(
                 "too_many_variants", "this import found more variants than a source holds"
-            )
-        )
-    if draft.stock_level_required and stock_level is None:
-        blockers.append(
-            ImportBlocker(
-                "stock_level_required",
-                "these pages say what is in stock and not how many, so the stock level the"
-                " evaluation world should hold has to be stated",
-            )
-        )
-    if stock_level is not None and not 0 <= stock_level <= MAX_STOCK_LEVEL:
-        blockers.append(
-            ImportBlocker(
-                "stock_level_out_of_range",
-                f"the evaluation stock level must be between 0 and {MAX_STOCK_LEVEL}",
             )
         )
     return blockers

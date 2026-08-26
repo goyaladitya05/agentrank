@@ -18,29 +18,34 @@ use, so a credential the benchmark runner minted for a run is refused. A buyer t
 import could write the source its own measurement is derived from, and could additionally aim
 this application's outbound requests.
 
-What a browser may say is a list of URLs, what each one is, a request key, and, at confirmation,
-the stock level the evaluation world should hold. It may not say which merchant, which source
-line, which version, how many pages, how large a page may be or how long a fetch may take. The
-first three are resolved from the credential and from what the merchant already holds; the rest
-are constants this repository states.
+What a browser may say is a list of URLs, what each one is, and a request key. It may not say
+which merchant, which source line, which version, how many pages, how large a page may be or how
+long a fetch may take, and it no longer says anything about stock: a source variant holds the
+availability state a storefront publishes, so a confirmation states nothing at all. The first
+three are resolved from the credential and from what the merchant already holds; the rest are
+constants this repository states.
 
 Two translations happen here and nowhere else. `RefusedTargetError` is a 422 because the request
-named something AgentRank will not fetch, which is a fact about the request. Everything else the
-domain raises already has a response: `NotFoundError` is a 404 including for another merchant's
-import, `ConflictError` is a 409 for a confirmation the draft refuses, and a `ValueError` from
-the source schema or the source domain is a 422 for the same reason a submitted document's is.
+named something AgentRank will not fetch, which is a fact about the request. A `ValueError` from
+the source schema or the source domain is a 422 for the same reason a submitted document's is,
+and it goes through `invalid_request` rather than into a bare `HTTPException`, because
+`pydantic.ValidationError` is a `ValueError` and rendering one directly would put the caller's
+own unbounded input value in the response. Everything else the domain raises already has a
+response: `NotFoundError` is a 404 including for another merchant's import, and `ConflictError`
+is a 409 for a confirmation the draft refuses.
 
 The body size bound applies to the import command, which is the body a caller composes freely.
-The confirmation body is one bounded integer and is not separately bounded, in common with every
-other route in this application that takes a small fixed shape.
+The confirmation body is empty and is not separately bounded, in common with every other route in
+this application that takes a small fixed shape.
 """
 
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Query, status
 
 from agentrank_api.dependencies import OperatorDep, SessionDep, SettingsDep
+from agentrank_api.errors import InvalidField, InvalidRequestError, invalid_request
 from agentrank_api.importer.network import RefusedTargetError
 from agentrank_api.importer.schemas import (
     ConfirmImportRequest,
@@ -104,8 +109,17 @@ async def run_import(
             pages=request.requested(),
         )
     except RefusedTargetError as refused:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=refused.detail
+        # The URL goes in the field location, which is where a caller's own string already goes
+        # and where it is already bounded, rather than into the sentence, which is this
+        # repository's prose and stays that way.
+        raise InvalidRequestError(
+            refused.detail,
+            fields=[
+                InvalidField(
+                    location=["body", "pages", refused.url or "", "url"],
+                    message=refused.reason,
+                )
+            ],
         ) from refused
     return SourceImportView.of(record)
 
@@ -127,7 +141,7 @@ async def confirm_import(
     """
     try:
         outcome = await MerchantSourceImportService(session).confirm(
-            merchant.merchant_id, import_id, stock_level=request.stock_level
+            merchant.merchant_id, import_id
         )
     except ValueError as error:
         # A draft that cannot become a source document. `blockers_for` catches the reasons a
@@ -135,9 +149,7 @@ async def confirm_import(
         # refuse documents for reasons this workflow does not model, and either would otherwise
         # reach a caller as a 500. Translated here rather than swallowed, and by the same rule the
         # source submission route uses, so a caller reads what was wrong with the request.
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
-        ) from error
+        raise invalid_request(error) from error
     return ImportConfirmationView(
         import_id=outcome.record.id,
         already_confirmed=outcome.already_confirmed,

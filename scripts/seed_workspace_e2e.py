@@ -34,6 +34,7 @@ from agentrank_api.representation.definitions import (
     MerchantSourceDefinition,
     SourceProduct,
     SourceVariant,
+    availability_of,
 )
 from agentrank_api.representation.service import MerchantRepresentationService
 
@@ -48,6 +49,7 @@ def variant(
         label=label,
         price_amount_minor=price,
         currency=CURRENCY,
+        availability=availability_of(stock),
         inventory_quantity=stock,
         merchant_metadata={} if finish is None else {"finish": finish},
     )

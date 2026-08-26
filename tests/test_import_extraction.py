@@ -47,6 +47,7 @@ from agentrank_api.importer.extraction import (
     structured_nodes,
 )
 from agentrank_api.importer.reading import read_page
+from agentrank_api.representation.definitions import SourceAvailability
 from agentrank_api.representation.schemas import SourceDocumentInput
 
 URL = "https://shop.example/p/item"
@@ -96,38 +97,35 @@ def test_variants_come_from_what_the_merchant_published_and_not_from_ordering() 
     assert [variant.label for variant in found.variants] == ["Black", "Sand"]
 
 
-def test_an_out_of_stock_page_is_the_one_availability_that_needs_no_merchant_number() -> None:
+def test_an_out_of_stock_page_is_recorded_as_the_exact_quantity_it_means() -> None:
+    """Out of stock is not a countless state. It is a count, and it is zero."""
     found, _ = product(OUT_OF_STOCK_PRODUCT)
     assert found is not None
     assert found.variants[0].availability is AvailabilityEvidence.OUT_OF_STOCK
-    draft = SourceDraft(products=(found,))
-    assert draft.stock_level_required is False
-    document = canonical_document(draft, stock_level=None)
+    document = canonical_document(SourceDraft(products=(found,)))
     variant = document["products"][0]["variants"][0]
     assert variant["inventory_quantity"] == 0
-    assert variant["merchant_metadata"]["import_stock_level_source"] == "PAGE_OUT_OF_STOCK"
+    assert "availability" not in variant
+    assert variant["merchant_metadata"]["import_availability"] == "OUT_OF_STOCK"
 
 
 def test_an_in_stock_page_never_becomes_a_quantity_on_its_own() -> None:
-    """The representation gap, asserted rather than described.
+    """A page saying "In stock" publishes a state and no number, and neither is invented.
 
-    A public page saying "In stock" publishes no number, and `canonical_document` refuses to
-    invent one. The merchant states it, and the source document records that they did.
+    The source document records exactly that: `IN_STOCK` with a null quantity. Nothing here
+    chooses a number, and nothing downstream reads this as a claim about a warehouse.
     """
     found, _ = product(JSON_LD_PRODUCT)
     assert found is not None
-    draft = SourceDraft(products=(found,))
-    assert draft.stock_level_required is True
-    with pytest.raises(ValueError, match="stock level"):
-        canonical_document(draft, stock_level=None)
-    document = canonical_document(draft, stock_level=12)
+    document = canonical_document(SourceDraft(products=(found,)))
     variant = document["products"][0]["variants"][0]
-    assert variant["inventory_quantity"] == 12
-    assert variant["merchant_metadata"]["import_stock_level_source"] == "MERCHANT_SUPPLIED"
+    assert variant["inventory_quantity"] is None
+    assert variant["availability"] == "IN_STOCK"
     assert variant["merchant_metadata"]["import_availability"] == "IN_STOCK"
 
 
-def test_an_unknown_availability_is_an_answer_and_still_needs_a_stated_number() -> None:
+def test_an_unknown_availability_survives_into_the_source_as_unknown() -> None:
+    """Neither of the other two. A merchant who published nothing has published nothing."""
     found, _ = product(
         structured(
             '{"@type":"Product","name":"X","sku":"S",'
@@ -136,7 +134,39 @@ def test_an_unknown_availability_is_an_answer_and_still_needs_a_stated_number() 
     )
     assert found is not None
     assert found.variants[0].availability is AvailabilityEvidence.UNKNOWN
-    assert SourceDraft(products=(found,)).stock_level_required is True
+    draft = SourceDraft(products=(found,))
+    assert draft.unstated_availability == ((URL, "S"),)
+    variant = canonical_document(draft)["products"][0]["variants"][0]
+    assert variant["inventory_quantity"] is None
+    assert variant["availability"] == "UNKNOWN"
+
+
+def test_a_published_inventory_level_is_read_as_the_exact_quantity_it_is() -> None:
+    """The rare page that does publish a count has it read, exactly as a price is."""
+    found, _ = product(
+        structured(
+            '{"@type":"Product","name":"X","sku":"S","offers":{"@type":"Offer","price":"10",'
+            '"priceCurrency":"INR","availability":"https://schema.org/InStock",'
+            '"inventoryLevel":{"@type":"QuantitativeValue","value":7}}}'
+        )
+    )
+    assert found is not None
+    assert found.variants[0].inventory_quantity == 7
+    variant = canonical_document(SourceDraft(products=(found,)))["products"][0]["variants"][0]
+    assert variant["inventory_quantity"] == 7
+    assert "availability" not in variant
+
+
+def test_an_inventory_level_contradicting_the_availability_is_refused_rather_than_chosen() -> None:
+    """Two facts about one thing that disagree. Neither is picked."""
+    _, refused = product(
+        structured(
+            '{"@type":"Product","name":"X","sku":"S","offers":{"@type":"Offer","price":"10",'
+            '"priceCurrency":"INR","availability":"https://schema.org/InStock",'
+            '"inventoryLevel":{"@type":"QuantitativeValue","value":0}}}'
+        )
+    )
+    assert refused == "availability_conflict"
 
 
 @pytest.mark.parametrize(
@@ -369,7 +399,7 @@ def test_a_draft_with_two_policies_under_one_name_refuses_rather_than_losing_one
     policy = extract_policy(read_page(RETURNS_POLICY), source_url=URL, name="returns").policy
     assert policy is not None
     with pytest.raises(ValueError, match="two policies under one name"):
-        canonical_document(SourceDraft(policies=(policy, policy)), stock_level=None)
+        canonical_document(SourceDraft(policies=(policy, policy)))
 
 
 def test_an_availability_token_that_addresses_its_reader_is_not_imported() -> None:
@@ -600,8 +630,9 @@ def test_an_imported_draft_is_a_document_the_ordinary_source_schema_accepts() ->
     policy = extract_policy(read_page(RETURNS_POLICY), source_url=URL, name="returns").policy
     assert found is not None and policy is not None
     draft = SourceDraft(products=(found,), policies=(policy,))
-    document = SourceDocumentInput.model_validate(canonical_document(draft, stock_level=5))
-    assert document.products[0].variants[0].inventory_quantity == 5
+    document = SourceDocumentInput.model_validate(canonical_document(draft))
+    assert document.products[0].variants[0].inventory_quantity is None
+    assert document.products[0].variants[0].availability is SourceAvailability.IN_STOCK
     assert "returns" in document.policy_text
 
 

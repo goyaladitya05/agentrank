@@ -7,6 +7,8 @@ const CATALOG = {
   products: 3,
   variants: 5,
   purchasable_variants: 4,
+  simulated_stock_variants: 2,
+  assumed_stock_units: 3,
   currencies: ["INR"],
   categories: ["chargers"],
 };
@@ -55,6 +57,8 @@ describe("decodeWorkspace", () => {
     expect(decoded.suite_label).toBe("acme-workspace-suite@1");
     expect(decoded.mission_count).toBe(4);
     expect(decoded.catalog.purchasable_variants).toBe(4);
+    expect(decoded.catalog.simulated_stock_variants).toBe(2);
+    expect(decoded.catalog.assumed_stock_units).toBe(3);
     expect(decoded.composition[0]?.family).toBe("CATEGORY_PURCHASE");
     expect(decoded.unsupported[0]?.reason).toBe("Not markable.");
   });
@@ -139,5 +143,17 @@ describe("decodeEvaluationSetup", () => {
     expect(() =>
       decodeEvaluationSetup({ ...SETUP, blockers: [{ code: "x", message: null }] }),
     ).toThrow(DecodeError);
+  });
+});
+
+describe("a setup built before a source could omit a stock quantity", () => {
+  it("reads a null simulated count as an absence rather than as a zero", () => {
+    const decoded = decodeWorkspace({
+      ...WORKSPACE,
+      catalog: { ...CATALOG, simulated_stock_variants: null, assumed_stock_units: null },
+    });
+
+    expect(decoded.catalog.simulated_stock_variants).toBeNull();
+    expect(decoded.catalog.assumed_stock_units).toBeNull();
   });
 });

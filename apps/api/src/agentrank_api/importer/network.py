@@ -106,12 +106,18 @@ class RefusedTargetError(Exception):
     about a merchant's request. This one says the target is outside what AgentRank fetches at
     all, and no amount of retrying changes it. It carries a stable reason code and a sentence
     this repository wrote.
+
+    `url` is the URL that was refused, as the merchant typed it. A merchant who pasted twelve
+    addresses and got back one sentence about "a URL AgentRank cannot read" had to bisect their
+    own list by hand, which is a refusal that names a rule and not a thing to fix. It is the
+    caller's own string and it is bounded before it goes into a response.
     """
 
-    def __init__(self, reason: str, detail: str) -> None:
+    def __init__(self, reason: str, detail: str, url: str | None = None) -> None:
         super().__init__(detail)
         self.reason = reason
         self.detail = detail
+        self.url = url
 
 
 @dataclass(frozen=True, slots=True)

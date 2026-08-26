@@ -70,14 +70,18 @@ export interface ConfirmState {
   readonly createdSnapshot: boolean;
   /** True when this import had already been confirmed, so this command wrote nothing. */
   readonly alreadyConfirmed: boolean;
-  /** What the merchant typed, echoed back so a refusal never discards their own number. */
-  readonly values: ConfirmValues | null;
+  /**
+   * What the merchant typed, echoed back so a refusal never discards their own input.
+   *
+   * Always null. A confirmation is a decision about an import that has already been read and it
+   * carries no fields, so there is nothing for a refusal to give back. The field is kept because
+   * the shape is shared with the import command's own state, which does carry input.
+   */
+  readonly values: ConfirmValues;
 }
 
-/** The one number a merchant states in this workflow. */
-export interface ConfirmValues {
-  readonly stockLevel: string;
-}
+/** What a confirmation form holds, which is nothing. */
+export type ConfirmValues = null;
 
 export const IDLE_CONFIRM: ConfirmState = {
   ok: false,

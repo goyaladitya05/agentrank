@@ -133,7 +133,7 @@ export async function runImport(
     });
   } catch {
     return failed(
-      "The console could not reach AgentRank, so whether these pages were fetched is unknown. Reload this page; submitting this form again cannot start a second import.",
+      "The console could not reach AgentRank, so whether these pages were fetched is unknown. Submit this form again without reloading: it repeats the same request and cannot fetch your storefront twice. Reloading starts a new import, which would fetch it again.",
       values,
       { unknown: true },
     );
@@ -186,31 +186,21 @@ function confirmFailed(
   };
 }
 
+/**
+ * Turn one reviewed import into a source snapshot.
+ *
+ * The merchant states nothing. A source variant holds the availability a storefront publishes, so
+ * every fact in the snapshot this creates came off the merchant's own pages; the form used to ask
+ * for a stock level because a source variant needed an exact count and no public page publishes
+ * one, and asking for that number was the last place this workflow put a figure nobody had
+ * published into a merchant's own history.
+ */
 export async function confirmImport(
   importId: string,
-  stockLevelRequired: boolean,
   _: ConfirmState,
-  formData: FormData,
+  __: FormData,
 ): Promise<ConfirmState> {
-  const raw = String(formData.get("stock_level") ?? "").trim();
-  // Echoed back on every correctable failure. A form is reset to its defaults once its action
-  // resolves, so a merchant who typed 250 and was refused would otherwise find the field showing
-  // something they never said, and pressing the button again would store that instead.
-  const values: ConfirmValues = { stockLevel: raw };
-  let stockLevel: number | null = null;
-  if (stockLevelRequired) {
-    if (raw === "") {
-      return confirmFailed(
-        "State the stock level the evaluation world should hold before creating the snapshot.",
-        values,
-      );
-    }
-    if (!/^\d+$/.test(raw)) {
-      return confirmFailed("The evaluation stock level must be a whole number.", values);
-    }
-    stockLevel = Number(raw);
-  }
-
+  const values: ConfirmValues = null;
   const credential = await requireConsoleCredential();
   let response: Response;
   try {
@@ -219,7 +209,7 @@ export async function confirmImport(
       {
         method: "POST",
         headers: { Authorization: `Bearer ${credential}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ stock_level: stockLevel }),
+        body: JSON.stringify({}),
         cache: "no-store",
       },
     );

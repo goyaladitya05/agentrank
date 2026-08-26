@@ -130,13 +130,13 @@ function History({ imports }: { imports: readonly ImportSummary[] }) {
               </td>
               <td>
                 {entry.source_snapshot_id === null ? (
-                  <span className={styles.cellMuted}>Not created</span>
+                  <span className={styles.cellMuted}>Not confirmed</span>
                 ) : (
                   <Link
                     className={styles.rowLink}
                     href={`/sources/${encodeURIComponent(entry.source_snapshot_id)}`}
                   >
-                    Created
+                    Confirmed
                   </Link>
                 )}
               </td>

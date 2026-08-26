@@ -21,7 +21,9 @@ from agentrank_api.representation.definitions import (
     MerchantSourceDefinition,
     ReviewState,
     SemanticFact,
+    SourceAvailability,
     SourceReference,
+    SourceVariant,
     ValueState,
     instruction_like,
 )
@@ -55,6 +57,34 @@ def _review(value: object, field: str, excerpt: str) -> SemanticFact:
         review_state=ReviewState.REVIEW_REQUIRED,
         provenance=(SourceReference(field, excerpt),),
     )
+
+
+# What a variant's stock says about whether a buyer can have it, and the field it says it at.
+#
+# Copied and never inferred, which is why UNKNOWN survives as UNKNOWN. A merchant who published
+# no availability has a representation that says so; turning that into FALSE would be this
+# compiler asserting a merchant cannot supply something they never said they could not, and
+# turning it into TRUE would be worse.
+#
+# Deliberately a state and never a count. Availability in Commerce IR answers whether a buyer
+# should expect to be able to buy the thing, which is a discovery question. How many there are is
+# a financial fact the commerce runtime owns and settles at reservation time, and a representation
+# that carried one would be a representation claiming authority it does not have.
+_AVAILABILITY = {
+    SourceAvailability.IN_STOCK: ValueState.TRUE,
+    SourceAvailability.OUT_OF_STOCK: ValueState.FALSE,
+    SourceAvailability.UNKNOWN: ValueState.UNKNOWN,
+}
+
+
+def _availability(variant: SourceVariant, variant_prefix: str) -> tuple[str, str]:
+    """One variant's availability state and the source field the merchant stated it at."""
+    field = (
+        f"{variant_prefix}.availability"
+        if variant.inventory_quantity is None
+        else f"{variant_prefix}.inventory_quantity"
+    )
+    return _AVAILABILITY[variant.availability].value, field
 
 
 def extract(source: MerchantSourceDefinition) -> list[tuple[CandidateProposal, CandidateState]]:
@@ -101,12 +131,7 @@ def extract(source: MerchantSourceDefinition) -> list[tuple[CandidateProposal, C
                     (
                         CandidateProposal(
                             variant_availability_target(variant.sku),
-                            _authoritative(
-                                ValueState.TRUE.value
-                                if variant.inventory_quantity > 0
-                                else ValueState.FALSE.value,
-                                f"{variant_prefix}.inventory_quantity",
-                            ),
+                            _authoritative(*_availability(variant, variant_prefix)),
                         ),
                         CandidateState.ACCEPTED,
                     ),

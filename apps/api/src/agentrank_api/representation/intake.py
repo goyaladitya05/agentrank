@@ -142,8 +142,24 @@ class MerchantSourceIntakeService:
         request_key: str,
         document: SourceDocumentInput,
         origin: SourceOrigin = SourceOrigin.MERCHANT_CONSOLE,
+        base_source_snapshot_id: uuid.UUID | None = None,
     ) -> SubmissionOutcome:
         """Take one piece of merchant source evidence in, and say what became of it.
+
+        `base_source_snapshot_id` is the snapshot this evidence was edited from, when it was
+        edited from one. It is compared with the merchant's current snapshot under the lock, and
+        a mismatch is refused rather than written.
+
+        That refusal exists because of the shape of the console editor, which prefills the whole
+        current document and takes back a whole document. Without it, a merchant with the editor
+        open in one tab who confirmed an import in another would submit the older body over the
+        top: history keeps both, and the merchant's current source silently loses everything the
+        import added, with the console reporting success. Nothing detects it afterwards, because
+        a new version carrying older content is exactly what an ordinary edit looks like.
+
+        None means the caller is not editing anything. A confirmed import is independent evidence
+        about the storefront rather than a revision of a document somebody read, and the operator
+        command line publishes without going through this at all.
 
         `origin` records which mechanism supplied the evidence and changes nothing else. The
         console editor and a confirmed merchant import both arrive here, are validated by the
@@ -182,6 +198,7 @@ class MerchantSourceIntakeService:
                 return _same_request(settled, submitted, request_key)
 
             current = await self.current(merchant_id)
+            _require_base(current, base_source_snapshot_id, merchant_id)
             key = DEFAULT_SOURCE_KEY if current is None else current.source_key
             definition = document.definition(
                 key=key,
@@ -269,6 +286,32 @@ class MerchantSourceIntakeService:
                 .where(MerchantSourceSnapshot.merchant_id == merchant_id)
                 .order_by(MerchantSourceSnapshot.write_order.desc())
                 .limit(1)
+            )
+        ).first()
+        if row is None:
+            return None
+        return SourceIdentity(snapshot_id=row.id, label=f"{row.source_key}@{row.source_version}")
+
+    async def identity_of(
+        self, merchant_id: uuid.UUID, source_snapshot_id: uuid.UUID
+    ) -> SourceIdentity | None:
+        """One named snapshot's identity, without loading the document in it.
+
+        Merchant scoped like every other read here, so another merchant's identifier answers with
+        nothing rather than with a label. None where `current_identity` would also return None:
+        the caller is naming a snapshot it read off a row, and a row naming one that cannot be
+        found is a state the composite foreign keys make unreachable.
+        """
+        row = (
+            await self._session.execute(
+                select(
+                    MerchantSourceSnapshot.id,
+                    MerchantSourceSnapshot.source_key,
+                    MerchantSourceSnapshot.source_version,
+                ).where(
+                    MerchantSourceSnapshot.id == source_snapshot_id,
+                    MerchantSourceSnapshot.merchant_id == merchant_id,
+                )
             )
         ).first()
         if row is None:
@@ -580,6 +623,32 @@ class MerchantSourceIntakeService:
             .group_by(CompilerReview.run_id)
         )
         return {run_id: int(count) for run_id, count in result.all()}
+
+
+def _require_base(
+    current: MerchantSourceSnapshot | None,
+    base_source_snapshot_id: uuid.UUID | None,
+    merchant_id: uuid.UUID,
+) -> None:
+    """Refuse evidence edited from a snapshot that is no longer this merchant's current one.
+
+    Checked under the same lock version allocation is done under, so a submission that passes
+    this cannot have its base moved out from under it before it commits.
+
+    A merchant with no snapshot at all who names a base is naming something they do not have,
+    which is the same refusal: whatever they were editing is not what AgentRank now holds.
+    """
+    if base_source_snapshot_id is None:
+        return
+    if current is not None and current.id == base_source_snapshot_id:
+        return
+    raise ConflictError(
+        "source_superseded",
+        "Your merchant information has changed since this page was opened, so submitting this"
+        " would write over evidence you have not seen. Reload to edit your current source.",
+        resource=SOURCE_RESOURCE,
+        identifier=str(merchant_id),
+    )
 
 
 def _same_request(

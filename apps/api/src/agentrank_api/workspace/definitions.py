@@ -41,7 +41,7 @@ from agentrank_api.errors import AgentRankError
 # this package produces gives every later workspace a new identity rather than quietly making an
 # old one irreproducible. Bump it when the generated catalog or the generated missions change
 # meaning, never for a comment or a rename.
-GENERATOR_VERSION = "workspace-v1"
+GENERATOR_VERSION = "workspace-v2"
 
 # A first evaluation is bounded because it is executed one mission at a time against a paid
 # model provider. The default is a suite an operator can read in one screen and a merchant can
@@ -51,6 +51,25 @@ GENERATOR_VERSION = "workspace-v1"
 DEFAULT_MISSION_BUDGET = 12
 MIN_MISSION_BUDGET = 2
 MAX_MISSION_BUDGET = 40
+
+# How many units the evaluation world holds of a line whose merchant published that it is in
+# stock and never published how many. This is the one number in a generated workspace that is a
+# simulation parameter rather than merchant evidence, and it is here, in the configuration that
+# is frozen into the workspace identity, exactly so that it can never be mistaken for one.
+#
+# What it is not: it is not written into the merchant's source, it is not an estimate of their
+# real warehouse, and nothing outside a benchmark world ever reads it. The source keeps saying
+# `IN_STOCK` with no count, which is what the merchant published, and this is how deep the
+# simulated shelf is while a benchmark runs against it.
+#
+# Three because the generated families bracket it from both sides. A multi-unit purchase asks for
+# `MULTI_UNIT_QUANTITY` and needs the shelf to be at least that deep, and a stock abstention asks
+# for one more than the deepest line in a category and is only proposed while that stays at or
+# below `MAX_STOCK_ABSTENTION_QUANTITY`. A larger figure would silently delete the stock
+# abstention family for every merchant who publishes no counts.
+DEFAULT_ASSUMED_STOCK_UNITS = 3
+MIN_ASSUMED_STOCK_UNITS = 1
+MAX_ASSUMED_STOCK_UNITS = 100
 
 # How many units a multi-unit mission asks for. Two rather than a larger number, because the
 # point is to exercise a quantity at all and every extra unit narrows which merchants can
@@ -126,6 +145,7 @@ class BootstrapConfiguration:
     """
 
     mission_budget: int = DEFAULT_MISSION_BUDGET
+    assumed_stock_units: int = DEFAULT_ASSUMED_STOCK_UNITS
     generator_version: str = GENERATOR_VERSION
 
     def __post_init__(self) -> None:
@@ -133,6 +153,11 @@ class BootstrapConfiguration:
             raise ValueError(
                 f"a mission budget must be between {MIN_MISSION_BUDGET} and"
                 f" {_MISSION_BUDGET_CEILING}, got {self.mission_budget}"
+            )
+        if not MIN_ASSUMED_STOCK_UNITS <= self.assumed_stock_units <= MAX_ASSUMED_STOCK_UNITS:
+            raise ValueError(
+                f"an assumed stock level must be between {MIN_ASSUMED_STOCK_UNITS} and"
+                f" {MAX_ASSUMED_STOCK_UNITS}, got {self.assumed_stock_units}"
             )
         if not self.generator_version.strip():
             raise ValueError("a bootstrap generator version must not be blank")
@@ -143,6 +168,7 @@ class BootstrapConfiguration:
         """The configuration as it is stored, shown and hashed."""
         return {
             "mission_budget": self.mission_budget,
+            "assumed_stock_units": self.assumed_stock_units,
             "generator_version": self.generator_version,
         }
 

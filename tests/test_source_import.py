@@ -10,7 +10,7 @@ The properties under test are the ones the phase turns on:
 ```text
 nothing is history until confirmed    running an import writes no snapshot
 confirmation is ordinary              the same intake, schema and identity as the source editor
-nothing is invented                   a stock level is stated by the merchant or is zero evidence
+nothing is invented                   stock is the state the page published, or the count it did
 re-import converges                   an unchanged storefront writes no second snapshot
 isolation holds                       another merchant's import is an unknown one
 ```
@@ -135,7 +135,6 @@ async def test_a_merchant_imports_their_own_pages_and_reads_what_was_found(
     assert all(product["source_url"].startswith(server.origin) for product in body["products"])
     # Nothing has become source history, and the read says what stands in the way.
     assert body["summary"]["source_snapshot_id"] is None
-    assert body["stock_level_required"] is True
     assert body["confirmable"] is True
 
 
@@ -225,7 +224,7 @@ async def test_confirming_an_import_writes_an_ordinary_immutable_source_snapshot
             confirmed = await http.post(
                 f"{IMPORTS}/{record['summary']['import_id']}/confirm",
                 headers=bearer(token),
-                json={"stock_level": 8},
+                json={},
             )
             assert confirmed.status_code == 201
             outcome = confirmed.json()
@@ -239,34 +238,67 @@ async def test_confirming_an_import_writes_an_ordinary_immutable_source_snapshot
     assert snapshot["summary"]["product_count"] == 4
     assert snapshot["summary"]["policy_count"] == 2
     document = snapshot["document"]
-    # The stock level is the merchant's, and the document says so for every variant that got it.
-    sources = {
-        variant["merchant_metadata"]["import_stock_level_source"]
+    # Stock is what the merchant's own pages published and nothing else. A page saying out of
+    # stock is a count of zero, and a page saying in stock is a state with no count at all.
+    stock = {
+        (
+            variant["merchant_metadata"]["import_availability"],
+            variant["inventory_quantity"],
+            variant.get("availability"),
+        )
         for product in document["products"]
         for variant in product["variants"]
     }
-    assert sources == {"MERCHANT_SUPPLIED", "PAGE_OUT_OF_STOCK"}
-    quantities = {
-        variant["merchant_metadata"]["import_availability"]: variant["inventory_quantity"]
-        for product in document["products"]
-        for variant in product["variants"]
-    }
-    assert quantities["OUT_OF_STOCK"] == 0
-    assert quantities["IN_STOCK"] == 8
+    assert stock == {("OUT_OF_STOCK", 0, None), ("IN_STOCK", None, "IN_STOCK")}
     # Provenance that survives into source history is the page and the method, never a timestamp.
     metadata = document["products"][0]["merchant_metadata"]
     assert metadata["import_source_url"].startswith(server.origin)
     assert metadata["import_extraction"] in {"STRUCTURED_DATA", "PAGE_METADATA"}
 
 
-async def test_an_import_is_not_confirmable_until_the_stock_level_is_stated(
+async def test_a_page_publishing_only_in_stock_confirms_with_no_number_from_anybody(
     settings: Settings,
     session: AsyncSession,
     factory: async_sessionmaker[AsyncSession],
     issue_credential: CredentialIssuer,
 ) -> None:
-    """The refusal that keeps a public "In stock" from becoming a number nobody published."""
+    """The whole of the representation change, at the endpoint a merchant actually calls.
+
+    A public page saying "In stock" publishes no quantity. The confirmation asks for none, and
+    the snapshot it writes says `IN_STOCK` with a null count rather than a figure somebody chose.
+    """
     shop = await merchant(session, "import-stock")
+    token = await issue_credential(shop.id)
+    async with MerchantFixtureServer(Storefront.voltedge().routes) as server:
+        async for http in api(settings, factory):
+            record = (
+                await http.post(
+                    IMPORTS,
+                    headers=bearer(token),
+                    json=import_command([page(server.url("/p/charger"))], FIRST),
+                )
+            ).json()
+            confirmed = await http.post(
+                f"{IMPORTS}/{record['summary']['import_id']}/confirm",
+                headers=bearer(token),
+                json={},
+            )
+    assert confirmed.status_code == 201
+    snapshot = await MerchantSourceIntakeService(session).current(shop.id)
+    assert snapshot is not None
+    variant = snapshot.payload["products"][0]["variants"][0]
+    assert variant["inventory_quantity"] is None
+    assert variant["availability"] == "IN_STOCK"
+
+
+async def test_a_confirmation_body_naming_a_stock_level_is_refused_rather_than_ignored(
+    settings: Settings,
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+    issue_credential: CredentialIssuer,
+) -> None:
+    """The field a confirmation used to carry no longer exists, and says so."""
+    shop = await merchant(session, "import-old-field")
     token = await issue_credential(shop.id)
     async with MerchantFixtureServer(Storefront.voltedge().routes) as server:
         async for http in api(settings, factory):
@@ -280,10 +312,10 @@ async def test_an_import_is_not_confirmable_until_the_stock_level_is_stated(
             refused = await http.post(
                 f"{IMPORTS}/{record['summary']['import_id']}/confirm",
                 headers=bearer(token),
-                json={},
+                json={"stock_level": 8},
             )
-    assert refused.status_code == 409
-    assert refused.json()["error"] == "stock_level_required"
+    assert refused.status_code == 422
+    assert refused.json()["error"] == "invalid_request"
     assert await MerchantSourceIntakeService(session).current(shop.id) is None
 
 
@@ -304,7 +336,6 @@ async def test_an_import_whose_pages_all_say_out_of_stock_needs_no_stated_number
                     json=import_command([page(server.url("/p/dock"))], FIRST),
                 )
             ).json()
-            assert record["stock_level_required"] is False
             confirmed = await http.post(
                 f"{IMPORTS}/{record['summary']['import_id']}/confirm",
                 headers=bearer(token),
@@ -333,8 +364,8 @@ async def test_confirming_twice_is_one_submission_and_one_snapshot(
                 )
             ).json()
             target = f"{IMPORTS}/{record['summary']['import_id']}/confirm"
-            first = await http.post(target, headers=bearer(token), json={"stock_level": 3})
-            second = await http.post(target, headers=bearer(token), json={"stock_level": 3})
+            first = await http.post(target, headers=bearer(token), json={})
+            second = await http.post(target, headers=bearer(token), json={})
 
     assert first.json()["source_snapshot_id"] == second.json()["source_snapshot_id"]
     assert first.json()["already_confirmed"] is False
@@ -375,7 +406,7 @@ async def test_re_importing_an_unchanged_storefront_writes_no_second_snapshot(
             await http.post(
                 f"{IMPORTS}/{first['summary']['import_id']}/confirm",
                 headers=bearer(token),
-                json={"stock_level": 8},
+                json={},
             )
             second = (
                 await http.post(IMPORTS, headers=bearer(token), json=import_command(pages, SECOND))
@@ -383,7 +414,7 @@ async def test_re_importing_an_unchanged_storefront_writes_no_second_snapshot(
             again = await http.post(
                 f"{IMPORTS}/{second['summary']['import_id']}/confirm",
                 headers=bearer(token),
-                json={"stock_level": 8},
+                json={},
             )
             overview = (await http.get(SOURCES, headers=bearer(token))).json()
 
@@ -409,7 +440,7 @@ async def test_a_changed_storefront_becomes_a_new_version_and_leaves_the_old_one
             confirmed = await http.post(
                 f"{IMPORTS}/{first['summary']['import_id']}/confirm",
                 headers=bearer(token),
-                json={"stock_level": 8},
+                json={},
             )
             original = confirmed.json()["source_snapshot_id"]
             before = (await http.get(f"{SOURCES}/{original}", headers=bearer(token))).json()[
@@ -424,7 +455,7 @@ async def test_a_changed_storefront_becomes_a_new_version_and_leaves_the_old_one
             again = await http.post(
                 f"{IMPORTS}/{second['summary']['import_id']}/confirm",
                 headers=bearer(token),
-                json={"stock_level": 8},
+                json={},
             )
             after = (await http.get(f"{SOURCES}/{original}", headers=bearer(token))).json()[
                 "summary"
@@ -479,7 +510,7 @@ async def test_another_merchants_import_is_an_unknown_one(
             confirm = await http.post(
                 f"{IMPORTS}/{import_id}/confirm",
                 headers=bearer(other_token),
-                json={"stock_level": 4},
+                json={},
             )
             listed = await http.get(IMPORTS, headers=bearer(other_token))
 
@@ -771,7 +802,7 @@ async def test_an_imported_snapshot_builds_the_same_evaluation_setup_any_other_o
                 await http.post(
                     f"{IMPORTS}/{record['summary']['import_id']}/confirm",
                     headers=bearer(token),
-                    json={"stock_level": 6},
+                    json={},
                 )
             ).json()
 
@@ -821,7 +852,7 @@ async def test_no_part_of_an_import_needs_a_model_provider(
             confirmed = await http.post(
                 f"{IMPORTS}/{record['summary']['import_id']}/confirm",
                 headers=bearer(token),
-                json={"stock_level": 5},
+                json={},
             )
         # The storefront is the only host anything reached, and only for the named pages.
         assert {target for target, _ in server.requests} == {
@@ -855,7 +886,7 @@ async def test_an_import_that_finds_no_product_states_that_rather_than_creating_
             refused = await http.post(
                 f"{IMPORTS}/{record['summary']['import_id']}/confirm",
                 headers=bearer(token),
-                json={"stock_level": 1},
+                json={},
             )
     assert record["confirmable"] is False
     assert [blocker["code"] for blocker in record["blockers"]] == ["no_products"]
@@ -987,7 +1018,7 @@ async def test_a_failed_import_cannot_be_confirmed_into_anything(
             refused = await http.post(
                 f"{IMPORTS}/{record['summary']['import_id']}/confirm",
                 headers=bearer(token),
-                json={"stock_level": 1},
+                json={},
             )
     assert refused.status_code == 409
     assert refused.json()["error"] == "import_failed"
@@ -1078,8 +1109,8 @@ async def test_two_simultaneous_confirmations_produce_one_snapshot_and_no_error(
             ).json()
             target = f"{IMPORTS}/{record['summary']['import_id']}/confirm"
             both = await asyncio.gather(
-                http.post(target, headers=bearer(token), json={"stock_level": 4}),
-                http.post(target, headers=bearer(token), json={"stock_level": 4}),
+                http.post(target, headers=bearer(token), json={}),
+                http.post(target, headers=bearer(token), json={}),
             )
 
     assert [response.status_code for response in both] == [201, 201]
@@ -1098,7 +1129,6 @@ async def test_two_simultaneous_confirmations_produce_one_snapshot_and_no_error(
     assert len(snapshots) == 1
     linked = (await session.execute(select(MerchantSourceImport))).scalars().one()
     assert linked.source_snapshot_id is not None
-    assert linked.stock_level == 4
 
 
 async def test_a_retry_after_a_lost_link_answers_with_the_snapshot_that_already_exists(
@@ -1107,14 +1137,13 @@ async def test_a_retry_after_a_lost_link_answers_with_the_snapshot_that_already_
     factory: async_sessionmaker[AsyncSession],
     issue_credential: CredentialIssuer,
 ) -> None:
-    """The crash between the two writes, including a retry that states a different stock level.
+    """The crash between the two writes.
 
     The snapshot is committed by the intake and the import row is linked afterwards, so a process
     that died between them leaves a snapshot with no link. The state is reproduced by submitting
     under the key the import derives, which is exactly what the first half of a confirmation does
-    and all it managed to do. The retry finds that submission, repairs the link and says the import
-    was already confirmed, rather than refusing forever because the second attempt named a
-    different number.
+    and all it managed to do. The retry finds that submission, repairs the link and says the
+    import was already confirmed, rather than refusing forever.
     """
     shop = await merchant(session, "import-lost-link")
     token = await issue_credential(shop.id)
@@ -1132,7 +1161,7 @@ async def test_a_retry_after_a_lost_link_answers_with_the_snapshot_that_already_
             service = service_module.MerchantSourceImportService(session)
             stored = await service.read(shop.id, import_id)
             document = SourceDocumentInput.model_validate(
-                canonical_document(SourceDraft.of(stored.draft), stock_level=3)
+                canonical_document(SourceDraft.of(stored.draft))
             )
             orphaned = await MerchantSourceIntakeService(session).submit(
                 shop.id,
@@ -1146,7 +1175,7 @@ async def test_a_retry_after_a_lost_link_answers_with_the_snapshot_that_already_
             retried = await http.post(
                 f"{IMPORTS}/{import_id}/confirm",
                 headers=bearer(token),
-                json={"stock_level": 9},
+                json={},
             )
 
     assert retried.status_code == 201
@@ -1156,9 +1185,6 @@ async def test_a_retry_after_a_lost_link_answers_with_the_snapshot_that_already_
     session.expire_all()
     repaired = (await session.execute(select(MerchantSourceImport))).scalars().one()
     assert repaired.source_snapshot_id == snapshot_id
-    # No stock level, because this attempt named 9 and the snapshot was built from 3. Recording it
-    # would have the row state a figure the snapshot does not carry.
-    assert repaired.stock_level is None
 
 
 async def test_a_page_that_cannot_become_a_source_document_is_refused_rather_than_raised(

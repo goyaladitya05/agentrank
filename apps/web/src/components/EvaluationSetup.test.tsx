@@ -9,6 +9,8 @@ const CATALOG = {
   products: 3,
   variants: 5,
   purchasable_variants: 4,
+  simulated_stock_variants: 0,
+  assumed_stock_units: 3,
   currencies: ["INR"],
   categories: ["cables", "chargers"],
 } as const;
@@ -228,5 +230,34 @@ describe("<EvaluationSetupPanel>", () => {
     for (const forbidden of ["Unlock", "AI readiness", "Optimize", "score"]) {
       expect(html).not.toContain(forbidden);
     }
+  });
+});
+
+describe("<EvaluationSetupPanel> simulated stock", () => {
+  it("says plainly when no stock level was assumed", () => {
+    const html = render(setup({ workspace: WORKSPACE, planned: null, buildable: false }));
+
+    expect(html).toContain("Every stock level came from your own merchant information");
+  });
+
+  it("reports an assumed depth as an assumption rather than as the merchant's stock", () => {
+    const assumed: EvaluationWorkspace = {
+      ...WORKSPACE,
+      catalog: { ...CATALOG, simulated_stock_variants: 4, assumed_stock_units: 3 },
+    };
+    const html = render(setup({ workspace: assumed, planned: null, buildable: false }));
+
+    expect(html).toContain("4 of 5 variants hold 3 units");
+    expect(html).toContain("This is an evaluation assumption and not your stock");
+  });
+
+  it("says nothing was recorded rather than nothing was assumed", () => {
+    const older: EvaluationWorkspace = {
+      ...WORKSPACE,
+      catalog: { ...CATALOG, simulated_stock_variants: null, assumed_stock_units: null },
+    };
+    const html = render(setup({ workspace: older, planned: null, buildable: false }));
+
+    expect(html).toContain("Not recorded for this setup");
   });
 });

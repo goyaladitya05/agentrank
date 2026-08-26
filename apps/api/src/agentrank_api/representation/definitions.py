@@ -40,6 +40,23 @@ class ValueState(StrEnum):
     NOT_APPLICABLE = "NOT_APPLICABLE"
 
 
+class SourceAvailability(StrEnum):
+    """Whether a merchant says a variant can be bought, separately from how many there are.
+
+    Public storefronts publish a state and almost never a count, so a source model that could
+    only hold a count could not record an ordinary storefront honestly. These three are what a
+    merchant can actually tell you.
+
+    `UNKNOWN` is an answer rather than a missing field. A page that says nothing about stock has
+    stated that the merchant did not publish it, and that is different from saying there is none.
+    Nothing downstream is allowed to turn it into either of the other two.
+    """
+
+    IN_STOCK = "IN_STOCK"
+    OUT_OF_STOCK = "OUT_OF_STOCK"
+    UNKNOWN = "UNKNOWN"
+
+
 class AttributeKind(StrEnum):
     TEXT = "TEXT"
     INTEGER = "INTEGER"
@@ -150,22 +167,64 @@ class CommerceAttribute:
 
 @dataclass(frozen=True, slots=True)
 class SourceVariant:
+    """One purchasable thing as the merchant states it, stock included and never invented.
+
+    Availability and quantity are one fact recorded at two precisions. A merchant who published a
+    count has said everything a state could say and more; a merchant who published only "in
+    stock" has said something no integer can express without inventing the rest of it.
+
+    ```text
+    inventory_quantity  0        availability is OUT_OF_STOCK
+    inventory_quantity  n > 0    availability is IN_STOCK, and there are exactly n
+    inventory_quantity  None     availability is IN_STOCK with no count, or UNKNOWN
+    ```
+
+    Out of stock is deliberately not a countless state. "Out of stock" is an exact quantity, and
+    it is zero, so recording it as one is reading the merchant rather than deciding for them.
+    That leaves exactly two things a count cannot say, which is why those two are the only states
+    a countless variant may hold.
+
+    None of this is authoritative inventory. The commerce runtime owns what can be reserved and
+    sold; this is what the merchant said about themselves, frozen.
+    """
+
     sku: str
     label: str | None
     price_amount_minor: int
     currency: str
-    inventory_quantity: int
+    availability: SourceAvailability
+    inventory_quantity: int | None
     merchant_metadata: dict[str, Any]
 
     def __post_init__(self) -> None:
-        if not self.sku.strip() or self.price_amount_minor < 0 or self.inventory_quantity < 0:
-            raise ValueError("source variant has an invalid identity, price or inventory")
+        if not self.sku.strip() or self.price_amount_minor < 0:
+            raise ValueError("source variant has an invalid identity or price")
+        if self.inventory_quantity is not None and self.inventory_quantity < 0:
+            raise ValueError("source variant inventory must not be negative")
         if not re.fullmatch(CURRENCY_PATTERN, self.currency):
             raise ValueError("source variant currency must be ISO 4217")
+        if self.inventory_quantity is not None and (
+            self.availability is not availability_of(self.inventory_quantity)
+        ):
+            raise ValueError("source variant availability contradicts the exact quantity beside it")
+        if self.inventory_quantity is None and self.availability is SourceAvailability.OUT_OF_STOCK:
+            raise ValueError("an out of stock source variant states a quantity of zero")
         _json_value(self.merchant_metadata, "merchant metadata")
 
+    @property
+    def purchasable(self) -> bool:
+        """Whether the merchant said this can be bought. Unknown is not a yes."""
+        return self.availability is SourceAvailability.IN_STOCK
+
     def payload(self) -> dict[str, Any]:
-        return {
+        """The canonical stored shape, which records each fact exactly once.
+
+        `availability` is written only where there is no quantity to read it off. That is what
+        keeps every document written before availability existed serializing to the bytes it was
+        stored as, so its content hash, its compiler provenance and every representation derived
+        from it stay exactly what they were.
+        """
+        body: dict[str, Any] = {
             "sku": self.sku,
             "label": self.label,
             "price_amount_minor": self.price_amount_minor,
@@ -173,6 +232,41 @@ class SourceVariant:
             "inventory_quantity": self.inventory_quantity,
             "merchant_metadata": self.merchant_metadata,
         }
+        if self.inventory_quantity is None:
+            body["availability"] = self.availability.value
+        return body
+
+
+def availability_of(quantity: int) -> SourceAvailability:
+    """The availability an exact quantity already states. Zero is out of stock and nothing else."""
+    return SourceAvailability.OUT_OF_STOCK if quantity == 0 else SourceAvailability.IN_STOCK
+
+
+def read_availability(
+    quantity: int | None, stated: str | None, *, where: str
+) -> SourceAvailability:
+    """One stored or submitted variant's availability, from the two fields that can carry it.
+
+    Tolerant in one direction only. A quantity with no state is read as the state it implies,
+    which is how every document written before this field existed is read. A state beside a
+    quantity is accepted when the two agree and refused when they do not, so no reader ever has
+    to decide which of two contradicting facts a merchant meant.
+    """
+    if quantity is None:
+        if stated is None:
+            raise ValueError(f"{where} states neither a stock quantity nor an availability")
+        return _availability_member(stated, where)
+    implied = availability_of(quantity)
+    if stated is not None and _availability_member(stated, where) is not implied:
+        raise ValueError(f"{where} states an availability its own stock quantity contradicts")
+    return implied
+
+
+def _availability_member(stated: str, where: str) -> SourceAvailability:
+    try:
+        return SourceAvailability(stated)
+    except ValueError as unknown:
+        raise ValueError(f"{where} states an availability AgentRank does not define") from unknown
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,6 +349,15 @@ class CommerceVariant:
             for index, attribute in enumerate(self.attributes)
         ):
             raise ValueError("Commerce IR attribute keys must be unique per variant")
+        # Availability is a state and never a count. A representation is a discovery surface, so
+        # it says whether a buyer can expect to be able to buy the thing; how many there are is a
+        # question only the commerce runtime can answer, and it answers it at reservation time.
+        # UNKNOWN is admissible and load bearing: a merchant who published no availability has a
+        # representation that says so rather than one that says no.
+        if not isinstance(self.availability.value, str) or self.availability.value not in {
+            member.value for member in ValueState
+        }:
+            raise ValueError("a Commerce IR availability fact must use a four-state value")
         for state in self.compatibility.values():
             if not isinstance(state.value, str) or state.value not in {
                 member.value for member in ValueState

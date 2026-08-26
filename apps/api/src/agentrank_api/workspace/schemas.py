@@ -47,11 +47,19 @@ class EvaluationCatalogView(BaseModel):
     `purchasable_variants` is what a buyer could actually take away today, which is not the same
     as how many variants the merchant listed. A merchant whose whole catalog is out of stock
     reads the difference here rather than discovering it as a benchmark full of abstentions.
+
+    `simulated_stock_variants` is how many of those lines hold a depth AgentRank supplied because
+    the merchant published that they are in stock and not how many there are. It is reported
+    beside the depth itself, so a merchant can see which part of their evaluation world is their
+    own evidence and which part is a stated assumption. Both are null on a workspace built before
+    a source document could omit a quantity, which is an absence rather than a zero.
     """
 
     products: int
     variants: int
     purchasable_variants: int
+    simulated_stock_variants: int | None
+    assumed_stock_units: int | None
     currencies: list[str]
     categories: list[str]
 
@@ -61,6 +69,8 @@ class EvaluationCatalogView(BaseModel):
             products=summary.products,
             variants=summary.variants,
             purchasable_variants=summary.purchasable_variants,
+            simulated_stock_variants=summary.simulated_stock_variants,
+            assumed_stock_units=summary.assumed_stock_units,
             currencies=list(summary.currencies),
             categories=list(summary.categories),
         )

@@ -103,12 +103,13 @@ test("a merchant imports their own public pages into their first source snapshot
   // A script on the merchant's page is not merchant evidence and never became text.
   await expect(review).not.toContainText("never merchant evidence");
 
-  // The one number no public page publishes is asked for, once, and is labelled as the
-  // merchant's statement rather than as something imported.
+  // Availability is read from the pages and no number is asked of anybody. The form used to ask
+  // for a stock level, because a source variant needed an exact count and no public page
+  // publishes one; that was the last place this workflow put a figure nobody had published into
+  // a merchant's own immutable history, and it is gone.
   const confirm = page.getByRole("form", { name: "Create a source snapshot from this import" });
-  await expect(confirm).toContainText("These pages say what is available and not how much of it");
   await expect(confirm).toContainText("Nothing is compiled and no evaluation runs");
-  await confirm.getByLabel("Evaluation stock level").fill("12");
+  await expect(confirm.getByLabel("Evaluation stock level")).toHaveCount(0);
   await confirm.getByRole("button", { name: "Create source snapshot" }).click();
 
   await expect(page.getByText("Source snapshot merchant-source@1 created")).toBeVisible();
@@ -118,7 +119,7 @@ test("a merchant imports their own public pages into their first source snapshot
   await page.getByRole("link", { name: "Open this source snapshot" }).click();
   await expect(page.getByRole("heading", { name: "Source snapshot" }).first()).toBeVisible();
   await expect(page.getByText("Imported from your own pages")).toBeVisible();
-  await expect(page.getByText("import_stock_level_source").first()).toBeVisible();
+  await expect(page.getByText("import_availability").first()).toBeVisible();
 
   // And the ordinary Phase 5C bootstrap builds an evaluation setup from it, with no compiler run,
   // no published representation and no operator anywhere in the workflow.
