@@ -9,7 +9,10 @@ serialized form stay together, and so that routes can reference it without impor
 `main` and creating a cycle.
 """
 
-from pydantic import BaseModel
+from collections.abc import Iterable, Mapping
+from typing import Any
+
+from pydantic import BaseModel, ValidationError
 
 
 class AgentRankError(Exception):
@@ -128,6 +131,28 @@ class InvalidField(BaseModel):
     message: str
 
 
+class InvalidRequestError(AgentRankError):
+    """A request this application could not turn into the thing the caller named.
+
+    Distinct from a `ConflictError`, where the request was fine and the state refused it, and
+    distinct from the framework's own body validation, which runs before a route is entered. This
+    is for the refusals a route discovers afterwards: a domain constructor that finds two products
+    sharing a SKU, a review correction whose excerpt is not in the field it cites, a draft the
+    source schema will not accept.
+
+    It carries `fields` for the same reason `InvalidRequestResponse` does, so a caller that wants
+    to fix one field is not left parsing a sentence, and it is answered by the same handler that
+    answers the framework's own, so every 422 this application produces has one shape.
+    """
+
+    reason = "invalid_request"
+
+    def __init__(self, detail: str, *, fields: list[InvalidField] | None = None) -> None:
+        super().__init__(detail)
+        self.detail = detail
+        self.fields = fields or []
+
+
 class InvalidRequestResponse(ErrorResponse):
     """A request body this application could not read, said in a way an agent can act on.
 
@@ -137,3 +162,65 @@ class InvalidRequestResponse(ErrorResponse):
     """
 
     fields: list[InvalidField]
+
+
+# What a refusal may say about where a body was wrong. All three bounds exist for one reason: a
+# location part can be a field name the caller invented, and a body rejected for an unexpected
+# field puts that name into the location. Without a bound on its length a megabyte of key name
+# comes back twice over, in the location and again in the sentence built from it.
+MAX_INVALID_FIELDS = 20
+MAX_FIELD_LOCATION_PARTS = 12
+MAX_FIELD_LOCATION_PART_LENGTH = 64
+MAX_FIELD_MESSAGE_LENGTH = 200
+
+# The longest sentence a refusal built from a domain message may carry. A domain refusal is this
+# repository's own prose and is short, and this is the bound that makes that a property rather
+# than a habit.
+MAX_REFUSAL_DETAIL_LENGTH = 400
+
+
+def shortened(value: str, limit: int) -> str:
+    """One string cut to a bound, saying so rather than looking whole."""
+    return value if len(value) <= limit else value[: limit - 3] + "..."
+
+
+def bounded_fields(entries: Iterable[Mapping[str, Any]]) -> list[InvalidField]:
+    """Pydantic's own error entries as the bounded, value-free shape this application returns.
+
+    The failing value is never carried across. It is the caller's own, so returning it leaks
+    nothing, and it is also the caller's own in size and in shape, which is the whole problem.
+    """
+    return [
+        InvalidField(
+            location=[
+                shortened(str(part), MAX_FIELD_LOCATION_PART_LENGTH)
+                for part in entry.get("loc", ())
+            ][:MAX_FIELD_LOCATION_PARTS],
+            message=shortened(str(entry.get("msg", "is not valid")), MAX_FIELD_MESSAGE_LENGTH),
+        )
+        for entry in list(entries)[:MAX_INVALID_FIELDS]
+    ]
+
+
+def refusal_detail(fields: list[InvalidField]) -> str:
+    """The sentence a caller reading only prose gets, built from the first few field refusals."""
+    named = "; ".join(
+        f"{'.'.join(field.location) or 'body'}: {field.message}" for field in fields[:3]
+    )
+    return named or "the request body could not be read"
+
+
+def invalid_request(error: ValueError) -> InvalidRequestError:
+    """One refusal a route discovered after the body parsed, in this application's own shape.
+
+    `pydantic.ValidationError` is a subclass of `ValueError`, so a route that catches `ValueError`
+    and puts `str(error)` in a response is a route that renders pydantic's own report, which
+    includes the failing input value, is unbounded in length and carries a documentation URL. That
+    is exactly what the framework's own handler is replaced to avoid, so it is avoided here too:
+    a validation error becomes bounded, value-free fields, and every other domain refusal becomes
+    the bounded sentence this repository wrote.
+    """
+    if isinstance(error, ValidationError):
+        fields = bounded_fields(error.errors())
+        return InvalidRequestError(refusal_detail(fields), fields=fields)
+    return InvalidRequestError(shortened(str(error), MAX_REFUSAL_DETAIL_LENGTH))

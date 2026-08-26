@@ -22,8 +22,16 @@ const CONFIDENCE: Record<string, string> = {
   REVIEW_REQUIRED: "Needs your decision",
 };
 
+const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export default async function CompilerRunPage({ params }: { params: Promise<{ runId: string }> }) {
   const { runId } = await params;
+  // A malformed identifier is an address for something that does not exist, not a server error.
+  // Without this the API answers 422, which the console renders as "AgentRank answered HTTP 422"
+  // rather than as the not-found page every sibling route gives for the same mistake.
+  if (!UUID_SHAPE.test(runId)) {
+    return notFound();
+  }
   const outcome = await loadInsight(
     `/api/v1/compiler/runs/${encodeURIComponent(runId)}`,
     decodeCompilerRun,

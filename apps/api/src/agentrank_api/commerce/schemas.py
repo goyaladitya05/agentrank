@@ -11,7 +11,7 @@ an amount is an integer of minor units and its currency is next to it.
 import uuid
 from typing import Any, Self
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agentrank_api.commerce.models import Merchant, Product, Variant
 from agentrank_api.commerce.search import (
@@ -120,6 +120,11 @@ class ProductSearchRequest(BaseModel):
     There is no `merchant_id`. It was a field until Phase 1H and the merchant is now the
     authenticated one, so a search cannot be pointed at somebody else's shelves.
     """
+
+    # A field this schema does not define is a field a caller believed would take effect, and
+    # ignoring one is how a request comes to mean something the caller did not intend: a body
+    # spelling `maxQuantity` would create an unlimited mandate and be told 201.
+    model_config = ConfigDict(extra="forbid")
 
     query: str | None = Field(default=None, max_length=200)
     max_price_amount_minor: int | None = Field(default=None, ge=0)

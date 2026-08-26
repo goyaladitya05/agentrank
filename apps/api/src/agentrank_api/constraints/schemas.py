@@ -18,7 +18,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Self
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agentrank_api.checkout.intent_authorization import (
     IntentConstraintDecision,
@@ -50,6 +50,11 @@ class CreateIntentConstraintsRequest(BaseModel):
     stored. At least one semantic constraint is required, because a constraint set with
     nothing in it is the absence of an authorization rather than a permissive one.
     """
+
+    # A field this schema does not define is a field a caller believed would take effect, and
+    # ignoring one is how a request comes to mean something the caller did not intend: a body
+    # spelling `maxQuantity` would create an unlimited mandate and be told 201.
+    model_config = ConfigDict(extra="forbid")
 
     constraints: list[HardConstraintInput] = Field(min_length=1, max_length=MAX_HARD_CONSTRAINTS)
 

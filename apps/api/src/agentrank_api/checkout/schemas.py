@@ -18,7 +18,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any, Self
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agentrank_api.checkout.authorization import (
     CheckoutAuthorizationDecision,
@@ -53,6 +53,11 @@ _UNVALIDATED_MERCHANT = uuid.UUID(int=0)
 
 
 class CheckoutItemInput(BaseModel):
+    # A field this schema does not define is a field a caller believed would take effect, and
+    # ignoring one is how a request comes to mean something the caller did not intend: a body
+    # spelling `maxQuantity` would create an unlimited mandate and be told 201.
+    model_config = ConfigDict(extra="forbid")
+
     variant_id: uuid.UUID
     quantity: int = Field(gt=0)
 
@@ -72,6 +77,11 @@ class CreateCheckoutRequest(BaseModel):
     cannot be pushed arbitrarily far out, because a quote that lasts a year is a promise to
     honour a price nobody rechecked.
     """
+
+    # A field this schema does not define is a field a caller believed would take effect, and
+    # ignoring one is how a request comes to mean something the caller did not intend: a body
+    # spelling `maxQuantity` would create an unlimited mandate and be told 201.
+    model_config = ConfigDict(extra="forbid")
 
     mandate_id: uuid.UUID
     items: list[CheckoutItemInput] = Field(min_length=1, max_length=MAX_CHECKOUT_LINES)

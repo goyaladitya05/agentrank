@@ -33,8 +33,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.types import Receive, Scope, Send
 
 from agentrank_api.config import Settings
+from agentrank_api.errors import MAX_INVALID_FIELDS
 from agentrank_api.limits import BodyLimit, RequestBodyLimit, _path, _within_depth
-from agentrank_api.main import MAX_INVALID_FIELDS, create_app
+from agentrank_api.main import create_app
 from agentrank_api.payments.fake import FakePaymentProvider
 
 pytestmark = pytest.mark.anyio
@@ -85,9 +86,13 @@ async def test_a_deeply_nested_body_is_a_refusal_on_every_route_with_a_schema(
     )
     for name, answer in answers.items():
         body = answer.json()
-        assert body["error"] == "invalid_request", name
+        # One 422 shape whichever layer refused. A body past the declared nesting bound is
+        # refused by the middleware before anything parses it; one inside the bound and wrong
+        # in some other way is refused by the validation handler. Both carry `error`, `detail`
+        # and `fields`, because the OpenAPI document declares one 422 model for every operation.
+        assert body["error"] in {"invalid_request", "request_too_deeply_nested"}, name
         assert isinstance(body["detail"], str), name
-        assert body["fields"], name
+        assert isinstance(body["fields"], list), name
         # The value is never encoded, so a body of a thousand brackets does not become a
         # response of a thousand brackets.
         assert "[[[" not in answer.text, name
@@ -101,28 +106,29 @@ async def test_a_deeply_nested_body_is_refused_before_authentication(
 ) -> None:
     """An anonymous caller never reached the crash, and still must not reach a 500.
 
-    Body field errors are collected inside dependency solving and after the dependencies run, so
-    `require_merchant` refuses first and no validation error is ever built. Asserted rather than
-    assumed, because the ordering is the framework's and not this application's.
+    The bound is in front of routing, so it is also in front of authentication, and that is the
+    same rule the merchant source path has always answered under. What an anonymous caller learns
+    is a fact about the request they sent rather than anything about this merchant, this
+    deployment or what exists at the address: the same refusal, byte for byte, whether the path
+    they aimed it at exists or not.
     """
     http = client(settings, factory)
 
-    answer = http.post(
+    real = http.post(
         RUNS,
         headers={"Content-Type": "application/json"},
         content=nested("source_snapshot_id", CRASHING_DEPTH),
     )
+    invented = http.post(
+        "/api/v1/no-such-route",
+        headers={"Content-Type": "application/json"},
+        content=nested("source_snapshot_id", CRASHING_DEPTH),
+    )
 
-    # 401 rather than 422, because refusing to say anything about a request from a caller who
-    # has not said who they are is the older rule and it still wins. What matters is that it is
-    # not a 500, and that the answer is byte for byte the one any unauthenticated request gets.
-    assert answer.status_code == 401
-    assert answer.json() == {
-        "error": "unauthenticated",
-        "detail": "a valid merchant API credential is required",
-        "resource": None,
-        "identifier": None,
-    }
+    assert real.status_code == 422
+    assert real.json()["error"] == "request_too_deeply_nested"
+    assert real.json()["fields"] == []
+    assert invented.text == real.text
 
 
 async def test_a_validation_refusal_names_the_field_and_echoes_no_value(
@@ -169,7 +175,7 @@ async def test_a_refusal_does_not_grow_with_the_body_that_caused_it(
     merchant, _ = await merchant_with_source(session, "boundary-amplify-shop")
     token = await issue_credential(merchant.id)
     http = client(settings, factory)
-    invented = "K" * 100_000
+    invented = "K" * 10_000
     body = f'{{"source_snapshot_id": "{uuid.uuid7()}", "{invented}": 1}}'
 
     answer = http.post(
@@ -269,3 +275,107 @@ async def test_the_body_limit_leaves_every_other_path_alone() -> None:
         send,
     )
     assert sent[0]["status"] == 413
+
+
+async def test_a_body_naming_a_field_a_schema_lacks_is_refused_rather_than_ignored(
+    settings: Settings,
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+    issue_credential: CredentialIssuer,
+) -> None:
+    """Every merchant-facing command refuses an unknown field, including the ones about money.
+
+    A schema that ignores unknown fields answers a caller yes and then does something else. Two
+    of these were live hazards rather than tidiness: a body spelling `maxQuantity` created a
+    mandate with no quantity ceiling at all and was told 201, and a body spelling
+    `idempotencyKey` created a payment with no idempotency key, so the caller's retry after a
+    lost response became a second operation rather than the same one.
+    """
+    merchant, _ = await merchant_with_source(session, "unknown-field-shop")
+    token = await issue_credential(merchant.id)
+    http = client(settings, factory)
+    headers = {**bearer(token), "Content-Type": "application/json"}
+
+    answers = {
+        "mandate": http.post(
+            "/api/v1/commerce/mandates",
+            headers=headers,
+            json={
+                "maxQuantity": 3,
+                "max_total_amount_minor": 5000,
+                "currency": "INR",
+                "valid_until": "2030-01-01T00:00:00Z",
+            },
+        ),
+        "checkout": http.post(
+            "/api/v1/commerce/checkouts",
+            headers=headers,
+            json={"merchant_id": str(merchant.id), "items": []},
+        ),
+        "search": http.post(
+            "/api/v1/commerce/products/search", headers=headers, json={"merchantSlug": "x"}
+        ),
+    }
+
+    assert {name: answer.status_code for name, answer in answers.items()} == dict.fromkeys(
+        answers, 422
+    )
+    for name, answer in answers.items():
+        assert answer.json()["error"] == "invalid_request", name
+
+
+async def test_a_route_refusal_carries_the_error_contract_every_other_one_does(
+    settings: Settings,
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+    issue_credential: CredentialIssuer,
+) -> None:
+    """A 422 a route decides is the same shape as a 422 the framework decides.
+
+    These used to be raised as a bare `HTTPException`, whose body carries only `detail`: no
+    `error` code and no `fields`, and nothing a client generated from this application's own
+    OpenAPI document could decode, because that document declares one 422 model for every
+    operation.
+    """
+    merchant, _ = await merchant_with_source(session, "refusal-shape-shop")
+    token = await issue_credential(merchant.id)
+    http = client(settings, factory)
+    duplicated = {
+        "request_key": "duplicate-sku",
+        "products": [
+            {
+                "external_id": "P1",
+                "title": "One",
+                "variants": [
+                    {
+                        "sku": "SAME",
+                        "price_amount_minor": 100,
+                        "currency": "INR",
+                        "availability": "IN_STOCK",
+                    }
+                ],
+            },
+            {
+                "external_id": "P2",
+                "title": "Two",
+                "variants": [
+                    {
+                        "sku": "SAME",
+                        "price_amount_minor": 100,
+                        "currency": "INR",
+                        "availability": "IN_STOCK",
+                    }
+                ],
+            },
+        ],
+    }
+
+    answer = http.post(SOURCES, headers=bearer(token), json=duplicated)
+
+    assert answer.status_code == 422
+    body = answer.json()
+    assert body["error"] == "invalid_request"
+    assert "unique" in body["detail"]
+    assert body["fields"] == []
+    # A domain refusal is this repository's own prose, and it stays bounded even so.
+    assert len(body["detail"]) <= 400

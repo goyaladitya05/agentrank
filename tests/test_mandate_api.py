@@ -119,14 +119,14 @@ async def test_an_unknown_mandate_is_a_structured_404(
     assert response.json()["identifier"] == str(missing)
 
 
-async def test_a_merchant_named_in_the_body_is_ignored(
+async def test_a_merchant_named_in_the_body_is_refused(
     catalog_settings: Settings, session: AsyncSession, merchant_id: uuid.UUID, token: str
 ) -> None:
-    """The field is gone, and a caller who sends it anyway does not get what they asked for.
+    """The field is gone, and a caller who sends it anyway is refused rather than ignored.
 
-    Worth asserting rather than assuming. Pydantic ignores unknown fields by default, so
-    removing `merchant_id` from the request model would have silently accepted a body that
-    still named one, and a reader of the old API would have every reason to keep sending it.
+    A caller who tries to choose their own tenant and is answered 201 has been told yes. The
+    mandate would have been written against the authenticated merchant either way, so nothing
+    was ever authorized wrongly, and a reader of the old API had every reason to keep sending it.
     """
     other = await MerchantRepository(session).create(slug="volt-works", name="Volt")
     await session.commit()
@@ -134,8 +134,9 @@ async def test_a_merchant_named_in_the_body_is_ignored(
     with TestClient(create_app(catalog_settings), headers=bearer(token)) as client:
         created = client.post(MANDATES_URL, json=creation_body(merchant_id=str(other.id)))
 
-    assert created.status_code == 201
-    assert created.json()["merchant_id"] == str(merchant_id)
+    assert created.status_code == 422
+    assert created.json()["error"] == "invalid_request"
+    assert str(merchant_id) not in created.text
 
 
 async def test_malformed_authorizations_are_refused_with_422(

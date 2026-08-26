@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import InterfaceError, OperationalError, SQLAlchemyError
 
 from agentrank_api.config import Settings, get_settings
 from agentrank_api.database import create_engine, create_session_factory
@@ -15,10 +15,12 @@ from agentrank_api.errors import (
     AuthenticationError,
     ConflictError,
     ErrorResponse,
-    InvalidField,
+    InvalidRequestError,
     InvalidRequestResponse,
     NotFoundError,
     UpstreamError,
+    bounded_fields,
+    refusal_detail,
 )
 from agentrank_api.importer.schemas import (
     MAX_IMPORT_REQUEST_BYTES,
@@ -51,18 +53,10 @@ from agentrank_api.routes import (
 )
 from agentrank_api.schema import EXPECTED_REVISION
 
-# What a validation refusal may say about one field.
-#
-# All three bounds exist for one reason: a location part can be a field name the caller invented.
-# A body rejected for an unexpected field puts that name into the location, so without a bound on
-# its length a megabyte of key name comes back twice over, in the location and again in the
-# sentence built from it. The number of parts and the message length are bounded for symmetry;
-# neither is reachable by a caller, because the deepest location any schema here produces is seven
-# parts and every message is a validator's own fixed string.
-MAX_INVALID_FIELDS = 20
-MAX_FIELD_LOCATION_PARTS = 12
-MAX_FIELD_LOCATION_PART_LENGTH = 64
-MAX_FIELD_MESSAGE_LENGTH = 200
+# The bound every request body takes unless its own path names a tighter one. See the middleware
+# for why there is a default at all.
+MAX_REQUEST_BYTES = 64 * 1024
+MAX_REQUEST_DEPTH = 12
 
 
 def create_app(
@@ -192,24 +186,27 @@ def create_app(
         Nothing here is recursive and the size of a refusal does not follow the size of what was
         refused.
         """
-        fields = [
-            InvalidField(
-                location=[
-                    _shortened(str(part), MAX_FIELD_LOCATION_PART_LENGTH)
-                    for part in entry.get("loc", ())
-                ][:MAX_FIELD_LOCATION_PARTS],
-                message=_shortened(str(entry.get("msg", "is not valid")), MAX_FIELD_MESSAGE_LENGTH),
-            )
-            for entry in error.errors()[:MAX_INVALID_FIELDS]
-        ]
-        named = "; ".join(
-            f"{'.'.join(field.location) or 'body'}: {field.message}" for field in fields[:3]
-        )
+        fields = bounded_fields(error.errors())
         body = InvalidRequestResponse(
-            error="invalid_request",
-            detail=named or "the request body could not be read",
-            fields=fields,
+            error="invalid_request", detail=refusal_detail(fields), fields=fields
         )
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, content=body.model_dump()
+        )
+
+    @app.exception_handler(InvalidRequestError)
+    async def handle_invalid_command(_: Request, error: InvalidRequestError) -> JSONResponse:
+        """A refusal a route discovered after the body parsed, in the same shape as one before it.
+
+        Routes used to answer these with `HTTPException(422, detail=str(error))`, which produced
+        a body carrying only `detail`: no `error` code, no `fields`, and nothing a client
+        generated from this application's own OpenAPI document could decode, because that
+        document declares `InvalidRequestResponse` as the 422 model for every operation. Worse,
+        `pydantic.ValidationError` is a `ValueError`, so a route catching one rendered pydantic's
+        report verbatim, including the caller's own input value. Both are closed by there being
+        one handler and one shape.
+        """
+        body = InvalidRequestResponse(error=error.reason, detail=error.detail, fields=error.fields)
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, content=body.model_dump()
         )
@@ -257,13 +254,23 @@ def create_app(
         body = ErrorResponse(error=error.reason, detail=error.detail)
         return JSONResponse(status_code=status.HTTP_502_BAD_GATEWAY, content=body.model_dump())
 
-    @app.exception_handler(SQLAlchemyError)
+    @app.exception_handler(OperationalError)
+    @app.exception_handler(InterfaceError)
     async def handle_database_unavailable(_: Request, error: SQLAlchemyError) -> JSONResponse:
-        """Refuse a request when this application's database cannot establish a fact.
+        """Refuse a request when this application cannot reach its database.
 
         This is infrastructure, not a merchant business answer and not a generic 500. The stable
         response lets the trusted benchmark endpoint distinguish a database outage from a
         merchant surface failure without exposing driver detail to a buyer.
+
+        Narrow on purpose, and it used to be registered on `SQLAlchemyError` instead. Every
+        database error this application raises is a subclass of that, so an unmapped constraint
+        violation, a query against a schema this build was not written for, and a database that
+        is genuinely down all answered `503 database_unavailable`. Two of those three are bugs,
+        and `agentrank_api.conflicts` re-raises an unrecognised violation expressly so that a bug
+        looks like one; answering 503 took that away and sent an operator to look at PostgreSQL
+        instead. `OperationalError` and `InterfaceError` are the two SQLAlchemy raises when the
+        connection itself is the problem, which is the only thing this response claims.
         """
         logging.getLogger(__name__).warning("database request failed", exc_info=error)
         body = ErrorResponse(error="database_unavailable", detail="the database is unavailable")
@@ -313,6 +320,12 @@ def create_app(
                 max_bytes=MAX_IMPORT_REQUEST_BYTES, max_depth=MAX_IMPORT_REQUEST_DEPTH
             ),
         },
+        # Every other body this application accepts. Not a considered figure for any one route
+        # and deliberately generous: the largest of them is a checkout with its whole line
+        # allowance or a mandate with its whole constraint allowance, both of which are orders of
+        # magnitude inside this. What it replaces is nothing at all, which is what an
+        # authenticated merchant posting half a gigabyte to a commerce command used to get.
+        default=BodyLimit(max_bytes=MAX_REQUEST_BYTES, max_depth=MAX_REQUEST_DEPTH),
     )
     return app
 
@@ -335,10 +348,3 @@ def _report_configuration(settings: Settings) -> None:
         EXPECTED_REVISION,
         ",".join(sorted(name for name, present in capabilities.items() if present)) or "none",
     )
-
-
-def _shortened(value: str, limit: int) -> str:
-    """One string, bounded for a response, saying so rather than looking whole."""
-    if len(value) <= limit:
-        return value
-    return value[: limit - 3] + "..."

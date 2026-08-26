@@ -26,7 +26,7 @@ identifier, and `ConflictError` is a 409 for state that refuses a well formed re
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Query, status
 
 from agentrank_api.compiler.models import ReviewDecision
 from agentrank_api.compiler.schemas import (
@@ -38,6 +38,7 @@ from agentrank_api.compiler.schemas import (
 from agentrank_api.compiler.service import MerchantCompilerService
 from agentrank_api.compiler.views import MerchantCompilerReviewService
 from agentrank_api.dependencies import OperatorDep, SessionDep
+from agentrank_api.errors import invalid_request
 
 router = APIRouter(prefix="/api/v1/compiler", tags=["compiler"])
 
@@ -152,6 +153,4 @@ async def _command(
             provenance_excerpt=provenance_excerpt,
         )
     except ValueError as error:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
-        ) from error
+        raise invalid_request(error) from error

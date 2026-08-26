@@ -92,7 +92,6 @@ def quote(client: TestClient, shop: dict[str, uuid.UUID], variant_id: uuid.UUID)
     created = client.post(
         f"{COMMERCE_URL}/checkouts",
         json={
-            "merchant_id": str(shop["merchant_id"]),
             "mandate_id": str(shop["mandate_id"]),
             "items": [{"variant_id": str(variant_id), "quantity": 1}],
         },

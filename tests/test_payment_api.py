@@ -427,12 +427,10 @@ async def test_a_request_cannot_choose_what_the_provider_does(
             json={"idempotency_key": KEY, "simulate": "timeout", "amount_minor": 1},
         )
 
-        # Pydantic ignores unknown fields by default, so the payment succeeds and neither the
-        # outcome nor the amount is what the request asked for. Both are asserted, because the
-        # property is that the fields have no effect rather than that they were rejected.
-        assert response.status_code == 200
-        assert response.json()["attempt"]["status"] == "SUCCEEDED"
-        assert response.json()["attempt"]["amount_minor"] == PRICE
+        # Refused rather than ignored. A caller who states an amount and is answered 200 has been
+        # told yes, and the field they invented is one somebody could later wire up by accident.
+        assert response.status_code == 422
+        assert response.json()["error"] == "invalid_request"
 
 
 async def test_a_malformed_idempotency_key_is_a_422(

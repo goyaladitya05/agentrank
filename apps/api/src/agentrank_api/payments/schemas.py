@@ -24,7 +24,7 @@ import uuid
 from datetime import datetime
 from typing import Self
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agentrank_api.checkout.execution_authorization import ExecutionAuthorizationViolation
 from agentrank_api.checkout.schemas import ExecutionAuthorizationView
@@ -51,6 +51,11 @@ class CreatePaymentRequest(BaseModel):
     the first one's result. That is safe and it is not idempotent, and the difference belongs
     to the caller.
     """
+
+    # A field this schema does not define is a field a caller believed would take effect, and
+    # ignoring one is how a request comes to mean something the caller did not intend: a body
+    # spelling `maxQuantity` would create an unlimited mandate and be told 201.
+    model_config = ConfigDict(extra="forbid")
 
     idempotency_key: str | None = Field(
         default=None,

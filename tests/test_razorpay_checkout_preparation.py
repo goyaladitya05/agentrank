@@ -383,7 +383,8 @@ async def test_an_amount_in_the_request_body_is_refused_rather_than_ignored(
 
     Ignoring an unknown field means a client that believes it set the amount gets a payment for
     a different one and no indication that it happened. The request schema accepts one optional
-    idempotency key and nothing else.
+    idempotency key and nothing else, and a body carrying more is refused before any order is
+    created at the gateway.
     """
     shop = await build_shop(session, "ampere-supply")
     checkout_id = await quote(session, shop)
@@ -400,10 +401,9 @@ async def test_an_amount_in_the_request_body_is_refused_rather_than_ignored(
             json={"idempotency_key": KEY, "amount_minor": 1},
         )
 
-    assert response.status_code == 200
-    # The field was ignored by the schema rather than honoured. What matters is the order.
-    (sent,) = gateway.created_orders
-    assert sent.amount_minor == PRICE
+    assert response.status_code == 422
+    assert response.json()["error"] == "invalid_request"
+    assert gateway.created_orders == []
 
 
 async def test_a_cross_merchant_http_request_answers_404_and_calls_nothing(

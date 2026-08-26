@@ -29,10 +29,16 @@ chunked request declares no length, and refusing one with `411 Length Required` 
 because every caller of a bounded path is a browser or a client posting a JSON document and both
 declare a length.
 
-Deliberately narrow. Only paths that name a bound are checked, so this cannot quietly become the
-place other endpoints' limits are decided, and there is no default that would apply to a route
-nobody considered. The body shape matches `agentrank_api.errors.ErrorResponse`, because a caller
-that parses one refusal should not need a second parser for this one.
+Two bounds and they are different kinds of statement. A path that names one is a body this
+repository has thought about, and the number is what that body is: a source document is 128 KiB
+because that is what a source document is. Everything else that carries a body takes `default`,
+which is not a considered figure for any particular route and is not meant to be. It exists
+because the alternative to a generous default is no bound at all, and "a route nobody considered"
+is exactly the route that needs one: an authenticated merchant posting half a gigabyte to
+`/api/v1/commerce/checkouts` had every byte received and parsed before any schema could refuse it.
+
+The body shape matches `agentrank_api.errors.ErrorResponse`, because a caller that parses one
+refusal should not need a second parser for this one.
 """
 
 import json
@@ -59,18 +65,33 @@ class BodyLimit:
     max_depth: int
 
 
-class RequestBodyLimit:
-    """Bound the size and the nesting of a request body on the paths that name a bound."""
+# The methods this bounds. A body on any other method is not something this application reads, and
+# checking one would be refusing a request over bytes nothing would have looked at.
+BODIED_METHODS = frozenset({"POST", "PUT", "PATCH"})
 
-    def __init__(self, app: ASGIApp, *, limits: Mapping[tuple[str, str], BodyLimit]) -> None:
+
+class RequestBodyLimit:
+    """Bound the size and the nesting of a request body, by path where one is named."""
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        limits: Mapping[tuple[str, str], BodyLimit],
+        default: BodyLimit | None = None,
+    ) -> None:
         self._app = app
         self._limits = dict(limits)
+        self._default = default
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self._app(scope, receive, send)
             return
-        limit = self._limits.get((scope.get("method", ""), _path(scope)))
+        method = str(scope.get("method", ""))
+        limit = self._limits.get((method, _path(scope)))
+        if limit is None and method in BODIED_METHODS:
+            limit = self._default
         if limit is None:
             await self._app(scope, receive, send)
             return
@@ -213,8 +234,23 @@ def _replay(body: bytes) -> Receive:
 
 
 async def _refuse(send: Send, status: int, reason: str, detail: str) -> None:
-    """Answer without calling the application, in this repository's own error shape."""
-    body = json.dumps({"error": reason, "detail": detail, "resource": None, "identifier": None})
+    """Answer without calling the application, in this repository's own error shape.
+
+    A 422 carries an empty `fields`, because this application's OpenAPI document declares
+    `InvalidRequestResponse` as the 422 model for every operation and a client generated from it
+    would fail to decode a body missing the field. There is nothing to put in it: this refusal is
+    about the body as a whole rather than about anything inside it, which is exactly why it can
+    be made without parsing one.
+    """
+    payload: dict[str, object] = {
+        "error": reason,
+        "detail": detail,
+        "resource": None,
+        "identifier": None,
+    }
+    if status == UNPROCESSABLE_CONTENT:
+        payload["fields"] = []
+    body = json.dumps(payload)
     encoded = body.encode("utf-8")
     await send(
         {

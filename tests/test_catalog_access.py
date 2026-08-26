@@ -148,18 +148,19 @@ async def test_a_search_returns_only_the_credentials_own_catalog(
 async def test_a_search_body_cannot_name_a_merchant(
     catalog_settings: Settings, alice: Catalog, bob: Catalog
 ) -> None:
-    """The field is gone, and a caller who sends it anyway searches their own shelves.
+    """The field is gone, and a caller who sends it anyway is told so.
 
-    Worth asserting rather than assuming: Pydantic ignores unknown fields, so removing
-    `merchant_id` from the request model would otherwise have silently accepted a body that
-    still named one.
+    Refused rather than ignored, which is the stronger of the two properties. A caller who tries
+    to choose their own tenant and is answered 200 has been told yes and left to work out from
+    the results that the field they sent did nothing.
     """
     with client_for(catalog_settings, alice) as client:
         response = client.post(
             SEARCH_URL, json={"query": "charger", "merchant_id": str(bob.merchant_id)}
         )
 
-    assert [result["id"] for result in response.json()["results"]] == [str(alice.product_id)]
+    assert response.status_code == 422
+    assert response.json()["error"] == "invalid_request"
 
 
 async def test_the_response_carries_exactly_the_data_that_kept_it_private(

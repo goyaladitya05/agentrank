@@ -3,7 +3,7 @@
 /health answers from the process alone and never touches infrastructure, so an orchestrator can
 tell "the process is wedged" apart from "a dependency is down".
 
-/ready reports every dependency this process needs before it can serve traffic. Three things
+/ready reports every dependency this process needs before it can serve traffic. Two things
 qualify, and each of them makes every useful request fail when it is wrong:
 
 ```text

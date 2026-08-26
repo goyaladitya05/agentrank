@@ -21,7 +21,7 @@ import uuid
 from datetime import datetime
 from typing import Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from agentrank_api.payments.admission import AdmissionRefusal, PaymentAdmission
 from agentrank_api.payments.schemas import PaymentAttemptView
@@ -164,6 +164,11 @@ class RazorpayCallbackRequest(BaseModel):
     comes from authoritative state, and a field a browser could set is a field a browser could
     set wrongly.
     """
+
+    # A field this schema does not define is a field a caller believed would take effect, and
+    # ignoring one is how a request comes to mean something the caller did not intend: a body
+    # spelling `maxQuantity` would create an unlimited mandate and be told 201.
+    model_config = ConfigDict(extra="forbid")
 
     razorpay_payment_id: str = Field(pattern=PROVIDER_IDENTIFIER)
     razorpay_order_id: str = Field(pattern=PROVIDER_IDENTIFIER)

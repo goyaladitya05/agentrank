@@ -13,7 +13,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agentrank_api.constraints.rules import (
     MAX_ATTRIBUTE_KEY_LENGTH,
@@ -48,6 +48,11 @@ _UNVALIDATED_MERCHANT = uuid.UUID(int=0)
 
 
 class MaxTotalAmountInput(BaseModel):
+    # A field this schema does not define is a field a caller believed would take effect, and
+    # ignoring one is how a request comes to mean something the caller did not intend: a body
+    # spelling `maxQuantity` would create an unlimited mandate and be told 201.
+    model_config = ConfigDict(extra="forbid")
+
     kind: Literal[ConstraintKind.MAX_TOTAL_AMOUNT]
     amount_minor: int = Field(ge=0)
     currency: str = Field(pattern=CURRENCY_PATTERN)
@@ -57,6 +62,11 @@ class MaxTotalAmountInput(BaseModel):
 
 
 class MaxQuantityInput(BaseModel):
+    # A field this schema does not define is a field a caller believed would take effect, and
+    # ignoring one is how a request comes to mean something the caller did not intend: a body
+    # spelling `maxQuantity` would create an unlimited mandate and be told 201.
+    model_config = ConfigDict(extra="forbid")
+
     kind: Literal[ConstraintKind.MAX_QUANTITY]
     quantity: int = Field(gt=0)
 
@@ -80,6 +90,11 @@ class RequiredAttributeInput(BaseModel):
     is a 422 naming the constraint rather than an error from inside a route.
     """
 
+    # A field this schema does not define is a field a caller believed would take effect, and
+    # ignoring one is how a request comes to mean something the caller did not intend: a body
+    # spelling `maxQuantity` would create an unlimited mandate and be told 201.
+    model_config = ConfigDict(extra="forbid")
+
     kind: Literal[ConstraintKind.REQUIRED_ATTRIBUTE]
     name: str = Field(min_length=1, max_length=MAX_ATTRIBUTE_KEY_LENGTH)
     operator: ConstraintOperator = ConstraintOperator.EQ
@@ -91,6 +106,11 @@ class RequiredAttributeInput(BaseModel):
 
 
 class AllowedCategoryInput(BaseModel):
+    # A field this schema does not define is a field a caller believed would take effect, and
+    # ignoring one is how a request comes to mean something the caller did not intend: a body
+    # spelling `maxQuantity` would create an unlimited mandate and be told 201.
+    model_config = ConfigDict(extra="forbid")
+
     kind: Literal[ConstraintKind.ALLOWED_CATEGORY]
     category: str = Field(min_length=1, max_length=MAX_STATEMENT_LENGTH)
 
@@ -112,6 +132,11 @@ class BuyerIntentInput(BaseModel):
     There is no merchant here. The intent takes the mandate's merchant, so a request
     cannot describe a desire aimed at one merchant while authorizing spending at another.
     """
+
+    # A field this schema does not define is a field a caller believed would take effect, and
+    # ignoring one is how a request comes to mean something the caller did not intend: a body
+    # spelling `maxQuantity` would create an unlimited mandate and be told 201.
+    model_config = ConfigDict(extra="forbid")
 
     description: str = Field(min_length=1, max_length=MAX_DESCRIPTION_LENGTH)
     hard_constraints: list[HardConstraintInput] = Field(
@@ -145,6 +170,11 @@ class CreateMandateRequest(BaseModel):
     supplied policy rather than a record timestamp, which is why it does not come from
     the database clock the way `created_at` does.
     """
+
+    # A field this schema does not define is a field a caller believed would take effect, and
+    # ignoring one is how a request comes to mean something the caller did not intend: a body
+    # spelling `maxQuantity` would create an unlimited mandate and be told 201.
+    model_config = ConfigDict(extra="forbid")
 
     max_total_amount_minor: int = Field(ge=0)
     currency: str = Field(pattern=CURRENCY_PATTERN)
