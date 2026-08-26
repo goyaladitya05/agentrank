@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
-"""Fail when the em dash character appears in tracked project text.
+"""Fail when an em dash or an emoji appears in tracked project text.
 
-The character is written as an escape here on purpose. Spelling it literally would make
-this file fail its own check.
+Both characters are written as escapes here on purpose. Spelling either literally would
+make this file fail its own check.
+
+Emoji are refused for the same reason the em dash is: this project's text is read in
+terminals, diffs, log lines and HTTP responses, where an emoji is a rendering question
+rather than a word. The ranges below are the pictographic blocks plus the variation
+selector that turns an ordinary character into one. Ordinary symbols that happen to live
+near them, the arrows and the box drawing characters this repository uses in its own
+diagrams, are deliberately outside every range.
 
 Scanning is driven by git: tracked files plus untracked files that are not ignored. That
 is what "relevant project text" means in practice, since git already excludes .git, .venv,
@@ -17,6 +24,17 @@ import sys
 from pathlib import Path
 
 EM_DASH = "\u2014"
+
+# Inclusive codepoint ranges that are emoji rather than punctuation. Variation selector 16
+# is included because it is what promotes a text glyph to an emoji presentation, so a bare
+# one is an emoji this file would otherwise have to spell out to catch.
+EMOJI_RANGES = (
+    (0x1F000, 0x1FAFF),  # pictographs, symbols, transport, faces, flags, extended
+    (0x1F004, 0x1F0CF),  # mahjong and playing cards
+    (0x2600, 0x27BF),  # miscellaneous symbols and dingbats
+    (0xFE0F, 0xFE0F),  # variation selector 16
+    (0x1F1E6, 0x1F1FF),  # regional indicators, which pair into flags
+)
 
 # Generated dependency manifests are not project authored text. Their contents come from
 # package registries and may legitimately contain any character.
@@ -41,6 +59,11 @@ def tracked_files() -> list[Path]:
     return [Path(name) for name in completed.stdout.split("\0") if name]
 
 
+def is_emoji(character: str) -> bool:
+    point = ord(character)
+    return any(low <= point <= high for low, high in EMOJI_RANGES)
+
+
 def offences(path: Path) -> list[str]:
     try:
         content = path.read_text(encoding="utf-8")
@@ -50,9 +73,12 @@ def offences(path: Path) -> list[str]:
 
     found = []
     for number, line in enumerate(content.splitlines(), start=1):
-        column = line.find(EM_DASH)
-        if column >= 0:
-            found.append(f"{path}:{number}:{column + 1}: {line.strip()}")
+        for column, character in enumerate(line, start=1):
+            if character == EM_DASH:
+                found.append(f"{path}:{number}:{column}: em dash: {line.strip()}")
+            elif is_emoji(character):
+                name = f"U+{ord(character):04X}"
+                found.append(f"{path}:{number}:{column}: emoji {name}: {line.strip()}")
     return found
 
 
@@ -65,10 +91,10 @@ def main() -> int:
     ]
 
     if failures:
-        print("em dash found in tracked project text:", file=sys.stderr)
+        print("disallowed characters in tracked project text:", file=sys.stderr)
         for failure in failures:
             print(f"  {failure}", file=sys.stderr)
-        print("\nUse ordinary punctuation instead.", file=sys.stderr)
+        print("\nUse ordinary punctuation and ordinary words instead.", file=sys.stderr)
         return 1
 
     print("text style clean")

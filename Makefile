@@ -96,7 +96,7 @@ test-browser: migrate build-frontend ## Run critical browser workflows against l
 build-frontend: ## Build the console the way production would
 	$(PNPM) $(WEB) build
 
-check-text: ## Fail if the em dash character appears in project text
+check-text: ## Fail if an em dash or an emoji appears in project text
 	$(UV) run python scripts/check-text-style.py
 
 check-whitespace: ## Fail on trailing whitespace and related errors
