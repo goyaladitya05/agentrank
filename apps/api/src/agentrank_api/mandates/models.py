@@ -88,9 +88,9 @@ class SpendingMandate(Base):
       declined consumed nothing
     - at most one successful payment may ever consume a mandate
 
-    The last one is written down here and enforced nowhere yet, because nothing in this
-    application pays for anything. Phase 1F makes it structural. Until then, nothing subtracts
-    from this number and nothing should start: see docs/security.md.
+    The last one is structural rather than a convention: a partial unique index on the
+    payment attempt table admits exactly one succeeded attempt per mandate. Nothing subtracts
+    from this number, because a mandate is a ceiling and not a balance. See SECURITY.md.
 
     There is no `updated_at`. Every field except `status` and `revoked_at` is immutable,
     and the one transition that exists stamps its own timestamp, so a general purpose

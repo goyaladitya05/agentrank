@@ -415,12 +415,13 @@ class BenchmarkRun(Base):
     There is no `updated_at` and there are no aggregate count columns. Metrics are derived from
     the mission runs below rather than stored beside them, because a stored count is a count that
     can disagree with the rows it summarises, and the rows are already the answer. See
-    docs/decisions.md.
+    docs/architecture.md.
 
-    `representation_label` is a label and not an identity. The Merchant Compiler does not exist,
-    so there is no content identity for a merchant representation to record, and this column must
-    never be read as one: it holds whatever an operator called the representation, which is
-    enough to tell a baseline run from a later one and is not evidence that anything changed.
+    `representation_label` is a label and not an identity. It holds whatever the representation
+    was called, which is enough to tell a baseline run from a later one and is never evidence
+    that anything changed. `representation_id` beside it is the identity the label is not: it
+    names the published Commerce IR this run was measured against, and is null for a run that
+    read no compiled artifact at all.
 
     `catalog_hash` is the identity the label is not. It pins what the merchant's authoritative
     data looked like when the run started, which is the half of ground truth the suite hash
@@ -583,8 +584,9 @@ class BenchmarkRun(Base):
     evaluator_version: Mapped[str | None] = mapped_column(String(HASH_LENGTH), nullable=True)
     # Which strategy produced this run's results, and which version of it. Two columns rather
     # than one label, so a report can group by strategy and still tell two versions of it apart.
-    # There is no model identifier and no provider beside them, because neither exists and a
-    # column for one would be a guess at the shape of an agent that has not been built.
+    # There is no model identifier column and no provider column beside them, because for a
+    # model buyer both are part of the frozen `agent_configuration` below, and a deterministic
+    # run would leave a dedicated column for each of them null forever.
     executor_kind: Mapped[str | None] = mapped_column(String(MAX_KEY_LENGTH), nullable=True)
     executor_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # What the declaration cannot do. A version is a promise a person keeps, and this moves
@@ -638,9 +640,10 @@ class BenchmarkMissionRun(Base):
     """What became of one mission in one run.
 
     Narrow on purpose. It carries the outcome, the classification, and identifiers for the real
-    commerce rows the attempt produced. It does not carry an agent trace: traces will matter
-    later and will reference this row's identifier, and designing the whole trace system now
-    would be guessing at the shape of an agent that does not exist.
+    commerce rows the attempt produced. It does not carry an agent trace inline: a trace is its
+    own append only table, `agent_trace_event`, which references this row's identifier, so a
+    deterministic run stores nothing for one and a model run's evidence grows without widening
+    the row every report reads.
 
     The three commerce references are nullable composite foreign keys, each carrying
     `merchant_id`. That is what makes merchant isolation structural in both directions: a run for

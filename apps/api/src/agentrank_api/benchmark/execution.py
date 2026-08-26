@@ -95,10 +95,10 @@ class ExecutorIdentity:
     cannot say the behaviour is the same when it moves for a comment. The version is still the
     statement a reader needs and this is the evidence beside it.
 
-    There is no model identifier here and no provider. Neither exists yet. When they do, the
-    natural revision for a model buyer is a digest over what actually decides its behaviour, the
-    model, the prompt, the tool schema and the sampling configuration, which is the same
-    question this field already asks.
+    There is no model identifier here and no provider. For a model buyer those belong to the
+    frozen agent configuration a run records, which digests what actually decides its behaviour:
+    the model, the prompt, the tool schema and the sampling configuration. That is the same
+    question this field asks about code, asked about a sample.
     """
 
     kind: str

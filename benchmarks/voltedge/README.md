@@ -80,5 +80,7 @@ and reordering is why the suite is at version 2.
 
 ## What is not here
 
-Nothing simulates the Merchant Compiler, which does not exist. These missions exercise the
-structured commerce foundation as it is, and compiler before and after datasets come later.
+Nothing here is compiled. These missions exercise the structured commerce foundation as it is,
+against a catalog an operator authored. A merchant's own raw and compiled arms are generated
+from their own evidence instead, and `benchmarks/voltedge-evaluation/` is the independently
+authored workload for that comparison.

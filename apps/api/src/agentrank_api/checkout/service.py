@@ -6,8 +6,9 @@ rules and the audit trail, and it owns the transaction. Routes call one method a
 serialize the result.
 
 The two authorization reads stay separate methods returning separate decisions. There is no
-method that combines them, because the only caller for a combined answer is payment
-execution, which does not exist. See docs/decisions.md.
+method here that combines them, because a combined answer is only ever wanted with the rows
+held still, and that belongs to `CheckoutExecutionService.authorize_under_locks`, which
+payment admission calls. See docs/architecture.md.
 
 Three rules shape this module:
 

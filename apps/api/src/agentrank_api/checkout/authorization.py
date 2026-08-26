@@ -6,10 +6,11 @@ against one mandate's merchant, currency, amount ceiling, quantity ceiling and v
 window, and against the quote's own status and expiry. Nothing else.
 
 What it deliberately does not answer is whether the checkout satisfies the buyer's
-`BuyerIntent`. "Black only" and "no refurbished units" are hard constraints that live on an
-intent, are not persisted, and are not read here. A checkout can be financially authorized
-and still be the wrong thing to buy. Semantic intent enforcement is a separate deterministic
-gate that has to exist before any payment does. See docs/security.md.
+`BuyerIntent`. "Black only" and "no refurbished units" are hard constraints, and they are
+answered by the separate deterministic gate in `intent_authorization`. A checkout can be
+financially authorized and still be the wrong thing to buy, which is why payment admission
+requires both gates through `CheckoutExecutionService.authorize_under_locks` rather than
+either one alone. See SECURITY.md.
 
 Everything here is pure. It reads no clock, touches no database, calls no external service
 and consults no model, so the same inputs always produce the same decision. The evaluation
@@ -98,8 +99,8 @@ def authorize_checkout(
     mandate is a single purchase authorization, so its ceiling is the most one successful
     purchase may cost rather than a balance several checkouts draw down. Nothing here sums
     what other checkouts against the same mandate came to, and nothing should: at most one
-    successful payment may ever consume a mandate, and that is a rule about payments, which
-    do not exist yet. See docs/security.md.
+    successful payment may ever consume a mandate, and that rule belongs to payments, where
+    a partial unique index enforces it at the database. See SECURITY.md.
 
     The amount comparison is skipped when the currencies disagree. Comparing 4999 EUR
     against a ceiling of 500000 INR is not a stricter check, it is a meaningless one, and

@@ -194,7 +194,8 @@ class CheckoutAuthorizationView(BaseModel):
     """Whether this checkout is financially authorized, and if not, every reason at once.
 
     Financially. This says nothing about whether the checkout satisfies the buyer's intent,
-    which nothing enforces yet. See docs/security.md.
+    which is a separate gate with its own decision and its own vocabulary. Payment admission
+    requires both. See SECURITY.md.
     """
 
     allowed: bool
