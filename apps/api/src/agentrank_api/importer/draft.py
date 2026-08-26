@@ -315,6 +315,12 @@ def canonical_document(draft: SourceDraft, *, stock_level: int | None) -> dict[s
     """
     if stock_level is None and draft.stock_level_required:
         raise ValueError("this draft has variants whose stock level the merchant has not stated")
+    names = [policy.name for policy in draft.policies]
+    if len(names) != len(set(names)):
+        # A dictionary comprehension would keep the last of them and lose the rest, silently. The
+        # import command already refuses two policy pages sharing a name, so this is a guard on a
+        # public function rather than a reachable state, and it raises rather than choosing.
+        raise ValueError("this draft has two policies under one name")
     return {
         "products": [_product(product, stock_level) for product in draft.products],
         "policy_text": {policy.name: policy.body for policy in draft.policies},
