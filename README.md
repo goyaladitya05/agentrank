@@ -1,287 +1,241 @@
 # AgentRank
 
-AI commerce readiness benchmark and Merchant Compiler.
+AgentRank measures whether AI buyer agents can actually transact with a merchant, identifies why
+they fail, compiles ordinary merchant catalogs and policies into a structured machine-readable
+commerce representation, and reruns the identical benchmark to measure what changed.
 
-AgentRank measures whether AI buyer agents can actually transact with a merchant,
-identifies why they fail, compiles ordinary merchant catalogs and policies into a
-structured machine readable commerce representation, then reruns the identical benchmark
-to measure the change in conversion and simulated GMV.
+## The problem
 
-The commerce runtime, the merchant compiler, the benchmark, the merchant console and the
-operator command line are implemented. What a deployment of this actually is, and what it
-does not claim to support, is written down before anything else is deployed.
+Merchants publish for humans. A storefront states a charger's wattage in a paragraph, puts the
+colour in a variant label, and leaves the return window on a different page. A person reads around
+all of that. An AI buyer acting on someone's behalf has to decide, from what is published, whether
+a product meets a hard requirement, and it has to be right, because the next thing it does is spend
+money.
 
-## Requirements
+When it cannot decide, it does one of two things: it abstains from a purchase the merchant could
+have served, or it buys the wrong thing. The first is invisible to the merchant. The second is
+worse. Neither shows up in any analytics a merchant currently has, and neither has a name.
 
-| Tool | Version |
-|------|---------|
-| Python | 3.14 |
-| Node | 24 |
-| PostgreSQL | 18, run through Docker Compose |
-| PostgreSQL client | 18, for `make db-backup` and `make db-restore` only. Not needed to develop |
-| uv | latest |
-| pnpm | 11 |
-| Docker Engine and Compose v2 | latest |
-| Make | any |
+AgentRank gives it a name and a number, then gives the merchant something to do about it.
 
-Ubuntu is the reference platform. All scripts assume Bash.
-
-## Setup
-
-```bash
-cp .env.example .env
-make install
-make db-up
-make migrate
-make seed-dev
-make credentials ARGS="create --merchant-slug ampere-supply --label local-dev"
-```
-
-`make install` creates the Python virtual environment at `.venv` and installs frontend
-dependencies from the lock files. `make db-up` starts PostgreSQL and waits for it to
-become healthy. `make seed-dev` loads a small development catalog: one merchant, five
-products, ten variants. It is safe to run repeatedly and is never run by the application
-itself. Run `make help` to list every target.
-
-A real merchant is provisioned rather than seeded. `make seed-dev` exists to give a developer
-something to look at; a merchant who will import their own pages is created empty, because a
-merchant who arrives with a catalog somebody else wrote is a merchant whose own evidence has
-something to be reconciled with:
-
-```bash
-make merchants ARGS="create --merchant-slug acme-supply --name Acme"
-make credentials ARGS="create --merchant-slug acme-supply --label console"
-```
-
-That is the whole of what an operator does before a merchant can sign in. There is no public
-signup, and everything after those two commands is the merchant's own: their pages, their source
-snapshots, their evaluation setup and their evaluations.
-
-The last command mints a merchant API key and prints it once. Every commerce endpoint needs
-one, presented as `Authorization: Bearer <key>`; `/health` and `/ready` do not. There is no
-fixed development key in this repository and there will not be one: a key that is written down
-somewhere is a key that ends up somewhere it should not, so each developer mints their own and
-it exists only in their own database and their own shell history. Lose it and issue another,
-then revoke the first:
-
-```bash
-make credentials ARGS="list --merchant-slug ampere-supply"
-make credentials ARGS="revoke <credential-id>"
-```
-
-The values in `.env.example` are development defaults that match the local Docker Compose
-service. They are not secrets and must not be reused anywhere real.
-
-## Benchmark
-
-The benchmark measures whether a buyer can complete a purchase against a merchant, and where it
-breaks. It runs against a versioned fixture world rather than against whatever is in the
-database, and the world is put back before every mission so that one mission cannot change what
-the next one sees.
-
-```bash
-make benchmark ARGS="seed"
-make benchmark ARGS="run --representation-label baseline"
-make benchmark ARGS="show <run-id>"
-```
-
-The authored world lives in `benchmarks/voltedge/`: `catalog.json` is the shelf a run puts the
-merchant back to, and `suite.json` is the missions with their expected outcomes. They are files at
-the top of the repository rather than a module in the application package, because a mission's
-expected outcome is the answer key and the package is what a buyer process runs from. The commands
-take `--world`, defaulting to that directory.
-
-`seed` registers the VoltEdge world, restores its catalog and publishes the suite authored
-against it. `run` executes all fourteen missions with the deterministic reference executor,
-through the real checkout, authorization, inventory and payment path with a deterministic fake
-provider. No real money is involved; stock genuinely leaves the shelf inside the benchmark world
-and is restored before the next mission.
-
-The reference executor is not an AI buyer. It has no model, no prompt and no language
-understanding, and it reads structured commerce fields a real storefront does not publish. Its
-completion rate is evidence that the benchmark path works, and it must never be presented as
-evidence of what an autonomous agent can do. Every report says so.
-
-## Checks
-
-One command validates the repository. It must pass before every commit and every push.
-
-```bash
-make check
-```
-
-It runs backend linting and formatting, mypy, pytest, frontend linting and formatting,
-TypeScript, Vitest, a production Next.js build, the text style scanner and whitespace
-validation. Backend tests need PostgreSQL running, so run `make db-up` first.
-
-## Local database
-
-PostgreSQL 18 runs through Docker Compose.
-
-```bash
-make db-up       # start and wait for healthy
-make db-verify   # confirm it is reachable and is PostgreSQL 18
-make db-down     # stop, keeping data
-make db-reset    # destroy the data volume and start clean
-```
-
-Data lives in the named volume `agentrank_postgres_data` and survives container restarts.
-
-## Backend
-
-Start PostgreSQL first, then run the API:
-
-```bash
-make api
-```
-
-| Endpoint | Meaning |
-|----------|---------|
-| `GET /health` | The API process is running. Never touches the database. |
-| `GET /ready` | Every required dependency is reachable. Returns 503 when one is not. |
-| `GET /api/v1/commerce/products/{product_id}` | One product with its merchant and every variant. |
-| `POST /api/v1/commerce/products/search` | Search one merchant's catalog. |
-
-Search is merchant scoped, deterministic and variant aware. A product is returned when at
-least one of its variants satisfies every filter, and the response carries exactly those
-variants as `eligible_variants`. Amounts are integers of minor currency units and always
-travel with their currency, so a price ceiling must state the currency it is in.
-
-```bash
-curl -sS localhost:8000/api/v1/commerce/products/search \
-  -H 'content-type: application/json' \
-  -d '{"merchant_id":"...","query":"100W charger","max_price_amount_minor":500000,"currency":"INR"}'
-```
-
-Run the backend tests, which need a running database:
-
-```bash
-make test-backend
-```
-
-## Frontend
-
-The console is a Next.js app in `apps/web`. It renders on the server and fetches the API
-from the Next.js server rather than the browser, so no CORS configuration is needed and the
-API URL is not exposed to the client.
-
-```bash
-make web             # http://localhost:3000
-make test-frontend
-make build-frontend
-```
-
-`AGENTRANK_API_BASE_URL` selects the backend. It defaults to `http://localhost:8000`.
-
-`AGENTRANK_CONSOLE_SESSION_SECRET` is required and the console refuses to start without it. Next.js
-reads `.env` from `apps/web` rather than from the repository root, so `make web` exports the root
-`.env` into the environment before starting it; a deployment sets these variables directly and
-ships no `.env` at all, which the console refuses to start with. Every
-browser session credential is derived from it, so every console process serving one deployment
-needs the same value, and changing it signs every merchant out at once. Generate one with
-`openssl rand -hex 32`. On plain HTTP localhost, also set `AGENTRANK_COOKIE_SECURE=false`, which
-is the only thing that lets a session cookie be issued without HTTPS.
-
-The console holds no merchant API key. A merchant signs in with theirs, the console exchanges it
-for a durable session held by the API and forgets the key, and the browser holds only an opaque
-cookie. There is no environment credential that stands in for a signed in merchant.
-
-### Razorpay test checkout
-
-`/razorpay` opens a Razorpay Standard Checkout against an AgentRank quote. It is integration UI
-rather than product UI: paste a checkout identifier, pay with a Razorpay test card, and the page
-reports the resulting AgentRank state.
-
-It needs a signed in merchant session in the browser, and a Razorpay Test Mode key pair in the
-API's `.env`:
+## What it does
 
 ```text
-RAZORPAY_KEY_ID=rzp_test_...
-RAZORPAY_KEY_SECRET=...
+1  Import      the merchant's own public pages become a frozen source snapshot
+2  Evaluate    a benchmark generated from that snapshot measures whether a buyer can transact
+3  Compile     the Merchant Compiler turns the snapshot into agent-ready Commerce IR
+4  Review      the merchant confirms or rejects every candidate fact
+5  Publish     the confirmed representation becomes an immutable artifact
+6  Re-evaluate the identical suite runs against it, and the two runs are compared
 ```
 
-The key id must begin `rzp_test_`. A live key is refused at startup and there is no variable,
-request field or flag that relaxes that: this project has no live mode. The key secret stays in
-the API process; the browser receives only the public key id and an order identifier, which is
-what Standard Checkout needs.
+Every step is a separate command. Nothing chains: publishing spends nothing and measures nothing,
+and launching an evaluation spends model quota and takes as long as a suite takes, so neither
+happens as a side effect of the other.
 
-This page has not yet been run against real Razorpay Test Mode keys. The integration is verified
-end to end against a transport fake and the signature formula is pinned against a digest computed
-outside this codebase, so what is proven is that the application sends what Razorpay documents
-and handles every answer Razorpay documents. Whether Razorpay agrees is unproven until somebody
-completes one test payment.
+## The merchant workflow
 
-The console authenticates a merchant by their own API key and holds the resulting session in
-PostgreSQL, so a session survives a console restart and resolves on any console process. What it
-still has is no account model: one merchant API key is one identity, and two people sharing a key
-are indistinguishable.
+An operator provisions a merchant and issues them one API key. There is no public signup. That is
+the whole of what happens before a merchant can sign in, and everything after it is the merchant's
+own.
 
-## Migrations
+The merchant signs into the console with their key and gives AgentRank a list of their own public
+product pages. AgentRank fetches them, reads them deterministically, and shows the merchant exactly
+what it read, including what it could not find. Nothing becomes source history until the merchant
+confirms it. What they confirm is a frozen, content-addressed snapshot.
 
-Every schema change is an Alembic migration. Schema is never created or altered as an
-application startup side effect.
+From that snapshot AgentRank bootstraps an **evaluation workspace**: an isolated benchmark world
+built from the merchant's own catalog, and a suite of missions generated from it whose expected
+outcomes are computed from that same frozen data rather than authored by hand.
 
-### Deployment configuration
+The merchant launches their first evaluation. It is admitted as a queued row and executed by a
+separate dispatcher process, one worker process per mission, against the ordinary storefront
+discovery surface. The result says which missions a buyer completed, which it abstained from, which
+it got wrong, and why each one failed.
 
-`AGENTRANK_ENV` decides which rules a process runs under. `development`, `ci` and `test` may be
-configured from a `.env`; anything else is a deployment, reads no file, and must state
-`POSTGRES_HOST`, `POSTGRES_DB`, `POSTGRES_USER` and `POSTGRES_PASSWORD` or it refuses to start
-naming the one that is missing. It is read from the process environment only: a `.env` that tried
-to set it is refused, because a file deciding which rules apply to it is a file deciding whether
-it gets read.
+Then they compile. The Merchant Compiler reads the same frozen snapshot and proposes candidate
+facts, each traceable to the source field it came from. The merchant reviews them. Confirmed
+candidates become a published Commerce IR representation, immutable and identified by content.
 
-A missing provider credential is a capability a process does not have rather than a failure. Each
-process logs one line at startup naming its environment, the schema revision it expects and which
-capabilities it holds, in names and never in values.
+Finally they re-evaluate. The identical suite runs again, this time with the published
+representation as the buyer's discovery surface, and the two runs are compared: which missions
+changed outcome, in which direction, and which caveats have to travel with that statement.
 
-```bash
-uv run alembic upgrade head          # apply
-uv run alembic downgrade -1          # undo one revision
-uv run alembic revision -m "message" # new empty revision
-uv run alembic revision --autogenerate -m "message"
-uv run alembic check                 # models and migrations agree
+## Trust model
+
+The load-bearing rule is that **no model authorizes a financial action**.
+
+A buyer agent can request a quote and attempt a payment. Whether either is permitted is decided by
+deterministic code reading the merchant's own rows, through two independent gates: whether the
+money is within the mandate that authorized it, and whether the thing being bought satisfies the
+buyer's hard constraints. Both must pass. A missing constraint set is a denial, never a default.
+
+A buyer also cannot mark its own work. It runs in its own process with no database, no settings, no
+suite, no expected outcome, and an allowlisted environment. Its report carries identifiers and
+actions and nothing else: no status, no failure reason, no price, no authorization decision. What
+those identifiers came to is established afterwards from the merchant's own rows, and payments are
+swept rather than reported, so a buyer that hides a purchase is found anyway.
+
+The compiler does not own commerce truth either. It is deterministic, runs no model, and infers
+nothing; every compiled fact traces to a source field the merchant stated and confirmed. A published
+representation is a discovery surface. It cannot move a price, a stock level or a quote total.
+
+Merchant isolation is structural rather than filtered: commerce tables use composite foreign keys
+carrying the merchant identifier, so one merchant's row cannot reference another's whatever a caller
+passes, and another merchant's identifier is answered identically to one that does not exist.
+
+There is no live payment mode. Razorpay is Test Mode only, refused structurally at startup if the
+key is not a test key, with no flag that relaxes it.
+
+[SECURITY.md](SECURITY.md) describes each boundary, including where one is narrower than its name.
+
+## Architecture
+
+A modular monolith over PostgreSQL, with separate processes only where a process boundary buys
+something specific.
+
+```mermaid
+flowchart TB
+    Person["Merchant / Operator"]
+
+    subgraph deployment["AgentRank deployment"]
+        Console["Merchant Console<br/>Next.js, server rendered"]
+        API["FastAPI backend"]
+
+        subgraph product["Merchant workflow"]
+            Import["Source / Import"]
+            Compiler["Merchant Compiler<br/>deterministic, no model"]
+            Review["Merchant Review"]
+            IR["Commerce IR<br/>immutable, content addressed"]
+            Workspace["Evaluation Workspace"]
+            Launch["Benchmark Launch / Governance"]
+        end
+
+        Runtime["Deterministic Commerce Runtime<br/>owns catalog, quotes, inventory,<br/>authorization and payment truth"]
+        Diagnostics["Diagnostics / Evaluation"]
+        DB[("PostgreSQL<br/>durable coordination and evidence")]
+    end
+
+    subgraph isolated["Isolated buyer, one process per mission, no database"]
+        Worker["Buyer Worker"]
+    end
+
+    subgraph external["External"]
+        Provider["Model Provider"]
+    end
+
+    Person --> Console
+    Console --> API
+    API --> Import
+    API --> Launch
+
+    Import --> Workspace
+    Import --> Compiler
+    Compiler --> Review
+    Review --> IR
+    Workspace --> Launch
+    IR -. "artifact under test" .-> Launch
+
+    Launch -- "spawns, hands one mission" --> Worker
+    Worker -- "model call, governed by a<br/>permit committed beforehand" --> Provider
+    Worker -- "commerce requests over loopback,<br/>short lived credential" --> Runtime
+
+    Runtime --> DB
+    Launch --> DB
+    Import --> DB
+    IR --> DB
+    Diagnostics --> DB
+    Launch --> Diagnostics
+    Diagnostics --> API
 ```
 
-Autogenerate is a starting point, not an answer. Read every generated revision and make
-sure `downgrade` really reverses `upgrade`.
+The boundaries that matter: the buyer worker is a separate process with no database and no access
+to any expected outcome; the model provider is external and every call is charged against a permit
+committed before the process starts; PostgreSQL holds all durable coordination and the entire
+evidence record; the deterministic commerce runtime is the only thing that decides commerce and
+financial truth; and the compiler produces a discovery surface, never a financial fact.
 
-## Continuous integration
+[docs/architecture.md](docs/architecture.md) covers each component and the known limitations.
 
-GitHub Actions runs on pull requests and on pushes to `main`, in three jobs. Backend runs
-against a real PostgreSQL 18 service container: dependency install from the lock file,
-Ruff, mypy, migrations up and down and up, pytest, the text style scanner and whitespace
-validation. Frontend runs ESLint, Prettier, TypeScript, Vitest and a production build.
-Browser workflow builds the console, starts a real API and a real console against the same
-PostgreSQL, drives Chromium through the critical merchant workflows, and scans every retained
-artifact for credential material.
+## Benchmark methodology
 
-The deployment smoke test runs inside the backend job. It builds the supported topology from an
-empty database in a production-configured environment and runs one merchant evaluation through
-it, so a change that breaks starting this system is caught by CI rather than by a deploy.
+A mission is a pair of separate types: a brief holding everything the buyer may see, and an oracle
+holding what the evaluator knows and the buyer must not. Suites are content-addressed and immutable,
+and a run pins the suite, the world, the executor and its revision, the catalog, the evaluator
+version and the representation identity, so two runs whose pins differ were measuring different
+things.
 
-CI needs no secrets and calls no external services. Run `make check` locally first. CI is
-independent verification, not the debugging loop.
+Six things are true of every number this system produces, and each is enforced in code rather than
+by care:
 
-## Layout
+- **Simulated demand is simulated.** Authored buyer demand attached to missions. No money moves in a
+  benchmark run. It is never revenue, never a forecast, and never a measured business result, and it
+  is reported per currency and never summed across currencies.
+- **Model claims never authorize financial actions.** A buyer's account of what it selected or
+  whether it was allowed is a claim. Every financial decision is made by deterministic code reading
+  the merchant's own rows.
+- **Reference execution is not AI performance.** The deterministic reference executor has no model,
+  no prompt and no language understanding, and reads structured fields a real storefront does not
+  publish. Its completion rate is evidence that the benchmark path works and nothing else. Every
+  report carries that disclaimer.
+- **Generated merchant suites are not industry benchmarks.** A suite generated from one merchant's
+  catalog measures that merchant. Two merchants' numbers are not comparable to each other.
+- **There is no weighted AgentRank score.** No headline number exists and there is nowhere in the
+  code to put one. Weights chosen before there are outputs to define them against would be invented
+  rather than learned. What is published is raw counts, the ratios they support, and simulated demand
+  by currency.
+- **Non-interpretable evaluations stay non-interpretable.** When methodology evidence rules out
+  causal reading, the conclusion is `NOT_INTERPRETABLE` and the metrics below it are marked
+  descriptive only. Matching numbers do not rescue it and no later reading upgrades it.
 
-```text
-apps/api      FastAPI backend
-apps/web      Next.js console
-migrations    Alembic revisions
-scripts       repository tooling
-tests         backend tests
-```
+A comparison that finds nothing is a result. `PARITY` means compilation did not help here, at this
+sample size, for this model and this catalog, and it is publishable as such.
 
-Directories appear as features need them. There are no placeholder packages.
+[docs/methodology.md](docs/methodology.md) is the full account.
 
-## Conventions
+## Limitations
 
-- PostgreSQL 18 is used for development, tests and CI. SQLite is not used anywhere.
-- Every schema change is an Alembic migration. Schema is never created or mutated as an
-  application startup side effect.
-- Money is stored as an integer count of minor currency units, never as a floating point
-  number. Rupees 4,999.00 is stored as 499900. Any monetary value that crosses a subsystem
-  boundary carries its currency alongside the amount.
-- Secrets come from environment variables. `.env` is never committed.
-- The em dash character is not used anywhere in this repository. `make check-text`
-  enforces this.
+- **No account model.** One merchant API key is one identity. Two people sharing a key are
+  indistinguishable. There are no roles and no permissions.
+- **No authenticated operator.** Provisioning merchants, issuing credentials and resolving stranded
+  payments are command line operations, and nothing authenticates the person running them. The
+  argument that makes that acceptable is that running them requires being able to run this
+  repository's code against its database, and it holds only while that surface is local.
+- **No live payments.** Only a deterministic fake provider and Razorpay Test Mode exist. The
+  Razorpay bridge has been verified end to end against a transport fake and a signature digest
+  computed outside this codebase, but has not yet been run against real Razorpay Test Mode keys.
+- **In-process isolation is weaker than the process boundary.** The deterministic reference executor
+  runs in process and can reach a session through two private attributes. Python offers no
+  arrangement of private names that would change that. The out-of-process worker is the real
+  boundary.
+- **A version stamp is not a proof.** The evaluator version covers the failure vocabulary, ordering
+  and attribution tables. It does not cover the body of the evaluation function.
+- **A quote does not reserve stock**, and shipping and discount have no authoritative source behind
+  them.
+- **Single-merchant scope.** No Shopify, WooCommerce or other platform integrations, no crawler, and
+  no public signup.
+
+## Status
+
+The commerce runtime, the Merchant Compiler, the benchmark system, the merchant console and the
+operator command line are implemented and tested against real PostgreSQL, real processes and a real
+browser.
+
+**AgentRank is not currently deployed to a hosted environment.** It runs locally through Docker
+Compose, and a deployment smoke test builds the supported topology from an empty database in a
+production-configured environment and runs one merchant evaluation through it, so the thing that
+would be deployed is exercised on every test run. Hosting is being selected; deployment
+configuration is not yet in the repository.
+
+GitHub Actions is configured and currently cannot run because of an account billing problem
+external to this repository. Local validation is the gate in the meantime: `make check` runs
+linting, formatting, mypy strict, the backend suite against real PostgreSQL, the frontend suite,
+TypeScript, a production build, browser workflows through Chromium, and the text and whitespace
+scanners.
+
+Requirements are Python 3.14, Node 24, PostgreSQL 18, uv, pnpm and Docker Compose. `make help`
+lists every target.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
