@@ -206,8 +206,15 @@ class InvalidRequestError(AgentRankError):
 
     def __init__(self, detail: str, *, fields: list[InvalidField] | None = None) -> None:
         super().__init__(detail)
-        self.detail = detail
-        self.fields = fields or []
+        # Bounded here rather than trusted from the caller. A hand-built field is the one place a
+        # caller's own string reaches a location part deliberately: the merchant import route puts
+        # the refused URL there so a merchant who pasted twelve addresses learns which one it was.
+        # The bounds this module states for that field exist because of exactly that case, and a
+        # route that had to remember to apply them is a route that can forget.
+        self.detail = shortened(detail, MAX_REFUSAL_DETAIL_LENGTH)
+        self.fields = bounded_fields(
+            {"loc": field.location, "msg": field.message} for field in (fields or [])
+        )
 
 
 def invalid_request(error: ValueError) -> InvalidRequestError:

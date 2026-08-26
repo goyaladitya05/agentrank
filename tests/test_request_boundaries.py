@@ -33,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.types import Receive, Scope, Send
 
 from agentrank_api.config import Settings
-from agentrank_api.errors import MAX_INVALID_FIELDS
+from agentrank_api.errors import MAX_FIELD_LOCATION_PART_LENGTH, MAX_INVALID_FIELDS
 from agentrank_api.limits import BodyLimit, RequestBodyLimit, _path, _within_depth
 from agentrank_api.main import create_app
 from agentrank_api.payments.fake import FakePaymentProvider
@@ -42,6 +42,7 @@ pytestmark = pytest.mark.anyio
 
 RUNS = "/api/v1/compiler/runs"
 SOURCES = "/api/v1/sources"
+IMPORTS = "/api/v1/sources/imports"
 
 # Deep enough that the framework's own handler answered 500, and far past the depth any schema in
 # this repository describes. The body is under three kilobytes.
@@ -379,3 +380,41 @@ async def test_a_route_refusal_carries_the_error_contract_every_other_one_does(
     assert body["fields"] == []
     # A domain refusal is this repository's own prose, and it stays bounded even so.
     assert len(body["detail"]) <= 400
+
+
+async def test_a_refusal_a_route_built_is_bounded_the_same_way(
+    settings: Settings,
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+    issue_credential: CredentialIssuer,
+) -> None:
+    """The one place a caller's own string reaches a location part on purpose.
+
+    The merchant import route puts the refused URL into the field location, so a merchant who
+    pasted twelve addresses learns which one AgentRank will not fetch. That is exactly the shape
+    the location bounds exist for, and they used to apply only to the framework's own validation
+    errors: a hand-built field went out whatever length the route gave it.
+    """
+    merchant, _ = await merchant_with_source(session, "refusal-bound-shop")
+    token = await issue_credential(merchant.id)
+    http = client(settings, factory)
+    long = "http://169.254.169.254/" + "a" * 300
+
+    answer = http.post(
+        IMPORTS,
+        headers=bearer(token),
+        json={
+            "request_key": "bounded-refusal",
+            "pages": [{"url": long, "kind": "PRODUCT", "name": None}],
+        },
+    )
+
+    assert answer.status_code == 422
+    body = answer.json()
+    assert body["error"] == "invalid_request"
+    # The refusal names a URL and does not carry the whole of one.
+    assert "169.254.169.254" in answer.text
+    assert "a" * 100 not in answer.text
+    assert all(
+        len(part) <= MAX_FIELD_LOCATION_PART_LENGTH for part in body["fields"][0]["location"]
+    )
