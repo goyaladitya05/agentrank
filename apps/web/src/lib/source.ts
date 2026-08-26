@@ -187,6 +187,8 @@ export function originLabel(origin: string): string {
   switch (origin) {
     case "MERCHANT_CONSOLE":
       return "Submitted in the console";
+    case "MERCHANT_IMPORT":
+      return "Imported from your own pages";
     case "OPERATOR_FIXTURE":
       return "Published by an operator";
     default:

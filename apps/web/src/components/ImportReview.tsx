@@ -1,0 +1,437 @@
+"use client";
+
+import Link from "next/link";
+import { useActionState } from "react";
+
+import { KeyValueList, StatusMark } from "@/components/Primitives";
+import styles from "@/components/console.module.css";
+import { formatTimestamp } from "@/lib/format";
+import {
+  availabilityLabel,
+  extractionLabel,
+  formatImportedPrice,
+  type ImportNote,
+  type ImportPage,
+  type ImportPolicy,
+  type ImportProduct,
+  type SourceImport,
+} from "@/lib/import";
+import { IDLE_CONFIRM, type ConfirmState } from "@/lib/import-mutation";
+
+/**
+ * What AgentRank read from a merchant's own pages, before any of it is source history.
+ *
+ * Evidence first, and deliberately unexciting. Every number on this page is a count of something
+ * that happened, every product names the page and the method behind it, and everything AgentRank
+ * could not read is listed with the reason rather than quietly absent. There is no score, no
+ * grade, no suggestion and no claim that anything was understood.
+ *
+ * Two things are rendered with particular care.
+ *
+ * **Availability is never a quantity.** A page saying "In stock" published no number, so the table
+ * says exactly that. The number the evaluation world will hold is asked for once, below, and is
+ * labelled as the merchant's statement rather than as something imported.
+ *
+ * **Every string here came from somebody else's web page.** All of it is rendered as text. No
+ * value becomes markup, and a URL is shown as text rather than turned into a link: a link to a
+ * page AgentRank fetched is a navigation this console has no reason to offer, and a place where a
+ * value would become behaviour.
+ */
+
+export type ConfirmImportAction = (
+  state: ConfirmState,
+  formData: FormData,
+) => ConfirmState | Promise<ConfirmState>;
+
+export function ImportReview({
+  found,
+  action,
+}: {
+  found: SourceImport;
+  action: ConfirmImportAction;
+}) {
+  return (
+    <>
+      <Summary found={found} />
+      <Pages pages={found.pages} />
+      <Products products={found.products} />
+      <Policies policies={found.policies} />
+      <Notes
+        title="Not imported"
+        empty="Everything these pages published was imported."
+        notes={found.omissions}
+      />
+      <Notes
+        title="Worth knowing"
+        empty="Nothing else to report about what was imported."
+        notes={found.findings}
+      />
+      <Confirm found={found} action={action} />
+    </>
+  );
+}
+
+function Summary({ found }: { found: SourceImport }) {
+  const summary = found.summary;
+  return (
+    <KeyValueList
+      entries={[
+        { term: "Storefront", value: summary.origin },
+        { term: "Read", value: formatTimestamp(summary.created_at) },
+        {
+          term: "Pages",
+          value: `${String(summary.retrieved_count)} of ${String(summary.page_count)} answered`,
+        },
+        {
+          term: "Extracted",
+          value: `${String(summary.product_count)} product(s), ${String(summary.variant_count)} variant(s), ${String(summary.policy_count)} policy text(s)`,
+        },
+        {
+          term: "Not imported",
+          value:
+            summary.omission_count === 0
+              ? "Nothing"
+              : `${String(summary.omission_count)} item(s), listed below`,
+        },
+        {
+          term: "Source snapshot",
+          value:
+            summary.source_snapshot_id === null
+              ? "Not created. Nothing here is your source yet."
+              : "Created from this import",
+        },
+      ]}
+    />
+  );
+}
+
+function Pages({ pages }: { pages: readonly ImportPage[] }) {
+  return (
+    <>
+      <h2 className={styles.sectionTitle}>Pages read</h2>
+      <div className={styles.tableScroll} tabIndex={0} aria-label="Pages read">
+        <table className={styles.table}>
+          <thead>
+            <tr>
+              <th scope="col">Page</th>
+              <th scope="col">Kind</th>
+              <th scope="col">Answered</th>
+              <th scope="col">Size</th>
+              <th scope="col">Content digest</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pages.map((entry) => (
+              <tr key={entry.url}>
+                <td>
+                  <span className={styles.mono}>{entry.url}</span>
+                  {entry.redirect_count > 0 ? (
+                    <>
+                      <br />
+                      <span className={styles.cellMuted}>
+                        Redirected {String(entry.redirect_count)} time(s) to {entry.final_url}
+                      </span>
+                    </>
+                  ) : null}
+                </td>
+                <td>{entry.kind === "POLICY" ? (entry.name ?? "Policy") : "Product"}</td>
+                <td>
+                  {entry.retrieved ? (
+                    <StatusMark tone="ok" label={`HTTP ${String(entry.status_code ?? 200)}`} />
+                  ) : (
+                    <>
+                      <StatusMark tone="fail" label="Not read" />
+                      <br />
+                      <span className={styles.cellMuted}>{entry.detail}</span>
+                    </>
+                  )}
+                </td>
+                <td>{entry.retrieved ? `${String(entry.byte_count)} bytes` : "0 bytes"}</td>
+                <td>
+                  <span className={styles.mono}>{shortened(entry.content_hash)}</span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+function Products({ products }: { products: readonly ImportProduct[] }) {
+  if (products.length === 0) {
+    return (
+      <>
+        <h2 className={styles.sectionTitle}>Products extracted</h2>
+        <p>No product could be extracted from these pages.</p>
+      </>
+    );
+  }
+  return (
+    <>
+      <h2 className={styles.sectionTitle}>Products extracted</h2>
+      <div className={styles.tableScroll} tabIndex={0} aria-label="Products extracted">
+        <table className={styles.table}>
+          <thead>
+            <tr>
+              <th scope="col">Product</th>
+              <th scope="col">Variant</th>
+              <th scope="col">Price</th>
+              <th scope="col">Availability</th>
+              <th scope="col">Read from</th>
+            </tr>
+          </thead>
+          <tbody>
+            {products.flatMap((product) =>
+              product.variants.map((variant, index) => (
+                <tr key={`${product.external_id}:${variant.sku}`}>
+                  <td>
+                    {index === 0 ? (
+                      <>
+                        {product.title}
+                        <br />
+                        <span className={styles.cellMuted}>
+                          {product.category ?? "No category published"}
+                        </span>
+                      </>
+                    ) : null}
+                  </td>
+                  <td>
+                    <span className={styles.mono}>{variant.sku}</span>
+                    {variant.label === null ? null : (
+                      <>
+                        <br />
+                        <span className={styles.cellMuted}>{variant.label}</span>
+                      </>
+                    )}
+                  </td>
+                  <td>{formatImportedPrice(variant.price_amount_minor, variant.currency)}</td>
+                  <td>
+                    {availabilityLabel(variant.availability)}
+                    {variant.availability_text === null ? null : (
+                      <>
+                        <br />
+                        <span className={styles.cellMuted}>
+                          Page says: {variant.availability_text}
+                        </span>
+                      </>
+                    )}
+                  </td>
+                  <td>
+                    {index === 0 ? (
+                      <>
+                        {extractionLabel(product.extraction)}
+                        <br />
+                        <span className={styles.mono}>{product.source_url}</span>
+                      </>
+                    ) : null}
+                  </td>
+                </tr>
+              )),
+            )}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+function Policies({ policies }: { policies: readonly ImportPolicy[] }) {
+  if (policies.length === 0) return null;
+  return (
+    <>
+      <h2 className={styles.sectionTitle}>Policy text</h2>
+      {policies.map((policy) => (
+        <div key={policy.name}>
+          <p className={styles.reviewMeta}>
+            {policy.name} from {policy.source_url}
+            {policy.truncated ? ", cut to the length a source document holds" : ""}
+          </p>
+          <p className={styles.tracePayload}>{policy.body}</p>
+        </div>
+      ))}
+    </>
+  );
+}
+
+function Notes({
+  title,
+  empty,
+  notes,
+}: {
+  title: string;
+  empty: string;
+  notes: readonly ImportNote[];
+}) {
+  return (
+    <>
+      <h2 className={styles.sectionTitle}>{title}</h2>
+      {notes.length === 0 ? (
+        <p className={styles.reviewMeta}>{empty}</p>
+      ) : (
+        <ul className={styles.warningList}>
+          {notes.map((note) => (
+            <li
+              key={`${note.code}:${note.source_url}:${note.subject ?? ""}`}
+              className={styles.warningItem}
+            >
+              <span className={styles.warningCode}>{note.code}</span>
+              <span>
+                {note.detail}
+                <br />
+                <span className={styles.mono}>{note.source_url}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}
+
+/**
+ * The one command on this page, and the one number a merchant supplies.
+ *
+ * The stock level is asked for because no public page publishes one and AgentRank will not invent
+ * one. The wording says exactly that, and says what the number is for, because a merchant reading
+ * "stock level" on a page about their own store could reasonably think it changes their real
+ * inventory. It does not: it is the stock the isolated evaluation world holds.
+ */
+function Confirm({ found, action }: { found: SourceImport; action: ConfirmImportAction }) {
+  const [state, formAction, pending] = useActionState(action, IDLE_CONFIRM);
+  if (state.ok) {
+    return <Confirmed state={state} />;
+  }
+  if (found.summary.source_snapshot_id !== null) {
+    return (
+      <>
+        <h2 className={styles.sectionTitle}>Source snapshot</h2>
+        <p role="status">
+          This import has already been confirmed and is part of your source history.
+        </p>
+        <p className={styles.reviewMeta}>
+          <Link
+            className={styles.rowLink}
+            href={`/sources/${encodeURIComponent(found.summary.source_snapshot_id)}`}
+          >
+            Open the source snapshot it created
+          </Link>
+        </p>
+      </>
+    );
+  }
+  const showsError = state.message !== null && !pending;
+  return (
+    <>
+      <h2 className={styles.sectionTitle}>Create the source snapshot</h2>
+      {found.blockers.length > 0 ? (
+        <>
+          <p>This import cannot become a source snapshot yet.</p>
+          <ul className={styles.warningList}>
+            {found.blockers.map((blocker) => (
+              <li key={blocker.code} className={styles.warningItem}>
+                <span className={styles.warningCode}>{blocker.code}</span>
+                <span>{blocker.detail}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
+      <form action={formAction} aria-label="Create a source snapshot from this import">
+        <ul className={styles.launchTerms}>
+          <li>
+            Confirming stores an immutable source snapshot of exactly what is shown above. Your
+            existing snapshots never change.
+          </li>
+          <li>Nothing is compiled and no evaluation runs. Both remain separate commands.</li>
+          <li>
+            This does not change any price, stock level or order on your store. AgentRank only read
+            your pages.
+          </li>
+        </ul>
+        {found.stock_level_required ? (
+          <>
+            <p>
+              These pages say what is available and not how much of it. State the stock level the
+              isolated evaluation world should hold for every variant whose page published no
+              quantity. Variants whose page said they are out of stock are stored as zero.
+            </p>
+            <label className={styles.field}>
+              Evaluation stock level
+              <input
+                name="stock_level"
+                type="number"
+                inputMode="numeric"
+                min={0}
+                max={found.max_stock_level}
+                step={1}
+                required
+                defaultValue="10"
+                aria-describedby={showsError ? "confirm-error" : "stock-level-hint"}
+              />
+            </label>
+            <p className={styles.reviewMeta} id="stock-level-hint">
+              Your own words about your catalog, not a figure read from your store.
+            </p>
+          </>
+        ) : null}
+        <div className={styles.buttonRow}>
+          <button className={styles.button} type="submit" disabled={pending || !found.confirmable}>
+            Create source snapshot
+          </button>
+        </div>
+        {pending ? (
+          <p className={styles.mutationPending} role="status">
+            Creating your source snapshot
+          </p>
+        ) : null}
+        {showsError ? (
+          <p className={styles.mutationAlert} role="alert" id="confirm-error">
+            {state.message}
+            {state.stale ? " The state shown here is current." : ""}
+          </p>
+        ) : null}
+      </form>
+    </>
+  );
+}
+
+export function Confirmed({ state }: { state: ConfirmState }) {
+  return (
+    <>
+      <h2 className={styles.sectionTitle}>Source snapshot</h2>
+      <div role="status">
+        <p>
+          {state.createdSnapshot
+            ? `Source snapshot ${state.sourceLabel ?? ""} created. Nothing has been compiled and no evaluation has run.`
+            : "This import says the same thing as your current source snapshot, so no new snapshot was created."}
+        </p>
+        {state.snapshotId === null ? null : (
+          <>
+            <p className={styles.reviewMeta}>
+              <Link
+                className={styles.rowLink}
+                href={`/sources/${encodeURIComponent(state.snapshotId)}`}
+              >
+                Open this source snapshot
+              </Link>
+            </p>
+            <p className={styles.reviewMeta}>
+              <Link className={styles.rowLink} href="/evaluations">
+                Continue to your evaluation setup
+              </Link>
+            </p>
+          </>
+        )}
+      </div>
+    </>
+  );
+}
+
+/** A content digest, short enough for a table cell and long enough to compare two by eye. */
+function shortened(hash: string | null): string {
+  if (hash === null) return "";
+  const value = hash.replace(/^sha256:/, "");
+  return `${value.slice(0, 12)}...`;
+}

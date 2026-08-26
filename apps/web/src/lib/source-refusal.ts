@@ -30,6 +30,34 @@ export const SOURCE_REFUSALS: Record<string, string> = {
   unauthenticated: "Your session has expired. Sign in again to continue.",
 };
 
+/**
+ * Refusals a merchant import can produce, in the merchant's own terms.
+ *
+ * The API answers 422 with a sentence for anything about a URL it will not fetch, which is
+ * already written for a merchant and passes through the `detail` fallback below. What is mapped
+ * here is the small set of codes whose API wording is about a request rather than about a store.
+ */
+export const IMPORT_REFUSALS: Record<string, string> = {
+  request_too_large: "This import names more than the console can send. Remove some pages.",
+  request_too_deeply_nested:
+    "The console could not send this import. Reload the page and try again.",
+  length_required: "The console could not send this import. Reload the page and try again.",
+  unauthenticated: "Your session has expired. Sign in again to import your pages.",
+};
+
+export const CONFIRM_REFUSALS: Record<string, string> = {
+  no_products:
+    "No product could be imported from these pages, so there is no source snapshot to create.",
+  import_failed: "This import did not finish, so there is nothing to confirm. Run a new one.",
+  stock_level_required:
+    "State the stock level the evaluation world should hold before creating the snapshot.",
+  stock_level_out_of_range: "That stock level is outside the range AgentRank accepts.",
+  source_version_conflict:
+    "Another process is publishing source snapshots for your merchant. Reload and try again.",
+  not_found: "This import is no longer available. Reload to see your imports.",
+  unauthenticated: "Your session has expired. Sign in again to create the snapshot.",
+};
+
 export const COMPILE_REFUSALS: Record<string, string> = {
   not_found: "This source snapshot is no longer available. Reload to see your current source.",
   unauthenticated: "Your session has expired. Sign in again to run the compiler.",

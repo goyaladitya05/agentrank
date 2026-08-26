@@ -50,8 +50,13 @@ function Current({ current }: { current: SourceSnapshotSummary | null }) {
           change any price, stock level or order.
         </p>
         <p className={styles.reviewMeta}>
+          <Link className={styles.rowLink} href="/sources/import">
+            Import it from your own public pages
+          </Link>
+        </p>
+        <p className={styles.reviewMeta}>
           <Link className={styles.rowLink} href="/sources/new">
-            Supply your source document
+            Or write your source document yourself
           </Link>
         </p>
       </>
@@ -86,8 +91,13 @@ function Current({ current }: { current: SourceSnapshotSummary | null }) {
         </Link>
       </p>
       <p className={styles.reviewMeta}>
+        <Link className={styles.rowLink} href="/sources/import">
+          Import newer evidence from your own public pages
+        </Link>
+      </p>
+      <p className={styles.reviewMeta}>
         <Link className={styles.rowLink} href="/sources/new">
-          Supply newer source evidence
+          Or supply newer source evidence yourself
         </Link>
       </p>
     </>

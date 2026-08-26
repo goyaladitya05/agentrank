@@ -88,6 +88,11 @@ export default async function NewSourcePage() {
             are held elsewhere and nothing you write here changes any of them.
           </p>
           <p className={styles.reviewMeta}>
+            <Link className={styles.rowLink} href="/sources/import">
+              Or import it from your own public pages
+            </Link>
+          </p>
+          <p className={styles.reviewMeta}>
             <Link className={styles.rowLink} href="/sources">
               Back to your source history
             </Link>
