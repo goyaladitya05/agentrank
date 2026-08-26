@@ -41,6 +41,7 @@ MANAGED = (
     "GEMINI_API_KEY",
     "RAZORPAY_KEY_ID",
     "RAZORPAY_KEY_SECRET",
+    "AGENTRANK_IMPORT_ALLOWED_NETWORKS",
 )
 
 
@@ -169,6 +170,7 @@ def test_a_missing_provider_credential_is_a_capability_and_not_a_failure(
         "openai": False,
         "gemini": False,
         "razorpay_test_mode": False,
+        "import_networks_widened": False,
     }
     assert settings.openai is None
     assert settings.gemini is None
@@ -243,3 +245,50 @@ def test_a_configuration_failure_names_variables_and_never_values(
     with pytest.raises(ValueError) as refused:
         build_settings()
     assert "the-secret-that-must-not-be-printed" not in str(refused.value)
+
+
+def test_a_deployment_refuses_to_start_with_an_importer_network_allowance(
+    environment: dict[str, str], elsewhere: Path
+) -> None:
+    """The merchant page importer reaches the public internet in a deployment, and only that.
+
+    A structural block rather than a policy, in the same shape as the refusal of a live payment
+    key. The variable that widens the importer's address policy is how a development machine
+    reaches a synthetic storefront on loopback; in a deployment the same variable would turn one
+    authenticated endpoint into a way to reach that deployment's own private network, so a process
+    holding one does not start.
+    """
+    del elsewhere
+    os.environ[ENVIRONMENT_VARIABLE] = "production"
+    os.environ.update(environment)
+    os.environ["AGENTRANK_IMPORT_ALLOWED_NETWORKS"] = "127.0.0.0/8"
+
+    with pytest.raises(ValueError, match="AGENTRANK_IMPORT_ALLOWED_NETWORKS"):
+        build_settings()
+
+
+def test_a_development_process_may_reach_the_networks_it_names(
+    environment: dict[str, str], elsewhere: Path
+) -> None:
+    del elsewhere
+    os.environ[ENVIRONMENT_VARIABLE] = "development"
+    os.environ.update(environment)
+    os.environ["AGENTRANK_IMPORT_ALLOWED_NETWORKS"] = "127.0.0.0/8"
+
+    settings = build_settings()
+
+    assert settings.capability_report()["import_networks_widened"] is True
+    assert settings.import_address_policy.permits_port(8080)
+
+
+def test_a_network_allowance_that_is_not_cidr_is_a_startup_failure(
+    environment: dict[str, str], elsewhere: Path
+) -> None:
+    """Parsed at startup so a malformed block names the variable rather than a refused import."""
+    del elsewhere
+    os.environ[ENVIRONMENT_VARIABLE] = "development"
+    os.environ.update(environment)
+    os.environ["AGENTRANK_IMPORT_ALLOWED_NETWORKS"] = "not-a-network"
+
+    with pytest.raises(ValueError, match="CIDR"):
+        build_settings()

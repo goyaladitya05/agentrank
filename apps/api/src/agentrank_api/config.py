@@ -37,6 +37,8 @@ from pydantic import Field, SecretStr, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import URL
 
+from agentrank_api.importer.network import PUBLIC_ONLY, AddressPolicy, PermittedNetworks
+
 log = logging.getLogger(__name__)
 
 # The environments that are allowed to be configured from a file on disk. Everything else is a
@@ -135,6 +137,12 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr | None = Field(default=None, alias="OPENAI_API_KEY")
     gemini_api_key: SecretStr | None = Field(default=None, alias="GEMINI_API_KEY")
 
+    # Networks the merchant page importer may reach in addition to the public internet, as a
+    # comma separated list of CIDR blocks. Empty everywhere except a developer's machine and the
+    # test suite, where it is how a synthetic merchant fixture served on loopback is reachable at
+    # all, and refused outright in any environment that is a deployment. See the validator below.
+    import_allowed_networks: str = Field(default="", alias="AGENTRANK_IMPORT_ALLOWED_NETWORKS")
+
     @model_validator(mode="after")
     def razorpay_is_test_mode_or_absent(self) -> Self:
         """Refuse a half configured integration, and refuse a live key outright.
@@ -162,6 +170,46 @@ class Settings(BaseSettings):
         if self.razorpay_timeout_seconds <= 0:
             raise ValueError("RAZORPAY_TIMEOUT_SECONDS must be positive")
         return self
+
+    @model_validator(mode="after")
+    def import_allowance_is_not_a_deployment_setting(self) -> Self:
+        """Refuse an importer network allowance outside a development, CI or test process.
+
+        The merchant page importer connects to an address a request body chose, and the boundary
+        that makes that safe is "globally routable addresses only". This variable is the one way
+        to widen it, and widening it in a deployment would turn one authenticated endpoint into a
+        way to reach whatever that deployment can reach: its own database, its metadata service,
+        anything on its private network.
+
+        A structural block rather than a policy, in the same shape as the Razorpay live key
+        refusal above. There is no request field, no header and no flag that relaxes it, and no
+        combination of environment variables that produces a production process with a widened
+        importer. Removing this check would be the deliberate act of enabling it.
+
+        Parsed here rather than at first use so that a malformed block is a startup failure
+        naming the variable, not a refused import naming nothing.
+        """
+        if not self.import_allowed_networks.strip():
+            return self
+        if not self.file_configured:
+            raise ValueError(
+                "AGENTRANK_IMPORT_ALLOWED_NETWORKS may not be set in a deployment; the merchant"
+                " page importer reaches public internet addresses only"
+            )
+        PermittedNetworks.parse(self.import_allowed_networks)
+        return self
+
+    @property
+    def import_address_policy(self) -> AddressPolicy:
+        """Which addresses this process may fetch a merchant page from.
+
+        The public-only policy in every deployment, because the validator above refuses any other
+        answer there. A development or test process may widen it, which is how the synthetic
+        merchant fixture the test suite serves on loopback is reachable.
+        """
+        if not self.import_allowed_networks.strip():
+            return PUBLIC_ONLY
+        return PermittedNetworks.parse(self.import_allowed_networks).policy()
 
     @property
     def razorpay(self) -> RazorpayCredentials | None:
@@ -222,6 +270,10 @@ class Settings(BaseSettings):
             "openai": self.openai is not None,
             "gemini": self.gemini is not None,
             "razorpay_test_mode": self.razorpay is not None,
+            # Presence rather than the blocks themselves, and true is the interesting value: it
+            # says this process may fetch merchant pages from somewhere other than the public
+            # internet, which no deployment can be.
+            "import_networks_widened": bool(self.import_allowed_networks.strip()),
         }
 
     @property
