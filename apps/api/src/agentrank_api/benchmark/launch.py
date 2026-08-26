@@ -450,7 +450,7 @@ class MerchantEvaluationLaunchService:
         last of the state reads: a run that finished earlier is seen and makes this a
         re-evaluation, and one still executing is refused for being active. What is left is the
         window between that read and the insert, which no ordering closes. See
-        docs/shortcomings.md.
+        docs/architecture.md.
 
         The blockers are still appended in their own fixed order, because the first of them is
         the refusal a merchant is given and that should not depend on which read happened first.

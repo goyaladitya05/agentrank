@@ -176,7 +176,7 @@ class ToolLedger:
     server side record in `agentrank_api.benchmark.endpoint`, which nothing it can reach refers
     to at all. This class is for the trusted in process path, and what it guarantees is that the
     executor does not decide the origin, not that it could not tamper with the record. See
-    docs/shortcomings.md.
+    SECURITY.md.
 
     The fault reported is the first FAILED call rather than the last. An executor stops at its
     first refusal, so the first failure is the one that ended the mission, and reporting a later

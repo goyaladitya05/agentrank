@@ -75,7 +75,7 @@ class SimulatedDemand:
 
     Simulated, and the word is in the type name because it has to survive being quoted. No money
     moves in a benchmark run, none of these figures is revenue, and the assumptions behind them
-    are written down in docs/benchmark.md rather than left to whoever reads the number.
+    are written down in docs/methodology.md rather than left to whoever reads the number.
 
     The partition is three ways rather than two. `lost` is demand a merchant could have served
     and did not. `not_measured` is demand nobody found out about, because the benchmark's own

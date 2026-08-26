@@ -94,7 +94,7 @@ class NewCheckout:
     computed values. Neither has an authoritative source yet: there is no shipping quote
     provider and no promotion engine. They are here so that the price model is complete
     and so that adding either later is not a migration, and they are deliberately not
-    reachable from the API. See docs/shortcomings.md.
+    reachable from the API. See docs/architecture.md.
     """
 
     merchant_id: uuid.UUID
@@ -398,7 +398,7 @@ def _quote_line(item: CheckoutItem, by_id: dict[uuid.UUID, Variant]) -> QuotedLi
 
     Inventory is compared, never decremented and never reserved. This is a quote, and a
     quote does not take stock off the shelf. What that leaves open is recorded in
-    docs/shortcomings.md: stock can change between the quote and any later execution.
+    docs/architecture.md: stock can change between the quote and any later execution.
 
     The price and the semantic snapshot are read together, from the same variant, at the
     same instant. A later catalog edit changes neither, so what the quote says it costs and

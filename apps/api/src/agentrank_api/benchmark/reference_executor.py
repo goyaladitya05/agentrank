@@ -9,7 +9,7 @@ What this is not, and the distinction is load bearing rather than modest: it is 
 not an agent baseline and not a model baseline. It contains no model, no prompt and no language
 understanding, and it reads structured commerce fields a real storefront does not publish. Its
 completion rate is a statement about whether the benchmark plumbing works, and it must never be
-presented as evidence of what an autonomous agent can do. See docs/benchmark.md.
+presented as evidence of what an autonomous agent can do. See docs/methodology.md.
 
 Three rules shape it.
 
@@ -23,7 +23,7 @@ which returns the same view models the HTTP routes serialize. This module import
 repository and no ORM row, and a test reads its own source to say so. The surface it is handed
 does hold a session behind two private attributes, because it holds application services, so the
 guarantee is that reaching one takes a deliberate act rather than that it is impossible. See
-docs/shortcomings.md.
+SECURITY.md.
 
 And it decides deterministically. No randomness, no clock in any decision, no set iteration and
 no reliance on the order rows came back in. The same world and the same brief always produce the
@@ -102,7 +102,7 @@ def _revision() -> str:
     Resolved through `sys.modules` rather than by importing this module into itself, which is
     what lets it be computed at import time. It covers the selection rule, the candidate
     assessment and the abstention rule, which are all here; it does not cover the shared
-    comparison vocabulary they call into. See docs/shortcomings.md.
+    comparison vocabulary they call into. See docs/methodology.md.
     """
     return implementation_revision(sys.modules[__name__])
 

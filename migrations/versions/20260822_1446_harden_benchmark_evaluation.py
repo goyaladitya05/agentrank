@@ -27,7 +27,7 @@ Points worth knowing when reading this:
   autogenerate does not detect a changed expression on a constraint that exists on both sides,
   only a missing or added one, so a value list that grows has to be rewritten by hand or the
   model and the database drift apart in silence. That is a known limitation, it is recorded in
-  docs/shortcomings.md, and this migration is what it looks like when it bites.
+  docs/architecture.md, and this migration is what it looks like when it bites.
 - The column is added before the constraints that reference it, and dropped after them.
 
 Revision ID: bc02a36a0a78

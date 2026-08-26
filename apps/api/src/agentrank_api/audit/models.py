@@ -5,7 +5,7 @@ caused it, which resource it affected, and what structured data went with it. It
 an application log. Nothing here is a place to put a message a human wrote.
 
 The table is append only. That is enforced at two levels: the application exposes no
-update and no delete, and a trigger rejects both at the database. See docs/security.md.
+update and no delete, and a trigger rejects both at the database. See SECURITY.md.
 """
 
 import uuid

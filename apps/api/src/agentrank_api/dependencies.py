@@ -49,7 +49,7 @@ def get_payment_provider(request: Request) -> PaymentProvider:
     could carry one.
 
     One implementation exists and it is a deterministic fake. Nothing here calls anything
-    external. See docs/integrations.md.
+    external. See docs/architecture.md.
     """
     provider: PaymentProvider = request.app.state.payment_provider
     return provider
@@ -162,7 +162,7 @@ async def require_merchant(
     `transaction_timestamp()`. Every event a request wrote would then carry the moment its
     credential was checked rather than the moment its work began, which would quietly change a
     documented property of the audit trail. Ending the read here means the service opens its own
-    transaction, exactly as it does when the command line calls it. See docs/decisions.md.
+    transaction, exactly as it does when the command line calls it. See docs/architecture.md.
 
     Rolling back is safe because what is returned is stable identifiers and, where appropriate,
     a small immutable benchmark-run capability. A principal built out of the credential row

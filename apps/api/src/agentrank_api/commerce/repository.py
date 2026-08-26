@@ -166,7 +166,7 @@ class CatalogRepository:
         product identifier is worth nothing to anybody who is not its merchant.
 
         `selectinload(Product.variants)` loads every variant, active or not, which is one of
-        the reasons this read is not public. See docs/decisions.md.
+        the reasons this read is not public. See docs/architecture.md.
         """
         statement = (
             select(Product)

@@ -23,7 +23,7 @@ taxonomy, which would have to be translated into the three classes above anyway.
 
 So this is about four hundred lines of adapter against five documented endpoints, with the same
 `httpx2` already in the dependency tree for the test client, and no new dependency at all. See
-docs/decisions.md.
+docs/architecture.md.
 
 ## What this adapter refuses to do
 

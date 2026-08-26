@@ -48,7 +48,7 @@ CREDENTIAL_REVOKED = "credential.revoked"
 # the same one an operator abandonment carries. There is deliberately no new `OPERATOR` actor
 # type, because there is no authenticated operator behind these commands, and adding the label
 # without the evidence would be adding something that looks like attribution and is not. See
-# docs/security.md.
+# SECURITY.md.
 PROVISIONING_ACTOR = ActorType.SYSTEM
 
 
@@ -194,7 +194,7 @@ class MerchantCredentialService:
         the update, and the next request presenting this token finds nothing: the authentication
         read has the revocation condition in its SQL, so there is no cache and no window to wait
         out. A request that was already authenticated when this committed is not retroactively
-        unauthenticated, and that is the honest boundary rather than a gap. See docs/security.md.
+        unauthenticated, and that is the honest boundary rather than a gap. See SECURITY.md.
 
         Idempotent. Revoking an already revoked credential returns it unchanged and appends
         nothing, so a repeated command cannot move the original timestamp or produce a second

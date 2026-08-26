@@ -29,7 +29,7 @@ class AuthenticatedMerchant:
 
     `credential_id` is evidence, not identity. It says which key authorized a request. It does
     not say who holds that key, and nothing in this system claims it does: a credential is a
-    machine credential and a machine credential is not a person. See docs/security.md.
+    machine credential and a machine credential is not a person. See SECURITY.md.
 
     `benchmark_capability` exists only when the authenticated credential was issued by the
     benchmark runner for the currently persisted run. It carries no mutable credential state and

@@ -363,7 +363,7 @@ def test_the_schema_still_publishes_no_operator_recovery(catalog_settings: Setti
     Restated here beside the scoping tests, because the tempting move once a caller can be
     identified is to publish the operator commands and gate them. A merchant credential
     identifies a merchant, not an operator, and abandoning a payment or resuming one is neither
-    merchant's business. See docs/security.md.
+    merchant's business. See SECURITY.md.
     """
     paths = set(create_app(catalog_settings).openapi()["paths"])
 

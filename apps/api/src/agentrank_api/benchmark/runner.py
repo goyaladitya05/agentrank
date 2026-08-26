@@ -793,7 +793,7 @@ class BenchmarkRunService:
         is unknown, so letting the next run reset the world underneath it would destroy the only
         evidence of it. An operator reads it with `benchmark show` and closes it with
         `benchmark abort`, which is the existing honest close and is what releases the claim.
-        See docs/benchmark.md.
+        See docs/methodology.md.
         """
         active = await self._runs.active_run_id(merchant_id=merchant_id)
         if active is None:
@@ -853,7 +853,7 @@ class BenchmarkRunService:
         A payment reference is recorded only when the attempt really is SUCCEEDED for this
         merchant. What is deliberately not done here is re-marking the mission when it is not:
         the evaluation stands on the report, and the gap is written down in
-        docs/shortcomings.md rather than papered over.
+        docs/methodology.md rather than papered over.
         """
         if observed.selection is not None:
             variant = await self._session.get(Variant, observed.selection.variant_id)

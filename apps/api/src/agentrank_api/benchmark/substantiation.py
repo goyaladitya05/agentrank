@@ -247,7 +247,7 @@ class CommerceSubstantiation:
         several lines is described by the line the executor named if that line is on it, and by
         the first otherwise: the evaluator models one selection per mission, the quoted total
         covers all of them, and the budget is therefore still checked against everything that
-        would be paid. That limit is in docs/shortcomings.md.
+        would be paid. That limit is in docs/methodology.md.
 
         Everything describing the variant comes from the pre-mission catalog. A variant that is
         not in it was not something this merchant sold when the mission started, which is what a

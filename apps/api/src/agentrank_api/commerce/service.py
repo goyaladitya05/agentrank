@@ -6,7 +6,7 @@ Routes validate a request, call one of these methods and serialize the result.
 Both methods are merchant scoped and both require an authenticated merchant over HTTP. That is
 Phase 1H's explicit answer to a question the code had never been asked: whether a catalog read
 is public. It is not, because of what these particular responses contain rather than because a
-catalog is secret. See docs/decisions.md.
+catalog is secret. See docs/architecture.md.
 """
 
 import uuid
@@ -34,7 +34,7 @@ class CatalogService:
         catalog is merchant private in this system, which is a decision rather than an
         oversight: what these responses carry is stock levels, deactivated products and a
         merchant's own external identifiers, none of which a storefront publishes. See
-        docs/decisions.md.
+        docs/architecture.md.
         """
         product = await self._catalog.get_product(product_id, merchant_id=merchant_id)
         if product is None:

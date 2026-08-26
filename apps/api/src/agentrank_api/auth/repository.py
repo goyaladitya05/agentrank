@@ -69,7 +69,7 @@ class MerchantCredentialRepository:
         When this takes effect is decided by the transaction this runs in. A revocation that
         commits after this statement has read is not observed by this request, which is already
         authenticated by then. A request whose read happens after that commit finds nothing. See
-        docs/security.md.
+        SECURITY.md.
         """
         statement = select(MerchantApiCredential).where(
             MerchantApiCredential.id == credential_id,

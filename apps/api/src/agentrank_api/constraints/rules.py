@@ -15,7 +15,7 @@ Two rules shape the whole module:
 
 The comparison rule for text is exact after normalization, and normalization is only
 case folding and trimming. `black` matches `Black`, and nothing decides that `charcoal`
-is close enough. See docs/decisions.md.
+is close enough. See docs/architecture.md.
 """
 
 import math
@@ -66,7 +66,7 @@ class PersistedConstraintKind(StrEnum):
     Two, and both are semantic. `MAX_TOTAL_AMOUNT` and `MAX_QUANTITY` exist on a
     `BuyerIntent` and are deliberately not here: financial limits are authorized by the
     `SpendingMandate` and nowhere else. Two authoritative copies of one ceiling is a way
-    for them to disagree. See docs/decisions.md.
+    for them to disagree. See docs/architecture.md.
     """
 
     ALLOWED_CATEGORY = "allowed_category"

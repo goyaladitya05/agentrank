@@ -20,7 +20,7 @@ finds nothing in the worker's environment is evidence rather than a test that ca
 What is deliberately not claimed is operating system sandboxing. The worker is an ordinary
 process on the same filesystem, and in a developer checkout the repository is a readable
 directory. The threat model is a model that is handed a brief and a tool schema, not hostile
-native code, and docs/security.md says so in those words rather than implying more.
+native code, and SECURITY.md says so in those words rather than implying more.
 """
 
 import json

@@ -173,7 +173,7 @@ async def test_occurred_at_is_append_time_and_not_commit_order(
     order either, and it would cost the property that events written in one transaction share
     one instant, which is how other tests say "these were one unit of work". The consequence
     that matters is the rule this pins: nothing may infer that one thing happened before
-    another from the relative order of these rows. See docs/decisions.md.
+    another from the relative order of these rows. See docs/architecture.md.
     """
     slow_resource, quick_resource = uuid.uuid7(), uuid.uuid7()
 

@@ -33,7 +33,7 @@ What that buys: the value in the browser's cookie is not this verifier. The cons
 verifier from the cookie with an HMAC under a secret only the console deployment holds, so a
 cookie recovered from a retained browser trace, a proxy log or a support screenshot is inert
 without that secret. The cookie and the deployment secret are both required and neither is
-sufficient. See docs/security.md.
+sufficient. See SECURITY.md.
 
 `ars_` rather than `ar_`: the two grammars are disjoint, so a console session verifier can never
 parse as a merchant API key and a merchant API key can never parse as one of these. Presenting

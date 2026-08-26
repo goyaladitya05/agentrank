@@ -13,7 +13,7 @@ authoritative state, and a caller that could state one could state a different o
 There is also nothing that configures a provider. No `simulate=timeout`, no outcome override,
 no test mode flag. The fake provider is chosen by the application at construction and
 configured by whoever constructed it, so a production shaped caller has no way to ask for a
-particular result. See docs/decisions.md.
+particular result. See docs/architecture.md.
 
 Nothing here exposes a provider's own vocabulary either. `provider_reference` is a string this
 application stored and `failure_code` is one it recorded, and neither is a passthrough of a

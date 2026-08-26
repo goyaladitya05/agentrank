@@ -58,7 +58,7 @@ class AuditRepository:
 
         The rule that follows, and it matters most for the phase that adds payments: never
         infer that one thing happened before another from the relative order of these rows.
-        Authoritative state and its locked transitions decide that. See docs/decisions.md.
+        Authoritative state and its locked transitions decide that. See docs/architecture.md.
 
         `credential_id` defaults to absent, and absent means nobody knows rather than nobody
         did. Two kinds of caller legitimately leave it unset: everything written before Phase

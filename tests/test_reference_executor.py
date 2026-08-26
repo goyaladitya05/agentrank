@@ -316,7 +316,7 @@ def test_an_executor_names_nothing_that_could_open_a_session(module: ModuleType)
     application services and those hold the session, so anything with the surface can walk to one
     through two private attributes. Python has no way to prevent that, and pretending otherwise
     would be worse than saying so. What this asserts is the narrower and checkable half, and the
-    honest limit is written down in docs/shortcomings.md.
+    honest limit is written down in docs/methodology.md.
     """
     imported = _imported_modules(module)
 

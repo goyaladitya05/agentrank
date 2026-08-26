@@ -129,7 +129,7 @@ class InventoryReservation(Base):
     A checkout may accumulate several reservations over its life, at most one of which is
     holding stock. That keeps a released reservation as history rather than rewriting it, which is
     the same choice this project makes everywhere else authorization adjacent data is
-    written. See docs/decisions.md.
+    written. See docs/architecture.md.
     """
 
     __tablename__ = "inventory_reservation"

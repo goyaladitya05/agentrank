@@ -65,7 +65,7 @@ OPERATOR_ABANDONED = "OPERATOR_ABANDONED"
 # which has confirmed nothing, and it is not the buyer, who did not choose this. SYSTEM is the
 # honest one of the three available, and it names a role rather than an identity for the same
 # reason every other actor here does: nothing authenticates anybody yet. See
-# docs/shortcomings.md.
+# SECURITY.md.
 ABANDONMENT_ACTOR = ActorType.SYSTEM
 
 # The states an abandonment may act on. One, and the narrowness is the point: UNKNOWN is the
@@ -120,7 +120,7 @@ def validate_operator_note(note: str) -> str:
 
     Nothing scans it, and it must never carry a secret. A key, a card number or a password put
     here lands in an append only table that refuses UPDATE and DELETE, which is the worst
-    possible place for one. See docs/security.md.
+    possible place for one. See SECURITY.md.
     """
     trimmed = note.strip()
     if not trimmed:

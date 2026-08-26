@@ -15,7 +15,7 @@ Two kinds of statement live here and the difference is the whole point:
 Nothing here is persisted. An intent is a request, not authorization data. Its enforceable
 half is validated into an `IntentConstraintSet`, which is authoritative and immutable, and
 that is what execution will read. The description and the preferences survive only in the
-`mandate.created` audit payload, and nothing reads them back. See docs/decisions.md.
+`mandate.created` audit payload, and nothing reads them back. See docs/architecture.md.
 
 The financial kinds here are the exception to that. `MaxTotalAmount` and `MaxQuantity` are
 never persisted as constraints, because a `SpendingMandate` is the only authority on money

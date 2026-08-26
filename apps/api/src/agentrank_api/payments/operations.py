@@ -37,7 +37,7 @@ outcome inside a print statement.
 Nothing here reads the audit log to decide anything. `show` can include recent events and
 they are informational, exactly as they are everywhere else in this system: authoritative
 payment state is `PaymentAttempt` and its locked transitions, and event order is transaction
-start order rather than commit order. See docs/decisions.md.
+start order rather than commit order. See docs/architecture.md.
 """
 
 import uuid

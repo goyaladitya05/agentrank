@@ -533,7 +533,7 @@ def evaluator_version() -> str:
     vocabulary, the ordering and the attribution tables, not the body of `evaluate_mission`. A
     change to how the budget is compared or to which stage a reason is raised at moves the
     marking without moving this. It is a version stamp rather than a proof, and
-    docs/shortcomings.md says so.
+    docs/methodology.md says so.
     """
     payload = {
         "reasons": [reason.value for reason in FailureReason],

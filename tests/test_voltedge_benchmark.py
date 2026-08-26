@@ -117,7 +117,7 @@ def test_no_stretch_of_the_suite_shares_one_expected_outcome() -> None:
     Version 1 listed the eight purchasable missions and then the six controls, which made the
     ground truth a step function of the call index: an executor holding a single integer counter
     scored fourteen out of fourteen on its first ever run without reading the catalog. That is a
-    much stronger giveaway than the repeat exposure inference docs/shortcomings.md describes, and
+    much stronger giveaway than the repeat exposure inference docs/methodology.md describes, and
     it is why version 2 exists.
 
     Two is the bound rather than one, because alternating perfectly is its own pattern.

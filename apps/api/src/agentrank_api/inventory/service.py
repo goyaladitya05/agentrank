@@ -317,7 +317,7 @@ class InventoryReservationService:
         )
         if shortfalls:
             # Unreachable while nothing in this application writes stock, and stated loudly
-            # rather than swallowed. See docs/shortcomings.md.
+            # rather than swallowed. See docs/architecture.md.
             await self._append(
                 reservation,
                 INVENTORY_OVERSOLD,

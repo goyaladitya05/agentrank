@@ -59,7 +59,7 @@ in fact behaved correctly. A settled payment is never rewritten in either direct
 What this module never does: retry an UNKNOWN attempt, treat a transport failure as a decline,
 treat a missing record as a failure, release stock under an unresolved payment, decrement
 inventory outside the success transaction, rewrite a terminal outcome because a later
-observation disagrees, or claim exactly once execution. See docs/security.md.
+observation disagrees, or claim exactly once execution. See SECURITY.md.
 """
 
 import uuid

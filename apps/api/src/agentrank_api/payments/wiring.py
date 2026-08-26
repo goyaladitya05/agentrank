@@ -10,7 +10,7 @@ this phase and it is why this module is three lines: when a real processor exist
 configured here, from settings, and both callers get it without either of them changing.
 
 Nothing selects a provider from a request, an argument or an environment variable that a
-caller controls. See docs/integrations.md.
+caller controls. See docs/architecture.md.
 """
 
 from agentrank_api.payments.fake import FakePaymentProvider

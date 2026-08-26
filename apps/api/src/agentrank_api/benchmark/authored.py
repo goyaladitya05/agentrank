@@ -28,7 +28,7 @@ from the rows and hands out briefs. The fixture is read again to put the world b
 mission, which is trusted operator side work with a database credential, and is not something a
 worker does or could do.
 
-What this boundary is and is not is written down in docs/security.md rather than overclaimed
+What this boundary is and is not is written down in SECURITY.md rather than overclaimed
 here. It removes every ordinary runtime route to the authored source: the import system, the
 installed distribution, `sys.path`, the working directory and the environment. It is not an
 operating system sandbox, and in a developer checkout the repository is still an ordinary

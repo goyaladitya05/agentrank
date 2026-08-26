@@ -12,7 +12,7 @@ names a suite row, the row cannot be updated, and a new row cannot take its iden
 
 There is no update and no delete here, and no HTTP route anywhere. Suites are global templates
 published by an operator, and until a buyer agent or a console needs to read them over the
-wire there is nothing for an endpoint to serve. See docs/decisions.md.
+wire there is nothing for an endpoint to serve. See docs/architecture.md.
 """
 
 from sqlalchemy.ext.asyncio import AsyncSession

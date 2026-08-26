@@ -39,7 +39,7 @@ re-executing it blindly is how a benchmark buys something twice. An operator rea
 
 Every output says what produced it. The executor is named as `reference-v1` and the numbers are
 labelled as a reference benchmark result, because the thing that produced them is a scripted
-deterministic executor and not an AI buyer. See docs/benchmark.md.
+deterministic executor and not an AI buyer. See docs/methodology.md.
 
 The authored world is read from files rather than imported, and that is a boundary rather than
 a preference. A mission's expected outcome is the answer key, and while it was Python in this
@@ -2049,7 +2049,7 @@ def _run_json(
         "disclaimer": DISCLAIMER,
         "run_id": str(loaded.id),
         "status": loaded.status.value,
-        # Every pin the comparison rule in docs/benchmark.md names, and in the order it names
+        # Every pin the comparison rule in docs/methodology.md names, and in the order it names
         # them. The first version of this report printed the executor, the catalog hash and the
         # representation label, which is the one the same document calls never evidence, and
         # omitted the two that say which missions ran and against which world. An operator
@@ -2083,7 +2083,7 @@ def _run_json(
             },
         },
         # Simulated buyer demand, authored with the suite. Never revenue, never a forecast and
-        # never a measured business result. See docs/benchmark.md.
+        # never a measured business result. See docs/methodology.md.
         "simulated_demand": demand,
         "missions": [_mission_json(result) for result in loaded.mission_runs],
     }

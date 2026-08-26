@@ -90,7 +90,7 @@ looking like an oversight. What that phase built is merchant authentication: a c
 which merchant an HTTP request acts for, and HTTP events now record which credential authorized
 them. An operator is not a merchant and holds no credential, so there is nothing for these
 commands to record that would be more than a guess. Operator identity remains open. See
-docs/security.md.
+SECURITY.md.
 """
 
 import argparse

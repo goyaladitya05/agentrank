@@ -45,7 +45,7 @@ class FailureReason(StrEnum):
 
     A reason is not a status. `FAILED` says the mission did not go as its ground truth called
     for; the reason says what went wrong, and the two are separate columns because a scoring
-    layer and a diagnostics layer want different halves of that. See docs/benchmark.md.
+    layer and a diagnostics layer want different halves of that. See docs/methodology.md.
     """
 
     ENFORCEMENT_BYPASSED = "ENFORCEMENT_BYPASSED"

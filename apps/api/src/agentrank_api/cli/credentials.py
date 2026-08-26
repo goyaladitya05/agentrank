@@ -39,7 +39,7 @@ uv run python -m agentrank_api.cli credentials revoke <credential-id>
 The trust boundary is the same one the payment commands have and it is the same argument: to
 run these you must already be able to run this repository's code against this repository's
 database, and anybody who can do that could write the session by hand. That argument holds only
-while the surface is local. See docs/security.md.
+while the surface is local. See SECURITY.md.
 
 Operator identity is still not recorded. `credential.issued` and `credential.revoked` are
 attributed to `SYSTEM`, because this application acted on somebody's instruction and it does not

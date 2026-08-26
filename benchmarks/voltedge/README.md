@@ -21,7 +21,7 @@ it had just been handed. The distribution built from `apps/api` contains `src/ag
 nothing else, so an authored world at the top of the repository is outside everything a worker
 can import, and the operator commands are given a path to it instead.
 
-See `agentrank_api.benchmark.authored` for the reader and docs/security.md for what the boundary
+See `agentrank_api.benchmark.authored` for the reader and SECURITY.md for what the boundary
 does and does not cover.
 
 ## Publishing

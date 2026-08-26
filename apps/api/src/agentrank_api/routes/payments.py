@@ -24,7 +24,7 @@ external could be involved.
 
 Operator recovery is still absent, and authentication does not change that. There is no
 abandon, resume or sweep endpoint. Those move money or release stock on a decision, and the
-surface for them is the command line. See docs/security.md.
+surface for them is the command line. See SECURITY.md.
 """
 
 import uuid

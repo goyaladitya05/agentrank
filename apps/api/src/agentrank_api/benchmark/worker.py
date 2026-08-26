@@ -25,7 +25,7 @@ It is worth being precise about who this is a boundary against. The code here is
 repository's, and the untrusted thing behind it is a model that is handed a brief and a tool
 schema and never a Python interpreter. This is not operating system sandboxing and does not claim
 to be: the repository is still a readable directory on the same filesystem in a developer
-checkout. See docs/security.md.
+checkout. See SECURITY.md.
 
 That is checked rather than assumed, twice and in two different ways.
 `require_isolated_environment` refuses any variable that is not on a short allowlist, which is

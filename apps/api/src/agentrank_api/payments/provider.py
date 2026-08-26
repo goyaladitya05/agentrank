@@ -56,7 +56,7 @@ What this interface does not promise, and what nothing in this system promises, 
 once execution. PostgreSQL and an external payment processor cannot be committed atomically
 together, and no amount of careful ordering changes that. What is promised is at most one
 provider operation per idempotency identity, plus reconciliation for the results that come
-back ambiguous. See docs/security.md.
+back ambiguous. See SECURITY.md.
 """
 
 import uuid

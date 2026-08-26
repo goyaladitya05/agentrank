@@ -391,7 +391,7 @@ class InventoryReservationRepository:
         exists, and the honest answer then is that the money moved and the merchant is
         oversold, which is a fact worth surfacing rather than a negative number worth
         forbidding. The caller records the shortfall in the audit trail. See
-        docs/shortcomings.md.
+        docs/architecture.md.
         """
         if not quantities:
             return {}

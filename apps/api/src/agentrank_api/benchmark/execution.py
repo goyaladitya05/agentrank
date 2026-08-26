@@ -139,7 +139,7 @@ def implementation_revision(*modules: ModuleType) -> str:
     where the selection rule, the candidate assessment and the abstention rule all live. What it
     does not cover is the shared comparison vocabulary those rules call into, so a change to how
     an attribute is compared moves the behaviour without moving this. That limit is written down
-    in docs/shortcomings.md rather than papered over by hashing half the application.
+    in docs/methodology.md rather than papered over by hashing half the application.
     """
     digest = hashlib.sha256()
     for module in sorted(modules, key=lambda named: named.__name__):

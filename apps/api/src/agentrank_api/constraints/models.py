@@ -8,7 +8,7 @@ It exists because a `BuyerIntent` is not authorization data. An intent is a desi
 not persisted, and the only place one survives is an audit payload. Reading a constraint
 back out of the append only log to enforce it would make the log the authorization
 database, which inverts what append only storage is for. So the constraints that must be
-obeyed are extracted, validated and written to their own tables. See docs/security.md.
+obeyed are extracted, validated and written to their own tables. See SECURITY.md.
 
 Four properties are enforced by the database rather than by application code, because the
 database is the only layer that cannot be bypassed:

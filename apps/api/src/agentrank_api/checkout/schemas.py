@@ -11,7 +11,7 @@ error.
 Two things are deliberately absent from the request. There is no unit price, because what a
 merchant charges is not a caller's to state. There is no shipping or discount amount,
 because neither has an authoritative source yet and an unauthenticated caller must not be
-able to move a quote total. See docs/decisions.md.
+able to move a quote total. See docs/architecture.md.
 """
 
 import uuid

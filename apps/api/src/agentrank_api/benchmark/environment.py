@@ -48,7 +48,7 @@ Two preparations of one world serialize on a transaction scoped advisory lock, t
 row lock and keyed on the merchant. Without it two first preparations of a brand new world both
 find no variant rows to lock, both seed, and the loser gets an integrity error rather than a
 turn. The lock does not make two whole benchmark runs safe against each other, which is a
-different claim and is written down in docs/shortcomings.md.
+different claim and is written down in docs/methodology.md.
 """
 
 import uuid

@@ -20,7 +20,7 @@ commercial position, and publishing them is a product decision nobody has made. 
 is merchant private, deliberately, and a genuinely public projection for buyer agents is a
 different response shape that Phase 4 gets to design when there is a buyer agent to design it
 for. Opening a route later is easy; closing one that agents already depend on is not. See
-docs/decisions.md.
+docs/architecture.md.
 """
 
 import uuid

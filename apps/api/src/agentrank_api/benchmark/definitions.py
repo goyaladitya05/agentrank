@@ -235,7 +235,7 @@ class MissionOracle:
 
     `simulated_value_amount_minor` is denominated in the brief's currency. It is simulated
     buyer demand, authored with the suite, and it is never revenue: no money moves in a
-    benchmark run and none of it is a business result. See docs/benchmark.md.
+    benchmark run and none of it is a business result. See docs/methodology.md.
     """
 
     expected_outcome: ExpectedOutcome

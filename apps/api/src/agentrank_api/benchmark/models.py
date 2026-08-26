@@ -25,7 +25,7 @@ here and no foreign key to `merchant`: a suite is a workload definition that a r
 merchant, and modelling it as merchant property would make the same workload a different
 object for every merchant it is run against. `merchant_slug` records which merchant the
 missions were authored against, because a mission oracle is a statement about one catalog, and
-the run service refuses to run a suite against any other merchant. See docs/decisions.md.
+the run service refuses to run a suite against any other merchant. See docs/architecture.md.
 """
 
 import uuid
