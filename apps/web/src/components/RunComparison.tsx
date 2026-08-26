@@ -132,6 +132,7 @@ function MerchantCompare({ comparison }: { comparison: RunComparison }) {
           </span>
         </div>
       </div>
+      <RecoveredScenarios comparison={comparison} />
       {changes.length === 0 ? (
         <p className={styles.reviewMeta}>No scenario changed its outcome between the two runs.</p>
       ) : (
@@ -147,6 +148,49 @@ function MerchantCompare({ comparison }: { comparison: RunComparison }) {
         </ul>
       )}
     </>
+  );
+}
+
+/**
+ * The scenarios that actually moved, named one per line.
+ *
+ * The aggregate is two numbers; this is which journeys those numbers are made of, which is
+ * what a merchant recognises. Direction comes from the comparison engine, so a regression is
+ * drawn exactly as loudly as a recovery and neither is inferred here.
+ */
+function RecoveredScenarios({ comparison }: { comparison: RunComparison }) {
+  const moved = comparison.transitions.filter(
+    (entry) => entry.direction === "IMPROVED" || entry.direction === "REGRESSED",
+  );
+  if (moved.length === 0) {
+    return null;
+  }
+  return (
+    <ul className={merchant.transitionList} aria-label="Scenarios that changed">
+      {moved.map((entry) => {
+        const recovered = entry.direction === "IMPROVED";
+        return (
+          <li
+            key={entry.mission_key}
+            className={merchant.transitionRow}
+            data-direction={entry.direction}
+          >
+            <span className={merchant.transitionKey}>{entry.mission_key}</span>
+            <span className={merchant.transitionFrom}>
+              {outcome(entry.before_status, entry.before_primary_failure_reason)}
+            </span>
+            <span className={merchant.transitionArrow} aria-hidden="true">
+              &rarr;
+            </span>
+            <span className={merchant.transitionTo}>
+              {recovered
+                ? "Completed"
+                : outcome(entry.after_status, entry.after_primary_failure_reason)}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 

@@ -1,0 +1,95 @@
+{
+  "key": "nordwatt-source",
+  "version": 2,
+  "merchant_slug": "nordwatt",
+  "products": [
+    {
+      "external_id": "NW-PRO-3",
+      "title": "Nordwatt Pro 3 Wall Charger",
+      "description": "Three-port gallium nitride wall charger with foldable pins. Delivers up to 100 W from the top USB-C port, and the two lower ports share 45 W.",
+      "category": "chargers",
+      "variants": [
+        {
+          "sku": "NW-PRO-3-BLK",
+          "label": "Graphite",
+          "price_amount_minor": 449900,
+          "currency": "INR",
+          "inventory_quantity": 18,
+          "merchant_metadata": {
+            "colour": "graphite"
+          }
+        },
+        {
+          "sku": "NW-PRO-3-SND",
+          "label": "Sand",
+          "price_amount_minor": 449900,
+          "currency": "INR",
+          "inventory_quantity": 6,
+          "merchant_metadata": {
+            "colour": "sand"
+          }
+        }
+      ],
+      "merchant_metadata": {
+        "sale_channel": "direct"
+      }
+    },
+    {
+      "external_id": "NW-GO-30",
+      "title": "Nordwatt Go 30 Travel Charger",
+      "description": "Single-port travel charger that fits a pocket. Rated at 30 W.",
+      "category": "chargers",
+      "variants": [
+        {
+          "sku": "NW-GO-30-BLK",
+          "label": "Graphite",
+          "price_amount_minor": 179900,
+          "currency": "INR",
+          "inventory_quantity": 40,
+          "merchant_metadata": {
+            "colour": "graphite",
+            "wattage": 30
+          }
+        }
+      ],
+      "merchant_metadata": {
+        "sale_channel": "direct"
+      }
+    },
+    {
+      "external_id": "NW-CBL",
+      "title": "Nordwatt Braided USB-C Cable",
+      "description": "Braided USB-C to USB-C cable with a reinforced collar. The long cable measures 3 m and the short one 1 m.",
+      "category": "cables",
+      "variants": [
+        {
+          "sku": "NW-CBL-1M",
+          "label": "1 m",
+          "price_amount_minor": 79900,
+          "currency": "INR",
+          "inventory_quantity": 50,
+          "merchant_metadata": {
+            "connector": "USB-C"
+          }
+        },
+        {
+          "sku": "NW-CBL-3M",
+          "label": "3 m",
+          "price_amount_minor": 119900,
+          "currency": "INR",
+          "inventory_quantity": 22,
+          "merchant_metadata": {
+            "connector": "USB-C"
+          }
+        }
+      ],
+      "merchant_metadata": {
+        "sale_channel": "direct"
+      }
+    }
+  ],
+  "policy_text": {
+    "returns": "Unused items may be returned within 30 days of delivery.",
+    "warranty": "All Nordwatt chargers carry a two-year warranty."
+  }
+}

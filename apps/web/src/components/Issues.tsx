@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { Panel, Section, StatusMark } from "@/components/Primitives";
+import { ScenarioJourneys } from "@/components/ScenarioJourneys";
 import { IdRow, TechnicalDetails } from "@/components/TechnicalDetails";
 import styles from "@/components/console.module.css";
 import merchant from "@/components/merchant.module.css";
@@ -13,6 +14,7 @@ import {
   severityLabel,
   severityTone,
 } from "@/lib/labels";
+import { scenarioJourneys } from "@/lib/insights/journey";
 import { groupFindings } from "@/lib/insights/merchant";
 import type { MerchantFinding, RunDiagnostics } from "@/lib/insights/types";
 
@@ -209,6 +211,11 @@ export function IssueDetailContent({
   const lost = finding.simulated_demand.filter(
     (effect) => effect.bucket.toUpperCase() === "AT_RISK" || effect.bucket.toUpperCase() === "LOST",
   );
+  // The run's own missions for the scenarios this finding names, so the journeys drawn below
+  // are the recorded attempts rather than a restatement of the finding.
+  const affected = data.missions.filter((mission) =>
+    finding.mission_run_ids.includes(mission.mission_run_id),
+  );
   return (
     <>
       <header className={merchant.masthead}>
@@ -238,7 +245,13 @@ export function IssueDetailContent({
         </Panel>
       </Section>
 
-      <Section index="02" title="What was affected">
+      <Section index="02" title="What was affected" hint="Where each attempt stopped.">
+        {affected.length > 0 ? (
+          <ScenarioJourneys
+            journeys={scenarioJourneys(affected)}
+            caption="Each row is one shopping attempt this issue touched, drawn to the stage AgentRank's records say it reached."
+          />
+        ) : null}
         <Panel>
           <p>{affectedSentence(finding)}.</p>
           {finding.mission_keys.length > 0 ? (
@@ -282,6 +295,12 @@ export function IssueDetailContent({
 
       <Section index="03" title="Why AgentRank believes this">
         <Panel>
+          {finding.attribute_keys.length > 0 ? (
+            <p className={merchant.establishRow}>
+              <span className={merchant.establishLabel}>Could not establish</span>
+              <span className={merchant.establishValue}>{finding.attribute_keys.join(", ")}</span>
+            </p>
+          ) : null}
           <p>{evidenceSentence(finding.evidence_level)}</p>
           <p className={styles.finePrintTight}>
             The recorded scenarios above carry the full evidence trail, down to individual trace

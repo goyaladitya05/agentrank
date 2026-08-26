@@ -1,0 +1,112 @@
+{
+  "key": "nordwatt-core",
+  "version": 1,
+  "merchant_slug": "nordwatt",
+  "name": "Nordwatt demo suite",
+  "missions": [
+    {
+      "brief": {
+        "key": "laptop-class-charger",
+        "objective": "Buy one wall charger that can deliver at least 100 watts for a laptop.",
+        "quantity": 1,
+        "budget": {
+          "kind": "max_total_amount",
+          "amount_minor": 600000,
+          "currency": "INR"
+        },
+        "hard_constraints": [
+          {
+            "kind": "allowed_category",
+            "category": "chargers"
+          },
+          {
+            "kind": "required_attribute",
+            "name": "wattage",
+            "operator": "GTE",
+            "value": 100
+          }
+        ],
+        "preferences": []
+      },
+      "oracle": {
+        "expected_outcome": "PURCHASE_AVAILABLE",
+        "simulated_value_amount_minor": 449900
+      }
+    },
+    {
+      "brief": {
+        "key": "long-desk-cable",
+        "objective": "Buy one USB-C cable at least 3 metres long to reach a wall socket.",
+        "quantity": 1,
+        "budget": {
+          "kind": "max_total_amount",
+          "amount_minor": 200000,
+          "currency": "INR"
+        },
+        "hard_constraints": [
+          {
+            "kind": "allowed_category",
+            "category": "cables"
+          },
+          {
+            "kind": "required_attribute",
+            "name": "length",
+            "operator": "GTE",
+            "value": 3
+          }
+        ],
+        "preferences": []
+      },
+      "oracle": {
+        "expected_outcome": "PURCHASE_AVAILABLE",
+        "simulated_value_amount_minor": 119900
+      }
+    },
+    {
+      "brief": {
+        "key": "budget-travel-charger",
+        "objective": "Buy one charger to keep in a travel bag, spending as little as possible.",
+        "quantity": 1,
+        "budget": {
+          "kind": "max_total_amount",
+          "amount_minor": 250000,
+          "currency": "INR"
+        },
+        "hard_constraints": [
+          {
+            "kind": "allowed_category",
+            "category": "chargers"
+          }
+        ],
+        "preferences": []
+      },
+      "oracle": {
+        "expected_outcome": "PURCHASE_AVAILABLE",
+        "simulated_value_amount_minor": 179900
+      }
+    },
+    {
+      "brief": {
+        "key": "unaffordable-charger",
+        "objective": "Buy one wall charger, but only if it costs under 1000 rupees.",
+        "quantity": 1,
+        "budget": {
+          "kind": "max_total_amount",
+          "amount_minor": 100000,
+          "currency": "INR"
+        },
+        "hard_constraints": [
+          {
+            "kind": "allowed_category",
+            "category": "chargers"
+          }
+        ],
+        "preferences": []
+      },
+      "oracle": {
+        "expected_outcome": "NO_ACCEPTABLE_PURCHASE",
+        "simulated_value_amount_minor": 0
+      }
+    }
+  ]
+}

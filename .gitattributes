@@ -1,0 +1,6 @@
+# Vendored third-party files. The font binary is not text, and the SIL Open Font License is
+# upstream text this repository must reproduce verbatim: editing it to satisfy our own
+# whitespace rules would be altering a licence. Both are exempted from the whitespace check
+# rather than rewritten.
+apps/web/src/app/fonts/fraunces-latin-var.woff2 binary
+apps/web/src/app/fonts/OFL.txt -whitespace

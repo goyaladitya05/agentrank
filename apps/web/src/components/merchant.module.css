@@ -22,24 +22,27 @@
 /* The masthead: the page's one statement, set large in the serif. */
 
 .masthead {
-  padding: 8px 0 0;
-  margin-bottom: 8px;
-  animation: settle 260ms ease-out both;
+  padding: 20px 0 0;
+  margin-bottom: 18px;
+  animation: settle 320ms ease-out both;
 }
 
 .mastStatement {
-  margin: 6px 0 10px;
+  margin: 10px 0 14px;
   font-family: var(--serif);
-  font-size: clamp(30px, 4.2vw, 44px);
-  font-weight: 540;
-  letter-spacing: -0.012em;
-  line-height: 1.1;
-  max-width: 24ch;
+  font-size: clamp(42px, 7vw, 84px);
+  font-weight: 520;
+  letter-spacing: -0.028em;
+  line-height: 1.02;
+  max-width: 17ch;
+  text-wrap: balance;
 }
 
+/* The numerals carry the verdict, so they carry the accent and the weight. */
 .mastStatement strong {
-  font-weight: 640;
+  font-weight: 650;
   font-variant-numeric: lining-nums;
+  color: var(--accent);
 }
 
 .mastStatementSub {
@@ -53,10 +56,11 @@
 }
 
 .mastReading {
-  margin: 0 0 22px;
-  font-size: 15px;
+  margin: 0 0 30px;
+  font-size: 16.5px;
+  line-height: 1.5;
   color: var(--text-muted);
-  max-width: 62ch;
+  max-width: 56ch;
 }
 
 /* One row of figures between two hairlines. Not cards. */
@@ -65,9 +69,9 @@
   display: flex;
   flex-wrap: wrap;
   justify-content: space-between;
-  gap: 14px 28px;
-  margin-top: 22px;
-  padding: 14px 0;
+  gap: 18px 28px;
+  margin-top: 34px;
+  padding: 20px 0;
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
 }
@@ -79,7 +83,7 @@
 .statValue {
   display: block;
   font-family: var(--serif);
-  font-size: 23px;
+  font-size: 30px;
   font-weight: 600;
   font-variant-numeric: lining-nums;
   letter-spacing: -0.01em;
@@ -204,11 +208,13 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px 32px;
-  margin: 0 0 40px;
-  padding: 16px 0 20px;
-  border-top: 2px solid var(--rule-strong);
-  animation: settle 260ms ease-out 60ms both;
+  gap: 12px 40px;
+  margin: 0 0 56px;
+  padding: 28px 32px;
+  border-radius: 8px;
+  background: var(--rule-strong);
+  color: var(--surface-raised);
+  animation: settle 320ms ease-out 80ms both;
 }
 
 .slipText {
@@ -216,18 +222,18 @@
 }
 
 .slipEyebrow {
-  margin: 0 0 2px;
+  margin: 0 0 6px;
   font-family: var(--mono);
   font-size: 10.5px;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--accent);
+  opacity: 0.68;
 }
 
 .slipTitle {
-  margin: 0 0 4px;
+  margin: 0 0 6px;
   font-family: var(--serif);
-  font-size: 24px;
+  font-size: 30px;
   font-weight: 580;
   letter-spacing: -0.01em;
   line-height: 1.2;
@@ -235,9 +241,9 @@
 
 .slipBody {
   margin: 0;
-  font-size: 13.5px;
-  color: var(--text-muted);
-  max-width: 60ch;
+  font-size: 14px;
+  opacity: 0.74;
+  max-width: 58ch;
 }
 
 .primaryButton {
@@ -257,6 +263,19 @@
 
 .primaryButton:hover {
   background: var(--accent-strong);
+}
+
+.slip .primaryButton {
+  background: var(--surface-raised);
+  border-color: var(--surface-raised);
+  color: var(--rule-strong);
+  padding: 12px 24px;
+  font-size: 15px;
+}
+
+.slip .primaryButton:hover {
+  background: var(--accent-surface);
+  border-color: var(--accent-surface);
 }
 
 .primaryButton:focus-visible {
@@ -608,6 +627,100 @@
   font-size: 30px;
   color: var(--border-strong);
   line-height: 1;
+}
+
+/* What an attempt could not establish, named as the gap it is. */
+
+.establishRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 16px;
+  margin: 0 0 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.establishLabel {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--state-warn);
+}
+
+.establishValue {
+  font-family: var(--serif);
+  font-size: 21px;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+}
+
+/* The journeys that moved, named before the aggregate is explained. */
+
+.transitionList {
+  margin: 16px 0 4px;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--border);
+}
+
+.transitionRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 16px;
+  align-items: baseline;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--border);
+  animation: settle 300ms ease-out both;
+}
+
+.transitionKey {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.transitionFrom {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.transitionArrow {
+  font-family: var(--serif);
+  font-size: 17px;
+  color: var(--border-strong);
+  line-height: 1;
+}
+
+.transitionTo {
+  font-family: var(--serif);
+  font-size: 19px;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+}
+
+.transitionRow[data-direction="IMPROVED"] .transitionTo {
+  color: var(--accent);
+}
+
+.transitionRow[data-direction="REGRESSED"] .transitionTo {
+  color: var(--state-warn);
+}
+
+@media (max-width: 640px) {
+  .transitionRow {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+  .transitionArrow {
+    display: none;
+  }
 }
 
 .compareChanges {

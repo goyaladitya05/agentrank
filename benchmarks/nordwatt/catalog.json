@@ -1,0 +1,103 @@
+{
+  "key": "nordwatt-catalog",
+  "version": 1,
+  "merchant_slug": "nordwatt",
+  "merchant_name": "Nordwatt Power",
+  "products": [
+    {
+      "external_id": "NW-PRO-3",
+      "title": "Nordwatt Pro 3 Wall Charger",
+      "description": "Three-port gallium nitride wall charger with foldable pins.",
+      "category": "chargers",
+      "is_active": true,
+      "variants": [
+        {
+          "sku": "NW-PRO-3-BLK",
+          "label": "Graphite",
+          "price_amount_minor": 449900,
+          "currency": "INR",
+          "inventory_quantity": 18,
+          "attributes": {
+            "colour": "graphite",
+            "wattage": 100,
+            "ports": 3,
+            "connector": "USB-C"
+          },
+          "is_active": true
+        },
+        {
+          "sku": "NW-PRO-3-SND",
+          "label": "Sand",
+          "price_amount_minor": 449900,
+          "currency": "INR",
+          "inventory_quantity": 6,
+          "attributes": {
+            "colour": "sand",
+            "wattage": 100,
+            "ports": 3,
+            "connector": "USB-C"
+          },
+          "is_active": true
+        }
+      ]
+    },
+    {
+      "external_id": "NW-GO-30",
+      "title": "Nordwatt Go 30 Travel Charger",
+      "description": "Single-port travel charger that fits a pocket.",
+      "category": "chargers",
+      "is_active": true,
+      "variants": [
+        {
+          "sku": "NW-GO-30-BLK",
+          "label": "Graphite",
+          "price_amount_minor": 179900,
+          "currency": "INR",
+          "inventory_quantity": 40,
+          "attributes": {
+            "colour": "graphite",
+            "wattage": 30,
+            "ports": 1,
+            "connector": "USB-C"
+          },
+          "is_active": true
+        }
+      ]
+    },
+    {
+      "external_id": "NW-CBL",
+      "title": "Nordwatt Braided USB-C Cable",
+      "description": "Braided USB-C to USB-C cable with a reinforced collar.",
+      "category": "cables",
+      "is_active": true,
+      "variants": [
+        {
+          "sku": "NW-CBL-1M",
+          "label": "1 m",
+          "price_amount_minor": 79900,
+          "currency": "INR",
+          "inventory_quantity": 50,
+          "attributes": {
+            "wattage": 240,
+            "connector": "USB-C",
+            "length": 1
+          },
+          "is_active": true
+        },
+        {
+          "sku": "NW-CBL-3M",
+          "label": "3 m",
+          "price_amount_minor": 119900,
+          "currency": "INR",
+          "inventory_quantity": 22,
+          "attributes": {
+            "wattage": 240,
+            "connector": "USB-C",
+            "length": 3
+          },
+          "is_active": true
+        }
+      ]
+    }
+  ]
+}

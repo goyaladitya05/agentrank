@@ -1,0 +1,205 @@
+/* The scenario journey board. One row is one real shopping attempt; one cell is one stage of
+   it. Filled cells were reached, hollow ones were not, and the terminal cell carries the
+   outcome's colour. Nothing is drawn that the run did not record. */
+
+.figure {
+  margin: 0;
+}
+
+.headerRow {
+  display: grid;
+  grid-template-columns: minmax(120px, 1.1fr) minmax(0, 3fr) 118px;
+  gap: 20px;
+  align-items: end;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.headScenario,
+.headOutcome {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.headStages {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.headStage {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1.1fr) minmax(0, 3fr) 118px;
+  gap: 6px 20px;
+  align-items: center;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+  animation: settle 320ms ease-out both;
+}
+
+.scenario {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stages {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+/* One stage of one attempt. The bar is the graphic; the label inside it keeps the meaning
+   readable without depending on colour or position. */
+.cell {
+  display: flex;
+  align-items: center;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  background: transparent;
+  overflow: hidden;
+}
+
+.cellLabel {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: transparent;
+  white-space: nowrap;
+}
+
+/* Stages the attempt passed through. */
+.cell[data-state="passed"] {
+  background: var(--accent-surface);
+  border-color: var(--accent-surface);
+}
+
+.cell[data-state="passed"] .cellLabel {
+  color: var(--accent);
+}
+
+/* The stage the attempt ended on, coloured by what became of it. */
+.row[data-outcome="completed"] .cell[data-state="final"] {
+  background: var(--accent);
+  border-color: var(--accent-strong);
+}
+
+.row[data-outcome="declined"] .cell[data-state="final"] {
+  background: var(--surface-sunken);
+  border-color: var(--border-strong);
+  border-style: dashed;
+}
+
+.row[data-outcome="blocked"] .cell[data-state="final"] {
+  background: var(--state-warn);
+  border-color: var(--state-warn);
+}
+
+.row[data-outcome="interrupted"] .cell[data-state="final"] {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--surface-sunken),
+    var(--surface-sunken) 4px,
+    var(--border-strong) 4px,
+    var(--border-strong) 6px
+  );
+  border-color: var(--border-strong);
+}
+
+.row[data-outcome="unmeasured"] .cell[data-state="final"] {
+  background: var(--surface-sunken);
+  border-color: var(--border-strong);
+}
+
+.row[data-outcome="completed"] .cell[data-state="final"] .cellLabel,
+.row[data-outcome="blocked"] .cell[data-state="final"] .cellLabel {
+  color: var(--surface-raised);
+}
+
+.row[data-outcome="declined"] .cell[data-state="final"] .cellLabel,
+.row[data-outcome="interrupted"] .cell[data-state="final"] .cellLabel,
+.row[data-outcome="unmeasured"] .cell[data-state="final"] .cellLabel {
+  color: var(--text-muted);
+}
+
+/* Stages the attempt never got to. */
+.cell[data-state="unreached"] {
+  border-style: dotted;
+  border-color: var(--border);
+}
+
+.outcome {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  text-align: right;
+}
+
+.row[data-outcome="completed"] .outcome {
+  color: var(--accent);
+}
+
+.row[data-outcome="blocked"] .outcome {
+  color: var(--state-warn);
+}
+
+.row[data-outcome="declined"] .outcome,
+.row[data-outcome="interrupted"] .outcome,
+.row[data-outcome="unmeasured"] .outcome {
+  color: var(--text-muted);
+}
+
+.reason {
+  grid-column: 2 / 3;
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  max-width: 68ch;
+}
+
+.caption {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+@media (max-width: 760px) {
+  .headerRow {
+    display: none;
+  }
+  .row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px 12px;
+  }
+  .stages {
+    grid-column: 1 / -1;
+  }
+  .reason {
+    grid-column: 1 / -1;
+  }
+}

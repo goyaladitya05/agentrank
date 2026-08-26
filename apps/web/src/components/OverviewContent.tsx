@@ -2,7 +2,7 @@ import Link from "next/link";
 
 import { DemandTable } from "@/components/Demand";
 import { Panel, Section, StatusMark } from "@/components/Primitives";
-import { ScenarioTrack } from "@/components/ScenarioTrack";
+import { ScenarioJourneys } from "@/components/ScenarioJourneys";
 import { IdRow, TechnicalDetails } from "@/components/TechnicalDetails";
 import styles from "@/components/console.module.css";
 import merchant from "@/components/merchant.module.css";
@@ -12,7 +12,13 @@ import { providerSentence, safetyReading } from "@/lib/insights/summary";
 import { groupFindings, latestFinishedRun, nextAction } from "@/lib/insights/merchant";
 import type { NextAction } from "@/lib/insights/merchant";
 import type { EvaluationPreflight } from "@/lib/evaluation";
-import type { MerchantFinding, MerchantOverview, RunSummary } from "@/lib/insights/types";
+import { scenarioJourneys } from "@/lib/insights/journey";
+import type {
+  MerchantFinding,
+  MerchantOverview,
+  RunDiagnostics,
+  RunSummary,
+} from "@/lib/insights/types";
 
 /**
  * The merchant overview, composed as one editorial surface: the verdict set large, the
@@ -28,9 +34,12 @@ import type { MerchantFinding, MerchantOverview, RunSummary } from "@/lib/insigh
 export function OverviewContent({
   data,
   preflight,
+  run: diagnostics = null,
 }: {
   data: MerchantOverview;
   preflight: EvaluationPreflight | null;
+  /** The latest finished run's missions, for the journey board. Null when unread. */
+  run?: RunDiagnostics | null;
 }) {
   const run = latestFinishedRun(data.runs);
   const action = nextAction(data, preflight);
@@ -53,11 +62,24 @@ export function OverviewContent({
 
       <NextStepSlip action={action} />
 
+      {run !== null && diagnostics !== null ? (
+        <Section
+          index="01"
+          title="What the agents did"
+          hint="One row per scenario, from what the run recorded."
+        >
+          <ScenarioJourneys
+            journeys={scenarioJourneys(diagnostics.missions)}
+            caption="A journey stops at the stage AgentRank's trusted records say it stopped at. Nothing here is a model's own account of itself."
+          />
+        </Section>
+      ) : null}
+
       {run !== null ? <AttentionSection data={data} run={run} /> : null}
 
       {run !== null ? (
         <Section
-          index="02"
+          index="03"
           title="Simulated demand"
           hint="Simulated benchmark figures across recent evaluations. Not revenue."
         >
@@ -138,9 +160,6 @@ function MeasuredMasthead({
 }) {
   const grouped = groupFindings(findings);
   const merchantScenarios = distinctMissionCount(grouped.needsAttention);
-  const unfinished =
-    run.missions_total -
-    (run.missions_succeeded + run.missions_failed + run.missions_abstained + run.missions_errored);
   return (
     <header className={merchant.masthead}>
       <p className={merchant.eyebrow}>
@@ -157,15 +176,6 @@ function MeasuredMasthead({
           ? "This evaluation stopped before it finished, so these numbers describe only the scenarios that executed."
           : ""}
       </p>
-      <ScenarioTrack
-        counts={{
-          succeeded: run.missions_succeeded,
-          failed: run.missions_failed,
-          abstained: run.missions_abstained,
-          errored: run.missions_errored,
-          unfinished: Math.max(unfinished, 0),
-        }}
-      />
       <div className={merchant.statRow}>
         <div className={merchant.stat}>
           <span className={merchant.statValue}>{String(run.missions_total)}</span>
@@ -278,7 +288,7 @@ function AttentionSection({ data, run }: { data: MerchantOverview; run: RunSumma
   const providerNote = providerSentence(run.provider_failure_missions);
   return (
     <Section
-      index="01"
+      index="02"
       title="What needs attention"
       actions={
         grouped.needsAttention.length > 0 ? (
@@ -360,7 +370,7 @@ function ExperimentNote({ data }: { data: MerchantOverview }) {
   const conclusion = conclusionKindLabel(experiment.conclusion_kind);
   return (
     <Section
-      index="03"
+      index="04"
       title="Controlled experiment"
       hint="Run by your operator. Detail is in the Lab."
     >
