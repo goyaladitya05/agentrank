@@ -65,6 +65,12 @@ from agentrank_api.benchmark.evaluation_launch import (
     EvaluationPurpose,
 )
 from agentrank_api.benchmark.execution import REFERENCE_ISOLATED_KIND
+from agentrank_api.benchmark.grounding import (
+    MAX_REPORTED,
+    contradictions,
+    representation_facts,
+    world_facts,
+)
 from agentrank_api.benchmark.identity import canonical_json
 from agentrank_api.benchmark.lifecycle import TERMINAL_MISSION_STATUSES, BenchmarkRunStatus
 from agentrank_api.benchmark.llm import (
@@ -111,6 +117,10 @@ REFERENCE_EXECUTOR_KIND = REFERENCE_ISOLATED_KIND
 # system discovered, and worded so a merchant reading it is not told their evaluation failed for
 # a reason nobody can act on.
 CANCELLED_BY_OPERATOR = "cancelled_by_operator"
+
+# What a launch the merchant themselves withdrew settles with. A separate code from the operator's
+# because the two are different events and history should say which one happened.
+WITHDRAWN_BY_MERCHANT = "withdrawn_by_merchant"
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,6 +265,11 @@ class EvaluationPlan:
     # A prediction of one input to that engine's rule and never a second copy of the rule. What
     # is comparable is still decided after the fact, from the runs, by the engine.
     baseline_surface_matches: bool | None
+    # Whether this merchant has newer source evidence than the evaluation setup was built from.
+    # A statement rather than a refusal: a first evaluation measures the setup, which is the
+    # snapshot the world was projected from, and a merchant who has since submitted a newer one
+    # should be told which of the two is about to be measured rather than left to assume.
+    source_is_newer_than_the_setup: bool
     blockers: tuple[LaunchBlocker, ...]
     pending_launch_id: uuid.UUID | None
 
@@ -306,11 +321,45 @@ class EvaluationPlan:
             "execution_budget_version": self.execution_budget_version,
             "baseline_run_id": _text(self.baseline_run_id),
             "baseline_surface_matches": self.baseline_surface_matches,
+            "source_is_newer_than_the_setup": self.source_is_newer_than_the_setup,
         }
 
 
 def _text(value: uuid.UUID | None) -> str | None:
     return None if value is None else str(value)
+
+
+def _grounding_blocker(
+    workspace: MerchantEvaluationWorkspace | None, representation: CommerceRepresentation
+) -> LaunchBlocker | None:
+    """Refuse a re-evaluation whose representation describes a shop the world is not.
+
+    The world and the artifact under test come from different places, and for a re-evaluation
+    they can come from different source snapshots: the world is the one the merchant's evaluation
+    setup was generated from, and the representation is compiled from whichever snapshot they
+    compiled. Adding an attribute and recompiling is the ordinary loop and contradicts nothing.
+    Changing a price, withdrawing a line or introducing one is a different shop, and running a
+    buyer against it measures the disagreement rather than the merchant.
+
+    Only for a merchant whose world came from a workspace. An operator-authored world has no
+    source snapshot behind it, so there is no pair to compare and nothing this could check.
+    """
+    if workspace is None:
+        return None
+    found = contradictions(
+        world_facts(workspace.catalog_fixture), representation_facts(representation.payload)
+    )
+    if not found:
+        return None
+    named = "; ".join(found[:MAX_REPORTED])
+    more = "" if len(found) <= MAX_REPORTED else f", and {len(found) - MAX_REPORTED} more"
+    return LaunchBlocker(
+        "representation_measures_another_catalog",
+        "The representation you published describes products your evaluation setup does not"
+        f" hold: {named}{more}. Build a new evaluation setup from the merchant information this"
+        " representation was compiled from, or publish one compiled from the information the"
+        " setup was built with.",
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -421,7 +470,7 @@ class MerchantEvaluationLaunchService:
         compiler_run = None
         source: SourceIdentity | None = None
         if purpose is EvaluationPurpose.INITIAL:
-            source = await self._sources.current_identity(merchant_id)
+            source = await self._evaluated_source(merchant_id, workspace)
             if source is None:
                 blockers.append(
                     LaunchBlocker(
@@ -438,6 +487,9 @@ class MerchantEvaluationLaunchService:
                 )
             )
         else:
+            drift = _grounding_blocker(workspace, representation)
+            if drift is not None:
+                blockers.append(drift)
             compiler_run = await self._compiler_run(merchant_id, representation)
             if compiler_run is None:
                 # Held impossible by a check constraint and a RESTRICT foreign key, and still a
@@ -497,6 +549,12 @@ class MerchantEvaluationLaunchService:
         )
         configuration = buyer.configuration
         budget = await self._budget(buyer, missions=None if suite is None else len(suite.missions))
+        # One extra read and only where a workspace exists, because otherwise there is no setup
+        # for a source to be newer than.
+        newer_source = False
+        if workspace is not None:
+            newest = await self._sources.current_identity(merchant_id)
+            newer_source = newest is not None and newest.snapshot_id != workspace.source_snapshot_id
         return EvaluationPlan(
             purpose=purpose,
             representation_id=None if representation is None else representation.id,
@@ -534,6 +592,7 @@ class MerchantEvaluationLaunchService:
                 else (baseline.representation_id is not None)
                 == _delivers_representation(purpose, buyer)
             ),
+            source_is_newer_than_the_setup=newer_source,
             blockers=tuple(blockers),
             pending_launch_id=None if pending is None else pending.id,
         )
@@ -973,6 +1032,82 @@ class MerchantEvaluationLaunchService:
         return (
             EvaluationPurpose.REEVALUATION if completed is not None else EvaluationPurpose.INITIAL
         )
+
+    async def withdraw(
+        self, merchant_id: uuid.UUID, launch_id: uuid.UUID
+    ) -> BenchmarkEvaluationLaunch:
+        """Close a queued evaluation the merchant no longer wants, from the console.
+
+        The exit from the one state a merchant could not leave. A launch stays queued until a
+        worker configured for its frozen executor dispatches it, which is an operator action, and
+        while it is queued the merchant can neither request another evaluation nor build a new
+        evaluation setup. A deployment with no capable worker therefore left them holding a
+        request nothing would ever run and no way to put it down.
+
+        Queued only, and merchant scoped. A queued launch has produced no run: no mission has
+        executed, no stock has been held and no payment has been attempted, so closing one
+        destroys no evidence. An executing launch is the opposite of all four, and closing one is
+        an operator path through `benchmark abort` and `benchmark settle` precisely because a run
+        exists that somebody has to account for.
+
+        Settled rather than deleted. The launch stays in history with `withdrawn_by_merchant`, so
+        what a merchant asked for and then withdrew is still a thing that happened.
+        """
+        merchant = await self._merchant(merchant_id)
+        # The same lock a launch is admitted under, so a withdrawal and a dispatcher's claim are
+        # serialized rather than racing: the row is read again after it is held, and a launch a
+        # worker took in between is refused for executing rather than closed underneath the run.
+        await self._environments.claim(merchant.slug)
+        launch = (
+            await self._session.execute(
+                select(BenchmarkEvaluationLaunch)
+                .where(
+                    BenchmarkEvaluationLaunch.id == launch_id,
+                    BenchmarkEvaluationLaunch.merchant_id == merchant_id,
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if launch is None:
+            raise NotFoundError(RESOURCE, str(launch_id))
+        if launch.status is not EvaluationLaunchStatus.QUEUED:
+            raise ConflictError(
+                "launch_not_queued",
+                f"This evaluation is {launch.status.value.lower()} and only a queued one can be"
+                " withdrawn. An evaluation that has started is closed by your operator.",
+                resource=RESOURCE,
+                identifier=str(launch_id),
+            )
+        now = await self._session.scalar(select(func.now()))
+        assert now is not None  # `now()` always answers
+        launch.status = EvaluationLaunchStatus.FAILED
+        launch.failure_code = WITHDRAWN_BY_MERCHANT
+        launch.settled_at = now
+        await self._session.commit()
+        return launch
+
+    async def _evaluated_source(
+        self, merchant_id: uuid.UUID, workspace: MerchantEvaluationWorkspace | None
+    ) -> SourceIdentity | None:
+        """Which source snapshot a first evaluation measures.
+
+        The workspace's own, when there is one, and not the merchant's newest. The world a first
+        evaluation runs in is that snapshot projected, so the buyer's merchant information has to
+        be that snapshot too: handing the buyer a newer document would tell it prices, stock and
+        products the shop it is standing in does not have, and it would then be marked against
+        the shop.
+
+        A merchant who has submitted newer evidence is not blocked and is not silently measured
+        on it either. `source_is_newer_than_the_setup` says which of the two is about to be run,
+        and building a second evaluation setup is how the newer one gets measured, which is the
+        Phase 5C rule that a newer snapshot never rebuilds an existing world.
+
+        Without a workspace the world was authored by an operator and has no snapshot behind it,
+        so the rule is the one that existed before workspaces did: the merchant's current source.
+        """
+        if workspace is None:
+            return await self._sources.current_identity(merchant_id)
+        return await self._sources.identity_of(merchant_id, workspace.source_snapshot_id)
 
     async def _current_representation(
         self, merchant_id: uuid.UUID

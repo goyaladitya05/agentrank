@@ -342,3 +342,32 @@ async def test_no_model_provider_is_reached(
     )
     assert outcome is not None
     assert outcome.status == "COMPLETED"
+
+
+async def test_a_first_evaluation_measures_the_snapshot_its_world_was_built_from(
+    catalog_settings: Settings,
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The buyer's merchant information has to describe the shop the buyer is standing in.
+
+    A merchant who refreshes their source after building a setup has two snapshots and one world,
+    and the world is the older one projected. Freezing the newer snapshot would hand the buyer a
+    document stating prices and products the world does not hold, and the buyer would then be
+    marked against the world for believing it.
+
+    They are not silently measured on the old one either. The preflight says a newer snapshot
+    exists, and building a second setup is how it gets measured.
+    """
+    settings = without_providers(catalog_settings)
+    built = await bootstrapped(session, "grounded-eval-shop")
+    newer = await MerchantRepresentationService(session).publish_source(
+        source(*plain(built.merchant_slug).products, slug=built.merchant_slug, version=2)
+    )
+    assert newer.id != built.source_snapshot_id
+
+    plan = await MerchantEvaluationLaunchService(session, settings).plan(built.merchant_id)
+    assert plan.launchable, [blocker.code for blocker in plan.blockers]
+    assert plan.purpose is EvaluationPurpose.INITIAL
+    assert plan.source_snapshot_id == built.source_snapshot_id
+    assert plan.source_is_newer_than_the_setup is True

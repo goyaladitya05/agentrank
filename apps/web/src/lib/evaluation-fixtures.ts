@@ -34,6 +34,7 @@ export const PREFLIGHT_FIXTURE = {
   baseline_run_id: "01992222-2222-7222-8222-222222222222",
   baseline_run_completed_at: "2026-08-23T10:04:30Z",
   baseline_surface_matches: true,
+  source_is_newer_than_the_setup: false,
   pending_launch_id: null,
   blockers: [],
 };
@@ -53,6 +54,7 @@ export const REFERENCE_PREFLIGHT_FIXTURE = {
   baseline_run_id: null,
   baseline_run_completed_at: null,
   baseline_surface_matches: null,
+  source_is_newer_than_the_setup: false,
 };
 
 /** A merchant AgentRank has never measured and who has published nothing. */
@@ -66,6 +68,7 @@ export const INITIAL_PREFLIGHT_FIXTURE = {
   baseline_run_id: null,
   baseline_run_completed_at: null,
   baseline_surface_matches: null,
+  source_is_newer_than_the_setup: false,
 };
 
 /** The same merchant before they have told AgentRank anything about themselves. */
@@ -87,6 +90,7 @@ export const INITIAL_BLOCKED_PREFLIGHT_FIXTURE = {
 export const SURFACE_CHANGE_PREFLIGHT_FIXTURE = {
   ...PREFLIGHT_FIXTURE,
   baseline_surface_matches: false,
+  source_is_newer_than_the_setup: false,
 };
 
 export const BLOCKED_PREFLIGHT_FIXTURE = {

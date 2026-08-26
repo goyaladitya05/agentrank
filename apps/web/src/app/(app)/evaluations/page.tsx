@@ -144,7 +144,10 @@ function Preflight({
  */
 function informationSentence(preflight: EvaluationPreflight): string {
   if (preflight.purpose === "INITIAL") {
-    return preflight.source_snapshot_label ?? "Not recorded yet";
+    const label = preflight.source_snapshot_label ?? "Not recorded yet";
+    return preflight.source_is_newer_than_the_setup
+      ? `${label}, which your evaluation setup was built from. You have newer merchant information; build a new evaluation setup to measure that instead.`
+      : label;
   }
   return preflight.representation_id === null
     ? "None published"

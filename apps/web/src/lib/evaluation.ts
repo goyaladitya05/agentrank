@@ -67,6 +67,14 @@ export interface EvaluationPreflight {
    * published so a merchant is told that before spending rather than after.
    */
   readonly baseline_surface_matches: boolean | null;
+  /**
+   * Whether this merchant has newer source evidence than the evaluation setup was built from.
+   *
+   * A first evaluation measures the setup, because the world it runs in is the setup's own source
+   * snapshot projected. This says which of the two snapshots is about to be measured, so a
+   * merchant who refreshed their source is told rather than left to assume.
+   */
+  readonly source_is_newer_than_the_setup: boolean;
   readonly pending_launch_id: string | null;
   readonly blockers: readonly LaunchBlocker[];
 }
@@ -298,6 +306,10 @@ export function decodePreflight(value: unknown): EvaluationPreflight {
     baseline_surface_matches: nullableBoolean(
       source.baseline_surface_matches,
       "baseline_surface_matches",
+    ),
+    source_is_newer_than_the_setup: bool(
+      source.source_is_newer_than_the_setup,
+      "source_is_newer_than_the_setup",
     ),
     pending_launch_id: nullableString(source.pending_launch_id, "pending_launch_id"),
     blockers: array(source.blockers, "blockers").map((item) => {
