@@ -257,7 +257,7 @@ function ActionCard({ action }: { action: NextAction }) {
   return (
     <aside className={merchant.actionCard} aria-label="Next step">
       <p className={merchant.actionEyebrow}>Next step</p>
-      <h2 className={merchant.actionTitle}>{action.label}</h2>
+      <h2 className={merchant.actionTitle}>{action.title}</h2>
       <p className={merchant.actionBody}>{action.body}</p>
       <p className={merchant.actionFoot}>
         <Link className={merchant.primaryButton} href={action.href}>

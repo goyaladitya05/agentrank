@@ -69,7 +69,10 @@ function rowOf(page: Page, target: string) {
 async function signIn(page: Page, context: BrowserContext): Promise<void> {
   if (key === undefined) throw new Error("AGENTRANK_E2E_KEY is required");
   await establishSession(page, context, key);
-  await page.getByRole("navigation", { name: "Console" }).getByRole("link", { name: "Fixes" }).click();
+  await page
+    .getByRole("navigation", { name: "Console" })
+    .getByRole("link", { name: "Fixes" })
+    .click();
   await expect(page.getByText("AgentRank found 4 facts you can review")).toBeVisible();
   await page.getByRole("link", { name: "Review 4 fixes" }).click();
   await expect(page.getByRole("heading", { name: "Review fixes" })).toBeVisible();

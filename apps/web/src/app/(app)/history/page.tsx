@@ -54,11 +54,11 @@ export default async function HistoryPage() {
           </EmptyState>
         </Panel>
       ) : (
-        <div className={styles.panel}>
+        <ol className={merchant.eventList} aria-label="Merchant history">
           {events.map((event) => (
             <EventRow key={`${event.kind}:${event.at}:${event.title}`} event={event} />
           ))}
-        </div>
+        </ol>
       )}
       <p className={styles.finePrint}>
         The full run inventory with technical identifiers is in{" "}
@@ -73,13 +73,13 @@ export default async function HistoryPage() {
 
 function EventRow({ event }: { event: MerchantEvent }) {
   return (
-    <div className={merchant.eventRow}>
+    <li className={merchant.eventRow}>
       <span className={merchant.eventWhen}>{formatTimestamp(event.at)}</span>
       <span className={merchant.eventTitle}>
         {event.href === null ? event.title : <Link href={event.href}>{event.title}</Link>}
         <span className={merchant.eventDetail}>{event.detail}</span>
       </span>
       <StatusMark tone={event.status.tone} label={event.status.label} />
-    </div>
+    </li>
   );
 }

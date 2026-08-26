@@ -102,7 +102,10 @@ async function signIn(page: Page, context: BrowserContext): Promise<void> {
 
 async function publishRepresentation(page: Page): Promise<void> {
   await nav(page, "Fixes").click();
-  await page.getByRole("link", { name: /-source@1/ }).first().click();
+  await page
+    .getByRole("link", { name: /-source@1/ })
+    .first()
+    .click();
   await expect(page.getByRole("heading", { name: "Review fixes" })).toBeVisible();
   await page.getByRole("button", { name: "Publish fixes" }).click();
   await expect(page.getByText("does not rerun a benchmark")).toBeVisible();

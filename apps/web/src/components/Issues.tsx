@@ -138,7 +138,7 @@ function IssueCard({ finding }: { finding: MerchantFinding }) {
         </Link>
         {finding.compiler_references.length > 0 ? (
           <>
-            {" "}
+            {" \u00b7 "}
             <Link
               className={styles.rowLink}
               href={`/fixes/${encodeURIComponent(finding.compiler_references[0]?.compiler_run_id ?? "")}`}

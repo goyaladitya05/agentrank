@@ -55,6 +55,8 @@ export interface NextAction {
     | "review-fixes"
     | "measure-again"
     | "all-clear";
+  /** The state, as a headline. The label below is the action that changes it. */
+  readonly title: string;
   readonly label: string;
   readonly href: string;
   readonly body: string;
@@ -77,6 +79,7 @@ export function nextAction(
   if (preflight !== null && preflight.pending_launch_id !== null) {
     return {
       kind: "evaluation-in-progress",
+      title: "An evaluation is running",
       label: "Follow the evaluation",
       href: `/evaluations/${encodeURIComponent(preflight.pending_launch_id)}`,
       body: "An evaluation you requested is queued or running. Results appear when it finishes.",
@@ -86,6 +89,7 @@ export function nextAction(
   if (!hasSource && finished === null) {
     return {
       kind: "import-store",
+      title: "Get your store into AgentRank",
       label: "Import your store",
       href: "/sources/import",
       body: "AgentRank reads your own public product pages. Nothing about your live store changes.",
@@ -96,6 +100,7 @@ export function nextAction(
     if (preflight !== null && preflight.launchable) {
       return {
         kind: "run-first-evaluation",
+        title: "Ready to test your store",
         label: "Run your first evaluation",
         href: "/evaluations",
         body: "AI shopping agents attempt realistic purchases against your store and AgentRank records what happens.",
@@ -103,6 +108,7 @@ export function nextAction(
     }
     return {
       kind: "prepare-evaluation",
+      title: "One step before testing",
       label: "Prepare your evaluation",
       href: "/evaluations",
       body: "Your store is imported. One more step builds the shopping scenarios AgentRank will test.",
@@ -115,6 +121,7 @@ export function nextAction(
   if (attention > 0 && fixes === 0) {
     return {
       kind: "review-issues",
+      title: "Your evaluation found issues",
       label: "Review issues",
       href: "/issues",
       body:
@@ -127,6 +134,10 @@ export function nextAction(
   if (fixes > 0) {
     return {
       kind: "review-fixes",
+      title:
+        fixes === 1
+          ? "1 proposed fix waits for you"
+          : `${String(fixes)} proposed fixes wait for you`,
       label: fixes === 1 ? "Review 1 fix" : `Review ${String(fixes)} fixes`,
       href: "/fixes",
       body: "AgentRank found facts that could make your store easier for shopping agents to understand. Each one waits for your decision.",
@@ -136,6 +147,7 @@ export function nextAction(
   if (preflight !== null && preflight.purpose === "REEVALUATION" && preflight.launchable) {
     return {
       kind: "measure-again",
+      title: "Your fixes are published",
       label: "Measure again",
       href: "/evaluations",
       body: "Your published fixes have not been measured yet. A re-evaluation shows what changed.",
@@ -144,6 +156,7 @@ export function nextAction(
 
   return {
     kind: "all-clear",
+    title: "Nothing needs your action",
     label: "See your history",
     href: "/history",
     body: "Nothing needs your action right now. Your evaluations and changes are in your history.",

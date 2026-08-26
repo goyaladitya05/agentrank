@@ -440,6 +440,16 @@
 
 /* History: a single readable stream of merchant events. */
 
+.eventList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-raised);
+}
+
 .eventRow {
   display: grid;
   grid-template-columns: 170px minmax(0, 1fr) auto;

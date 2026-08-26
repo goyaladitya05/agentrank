@@ -53,11 +53,7 @@ export function LaunchEvaluation({
   const initial = preflight.purpose === "INITIAL";
   if (!confirming) {
     return (
-      <button
-        className={merchant.primaryButton}
-        type="button"
-        onClick={() => setConfirming(true)}
-      >
+      <button className={merchant.primaryButton} type="button" onClick={() => setConfirming(true)}>
         {initial ? "Run evaluation" : "Measure again"}
       </button>
     );

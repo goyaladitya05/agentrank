@@ -36,6 +36,15 @@ console derives the API session verifier from that cookie by HMAC under a deploy
 cookie alone is inert. Because sessions live in PostgreSQL rather than in console memory, a session
 survives a console restart and resolves on any console process, which is what allows more than one.
 
+The console presents the same evidence at two altitudes. The merchant product is four pages,
+overview, issues, fixes and history, written in merchant language over the diagnostics, compiler
+and evaluation APIs; import, evaluation setup and measuring again are reached contextually from
+them. AgentRank Lab, under `/lab`, is the technical view of the same data: benchmark runs, mission
+traces, compiler runs with their configuration digests, experiment comparisons and system status.
+The Lab requires the same signed in merchant session as everything else and every API it reads is
+scoped to that merchant, so the separation is presentational rather than a second authorization
+system.
+
 ## PostgreSQL
 
 PostgreSQL is the only datastore. There is no cache, no queue service and no object store, and
