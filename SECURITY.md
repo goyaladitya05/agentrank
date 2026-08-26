@@ -42,9 +42,14 @@ digest; the key itself is never stored and cannot be recovered from the database
 Merchant isolation is structural rather than filtered. Queries are merchant scoped, and the
 commerce tables use composite foreign keys carrying `merchant_id`, so a row belonging to one
 merchant cannot be referenced by another merchant's row whatever a caller passes. Another
-merchant's identifier is answered with a 404 that is byte identical to the answer for an
-identifier that does not exist, so the API never confirms that a resource belongs to somebody
-else.
+merchant's identifier raises the same not-found error as an identifier that does not exist, so
+the API never confirms that a resource belongs to somebody else.
+
+Authentication failure is the stronger claim of the two, and it is asserted as whole responses
+compared against each other rather than case by case: no credential, a malformed one, an
+unissued one, a valid identifier with the wrong secret and a revoked one all produce one
+indistinguishable answer. That is exactly the property a per-case assertion would miss, because
+the failure it guards against is one branch answering differently from the others.
 
 Revocation takes effect through the authenticating query itself: the revocation condition is in
 the SQL, so there is no cache to wait out. A request that was already authenticated when a
