@@ -224,10 +224,26 @@ class SourceDocumentInput(BaseModel):
         )
 
 
+# The prefix the server derives its own submission keys under. A confirmed merchant import
+# submits under `import-<import id>`, so a merchant who claimed that key first with different
+# evidence would make their own confirmation refusable forever. Reserved here rather than made
+# collision resistant elsewhere, because a namespace with one owner is simpler than a namespace
+# two parties share carefully.
+RESERVED_KEY_PREFIX = "import-"
+
+
 class SourceSubmissionRequest(SourceDocumentInput):
     """One submission command: the evidence, and the key that makes a retry the same command."""
 
     request_key: str = Field(pattern=SUBMISSION_KEY_PATTERN)
+
+    @field_validator("request_key")
+    @classmethod
+    def unreserved_key(cls, value: str) -> str:
+        """A key the server derives for itself is not one a browser may supply."""
+        if value.startswith(RESERVED_KEY_PREFIX):
+            raise ValueError(f"a request key may not begin {RESERVED_KEY_PREFIX!r}")
+        return value
 
 
 class SourceFieldView(BaseModel):

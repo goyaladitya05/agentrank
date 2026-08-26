@@ -28,7 +28,15 @@ to answer by the time any of these rules ran.
 """
 
 import re
-from decimal import Decimal, InvalidOperation
+from decimal import (
+    Decimal,
+    DecimalException,
+    Inexact,
+    InvalidOperation,
+    Overflow,
+    Rounded,
+    localcontext,
+)
 
 from agentrank_api.money import CURRENCY_PATTERN
 
@@ -131,6 +139,10 @@ _CURRENCY_CODE = re.compile(CURRENCY_PATTERN)
 
 MAX_PRICE_AMOUNT_MINOR = 10**12
 
+# Enough significant digits for any figure `_PLAIN_DECIMAL` admits, shifted by any exponent this
+# module knows. Fifteen digits plus eight decimals plus three places of shift is twenty six.
+_ARITHMETIC_PRECISION = 40
+
 
 class RefusedAmountError(Exception):
     """A published figure this module will not turn into money, and the reason.
@@ -190,9 +202,12 @@ def normalize_currency(published: object) -> str:
 def minor_units(published: object, currency: str) -> int:
     """One published figure as an integer count of minor units of one known currency.
 
-    Exact by construction. The figure is a `Decimal`, the conversion is a `Decimal` shift, and a
-    result that is not a whole number is refused rather than rounded: rounding a price is deciding
-    what a merchant charges, and it is not this importer's decision to make.
+    Exact by construction, and the arithmetic is done in a context that refuses to be inexact
+    rather than in the default one. `Decimal.scaleb` under the default context rounds at
+    twenty eight significant digits and raises on overflow, so a figure with more precision than
+    that would be quietly rounded into a whole number and imported, and a figure with a huge
+    exponent would raise a decimal error nothing catches. Both are page content, so both have to
+    be refusals rather than surprises.
     """
     places = exponent(currency)
     if places is None:  # pragma: no cover - normalize_currency refuses first
@@ -200,7 +215,17 @@ def minor_units(published: object, currency: str) -> int:
     figure = _decimal(published)
     if figure < 0:
         raise RefusedAmountError("price_negative", "the page publishes a negative price")
-    shifted = figure.scaleb(places)
+    try:
+        with localcontext() as context:
+            context.prec = _ARITHMETIC_PRECISION
+            context.traps[Inexact] = True
+            context.traps[Rounded] = True
+            context.traps[Overflow] = True
+            shifted = figure.scaleb(places)
+    except DecimalException as error:
+        raise RefusedAmountError(
+            "price_malformed", "the page publishes a price AgentRank cannot convert exactly"
+        ) from error
     if shifted != shifted.to_integral_value():
         raise RefusedAmountError(
             "price_precision",

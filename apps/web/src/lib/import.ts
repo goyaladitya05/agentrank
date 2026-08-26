@@ -323,32 +323,59 @@ export function extractionLabel(extraction: Extraction): string {
   }
 }
 
-/** One imported price, in the currency the page published, with no rounding of its own. */
+/**
+ * One imported price, in the currency the page published, with no rounding of its own.
+ *
+ * The sign is carried separately rather than taken from the whole part. `Math.trunc(-50 / 100)` is
+ * negative zero, `String` renders that as "0", and a price between minus one unit and zero would
+ * therefore be displayed as positive. The API refuses a negative price, so this is a shape that
+ * cannot arrive today; a display helper that silently drops a minus sign is not one to leave in
+ * place on the strength of that.
+ */
 export function formatImportedPrice(amountMinor: number, currency: string): string {
   const exponent = MINOR_UNIT_DIGITS[currency] ?? 2;
   const divisor = 10 ** exponent;
-  const whole = Math.trunc(amountMinor / divisor);
-  const remainder = Math.abs(amountMinor % divisor);
+  const magnitude = Math.abs(amountMinor);
+  const sign = amountMinor < 0 ? "-" : "";
+  const whole = Math.trunc(magnitude / divisor);
+  const remainder = magnitude % divisor;
   const fraction = exponent === 0 ? "" : `.${String(remainder).padStart(exponent, "0")}`;
-  return `${currency} ${String(whole)}${fraction}`;
+  return `${currency} ${sign}${String(whole)}${fraction}`;
 }
 
 /**
  * The currencies whose minor unit is not two digits, for display only.
  *
- * Deliberately short and deliberately not authoritative. The API decided the integer; this only
- * decides where to draw a decimal point, and an unlisted currency is drawn with two, which is
- * what almost every currency uses.
+ * The API decided the integer; this only decides where to draw a decimal point. But it has to
+ * agree with the set the API is willing to import, or the review page shows a merchant a price
+ * that is a hundred times too small on the one page whose purpose is deciding whether the number
+ * is right. This is the whole of `ZERO_DECIMAL` and `THREE_DECIMAL` from
+ * `agentrank_api.importer.amounts`, and a currency the API adds there has to be added here.
+ * An unlisted currency is drawn with two digits, which is what every other importable one uses.
  */
 const MINOR_UNIT_DIGITS: Record<string, number> = {
   BHD: 3,
+  BIF: 0,
+  CLP: 0,
+  DJF: 0,
+  GNF: 0,
   IQD: 3,
+  ISK: 0,
   JOD: 3,
   JPY: 0,
+  KMF: 0,
   KRW: 0,
   KWD: 3,
   LYD: 3,
   OMR: 3,
+  PYG: 0,
+  RWF: 0,
   TND: 3,
+  UGX: 0,
+  UYI: 0,
   VND: 0,
+  VUV: 0,
+  XAF: 0,
+  XOF: 0,
+  XPF: 0,
 };

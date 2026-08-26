@@ -87,11 +87,6 @@ TITLE_TAGS = ("og:title", "twitter:title")
 DESCRIPTION_TAGS = ("og:description", "description", "twitter:description")
 CATEGORY_TAGS = ("product:category", "article:section")
 
-# A Twitter card's first data field is conventionally a price and is conventionally nothing of the
-# sort. It is read only when the page states a currency somewhere the tags above name, so a page
-# has to have published a currency deliberately before this is consulted at all.
-_TWITTER_PRICE_TAG = "twitter:data1"
-
 MAX_AVAILABILITY_TEXT = 120
 
 _IDENTIFIER = re.compile(IDENTIFIER_PATTERN)
@@ -119,6 +114,14 @@ class PolicyExtraction:
     findings: tuple[Finding, ...] = ()
 
 
+class IdentityCollisionError(Exception):
+    """Two different merchant strings that would become one identifier.
+
+    Raised rather than resolved, because every way of resolving one is a silent rename of somebody
+    else's product. It reaches the caller as an omission naming the page.
+    """
+
+
 class Identifiers:
     """Stable, unique, pattern valid identities for the things one import found.
 
@@ -127,35 +130,62 @@ class Identifiers:
     source schema restricts both to letters, digits, hyphens and underscores for exactly that
     reason. A merchant's own identifier is frequently none of those things.
 
-    Two properties matter and they pull against each other. The same page imported twice must
-    produce the same identifier, or every re-import writes a new source snapshot that says
-    nothing new. And two different things must never collide onto one identifier, or a source
-    document loses a product to the uniqueness check.
+    The rule is a pure function of the merchant's string, and that is the property that took two
+    attempts to get right. An identifier that is derived from the string *and* from what has
+    already been assigned depends on the order pages were listed in, which means the same
+    storefront imported with its URLs in a different order produces a different canonical document
+    and therefore a spurious new source snapshot, with SKUs swapped between real variants.
 
-    Both are met by deriving from the merchant's own string and, on a collision between two
-    different strings, appending a digest of the string rather than a counter. A counter would
-    depend on the order pages happened to be fetched in; a digest depends only on the string.
+    So:
+
+    ```text
+    the string is already an identifier    it is used as it is, and nothing was lost
+    it is not                              a bounded slug plus a digest of the whole string
+    ```
+
+    A string that is already a valid identifier cannot collide with another such string without
+    being equal to it. A string that is not always carries its own digest. What is left is the
+    astronomically unlikely case of a merchant literally using another string's slug and digest as
+    a SKU, and that raises rather than renaming anything.
+
+    Two namespaces, because a source document requires product identifiers unique among products
+    and SKUs unique among variants, and those are separate questions. Sharing one namespace would
+    give a product and its only variant different names for no reason.
     """
 
     def __init__(self) -> None:
-        self._assigned: dict[str, str] = {}
-        self._taken: set[str] = set()
+        self._products: dict[str, str] = {}
+        self._skus: dict[str, str] = {}
 
-    def of(self, raw: str) -> str:
-        """One identifier for one merchant string, the same one every time it is asked for."""
-        existing = self._assigned.get(raw)
-        if existing is not None:
-            return existing
-        base = _slug(raw) or f"item-{_digest(raw)}"
-        candidate = base
-        if candidate in self._taken:
-            suffix = f"-{_digest(raw)}"
-            candidate = f"{base[: MAX_IDENTIFIER_LENGTH - len(suffix)]}{suffix}"
-        if _IDENTIFIER.fullmatch(candidate) is None:  # pragma: no cover - _slug guarantees it
-            candidate = f"item-{_digest(raw)}"
-        self._assigned[raw] = candidate
-        self._taken.add(candidate)
-        return candidate
+    def product(self, raw: str) -> str:
+        """The external identifier for one merchant product string."""
+        return _assign(self._products, raw)
+
+    def sku(self, raw: str) -> str:
+        """The SKU for one merchant variant string."""
+        return _assign(self._skus, raw)
+
+
+def _assign(taken: dict[str, str], raw: str) -> str:
+    """One identifier, decided by the string alone, refused if it is somebody else's."""
+    candidate = raw if _IDENTIFIER.fullmatch(raw) else _derived(raw)
+    settled = taken.get(candidate)
+    if settled is not None and settled != raw:
+        raise IdentityCollisionError(candidate)
+    taken[candidate] = raw
+    return candidate
+
+
+def _derived(raw: str) -> str:
+    """A bounded slug of a merchant string plus a digest of the whole of it.
+
+    The digest is what makes this injective in practice. The slug alone is lossy: a merchant with
+    `Blue / Large` and `Blue - Large` would get one identifier for two variants, and a source
+    document would lose one of them to its uniqueness check.
+    """
+    suffix = f"-{_digest(raw)}"
+    base = _slug(raw)[: MAX_IDENTIFIER_LENGTH - len(suffix)]
+    return f"{base}{suffix}" if base else f"item{suffix}"
 
 
 def _slug(raw: str) -> str:
@@ -247,13 +277,28 @@ def extract_product(
             ),
             tuple(findings),
         )
-    if products:
-        structured = _from_structured(products[0], reading, source_url, identifiers, nodes)
-        if structured is not None:
-            return ProductExtraction(
-                structured.product, structured.omission, tuple(findings) + structured.findings
-            )
-    outcome = _from_metadata(reading, source_url, identifiers, nodes)
+    try:
+        if products:
+            structured = _from_structured(products[0], reading, source_url, identifiers, nodes)
+            if structured is not None:
+                return ProductExtraction(
+                    structured.product, structured.omission, tuple(findings) + structured.findings
+                )
+        outcome = _from_metadata(reading, source_url, identifiers, nodes)
+    except IdentityCollisionError as collision:
+        # Two different merchant strings that would become one address. Renaming one of them would
+        # be this importer deciding that somebody else's product is now called something else.
+        return ProductExtraction(
+            None,
+            Omission(
+                source_url,
+                "identifier_collision",
+                "an identifier on this page would collide with one already imported, and"
+                " AgentRank will not rename either of them",
+                str(collision),
+            ),
+            tuple(findings),
+        )
     return ProductExtraction(outcome.product, outcome.omission, tuple(findings) + outcome.findings)
 
 
@@ -333,7 +378,19 @@ def _from_structured(
                 tuple(findings),
             )
         if settled is not None:
-            continue
+            # Two entries under one SKU. Dropping the second silently would publish a catalog
+            # that quietly disagrees with the merchant's own page, which is the same rule a
+            # refused variant follows: the product is not imported and the reason is stated.
+            return ProductExtraction(
+                None,
+                Omission(
+                    source_url,
+                    "variant_ambiguous",
+                    "this page publishes two variants under one SKU",
+                    built.sku,
+                ),
+                tuple(findings),
+            )
         prices[built.sku] = (built.price_amount_minor, built.currency)
         variants.append(built)
     if not variants:
@@ -469,27 +526,33 @@ def _variant(
         or _text(owner.get("gtin13"))
     )
     if raw_sku is None:
-        if owner is not product:
-            raw_sku = f"{source_url}#variant-{_text(owner.get('name')) or index}"
-        elif index == 0:
-            raw_sku = _text(product.get("sku")) or f"{source_url}#variant-0"
+        # Nothing positional. The second entry in an array is not "the medium one" unless the page
+        # says so, and a SKU derived from an index means the same identifier names a different
+        # variant the moment a storefront regenerates its structured data in another order. What is
+        # used instead is whatever the merchant published to tell this variant from its siblings.
+        distinguishing = _variant_label(owner, product)
+        if owner is not product and distinguishing is not None:
+            raw_sku = f"{source_url}#{distinguishing}"
+        elif owner is product and index == 0:
+            raw_sku = _text(product.get("sku")) or f"{source_url}#only"
         else:
             return Omission(
                 source_url,
                 "variant_ambiguous",
-                "this page publishes several offers without SKUs, so AgentRank cannot tell the"
-                " variants apart",
+                "this page publishes variants with nothing to tell them apart, so AgentRank"
+                " cannot give them stable identities",
             )
-    label = _variant_label(owner, product)
-    if label is not None and instruction_like(label):
-        return Omission(
-            source_url,
-            "instruction_like",
-            "a variant label on this page addresses whatever reads it, so it is not imported",
-        )
     availability, text = _availability(offer, owner)
+    label = _variant_label(owner, product)
+    for value in (label, text):
+        if value is not None and instruction_like(value):
+            return Omission(
+                source_url,
+                "instruction_like",
+                "this page addresses whatever reads it, so it is not imported",
+            )
     return DraftVariant(
-        sku=identifiers.of(raw_sku),
+        sku=identifiers.sku(raw_sku),
         label=None if label is None else label[:MAX_LABEL_LENGTH],
         price_amount_minor=amount,
         currency=currency,
@@ -551,6 +614,12 @@ def _availability(
     The token is kept because the state is a reading of it, and a merchant looking at a draft
     should be able to see the word their page published rather than only AgentRank's summary of
     it. It never becomes a quantity. See `agentrank_api.importer.draft.canonical_document`.
+
+    Being kept is exactly why the caller runs it through the instruction-like guard. It is stored
+    in the variant's merchant metadata, which is a source document field, and every other imported
+    string that reaches one is checked. Missing it here would leave a draft that carries no
+    blocker and that the source schema then refuses at confirmation time, which is the one place
+    a merchant can do nothing about it.
     """
     raw = offer.get("availability")
     if raw is None:
@@ -608,9 +677,10 @@ def _from_metadata(
     nodes: list[dict[str, Any]],
 ) -> ProductExtraction:
     """A product from the page's own metadata tags, for a page publishing no product node."""
+    # Only the two tags that mean "price". A Twitter card's `data1` field is a free form value
+    # whose meaning is stated by its own `label1`, so reading it as a price turns a review count,
+    # a wattage or a delivery estimate into money. It was read here once and should not have been.
     published = reading.meta(*PRICE_AMOUNT_TAGS)
-    if published is None and reading.meta(*PRICE_CURRENCY_TAGS) is not None:
-        published = reading.meta(_TWITTER_PRICE_TAG)
     declared = reading.meta(*PRICE_CURRENCY_TAGS)
     if published is None:
         return ProductExtraction(
@@ -650,6 +720,16 @@ def _from_metadata(
             )
     raw_sku = reading.meta(*IDENTIFIER_TAGS) or source_url
     availability, text = _metadata_availability(reading)
+    if text is not None and instruction_like(text):
+        return ProductExtraction(
+            None,
+            Omission(
+                source_url,
+                "instruction_like",
+                "this page addresses whatever reads it, so it is not imported",
+            ),
+            (),
+        )
     findings = (
         (Finding(source_url, "description_truncated", "the description was cut to fit a source"),)
         if truncated
@@ -657,7 +737,7 @@ def _from_metadata(
     )
     return ProductExtraction(
         DraftProduct(
-            external_id=identifiers.of(f"product::{raw_sku}"),
+            external_id=identifiers.product(raw_sku),
             title=title[:MAX_TITLE_LENGTH],
             description=description,
             category=_category({}, nodes, title) or _bounded_category(reading.meta(*CATEGORY_TAGS)),
@@ -665,7 +745,7 @@ def _from_metadata(
             extraction=ExtractionMethod.PAGE_METADATA,
             variants=(
                 DraftVariant(
-                    sku=identifiers.of(raw_sku),
+                    sku=identifiers.sku(raw_sku),
                     label=None,
                     price_amount_minor=amount,
                     currency=currency,
@@ -701,7 +781,7 @@ def _external_identity(node: dict[str, Any], source_url: str, identifiers: Ident
         or _text(node.get("@id"))
         or source_url
     )
-    return identifiers.of(f"product::{raw}")
+    return identifiers.product(raw)
 
 
 def _category(node: dict[str, Any], nodes: list[dict[str, Any]], title: str) -> str | None:
@@ -766,8 +846,14 @@ def _instruction_like_field(node: dict[str, Any], title: str, reading: PageReadi
 
 
 def _fallback_title(reading: PageReading) -> str | None:
-    """The page's own title, which every HTML document has and which is not a guess about layout."""
-    for candidate in (reading.headings[0] if reading.headings else None, reading.title):
+    """The page's own name for itself, from the two places every HTML document has one.
+
+    The first `h1` and then `<title>`, and nothing else. Any heading would do at first glance and
+    is wrong: `headings` collects h1, h2 and h3 in document order, so a page whose first heading is
+    `Related products` would take that as a product title. An `h1` is the document's own name for
+    itself in a way an `h2` is not.
+    """
+    for candidate in (reading.heading, reading.title):
         if candidate is not None and candidate.strip():
             return collapse(candidate)
     return None

@@ -89,9 +89,18 @@ function Summary({ found }: { found: SourceImport }) {
         {
           term: "Not imported",
           value:
-            summary.omission_count === 0
-              ? "Nothing"
-              : `${String(summary.omission_count)} item(s), listed below`,
+            summary.omission_count > 0
+              ? `${String(summary.omission_count)} item(s), listed below`
+              : summary.state === "COMPLETED"
+                ? "Nothing"
+                : "Not known, because this import did not finish",
+        },
+        {
+          term: "Finished",
+          value:
+            summary.state === "COMPLETED"
+              ? "Yes"
+              : `No. ${summary.failure_reason === "deadline" ? "This import ran out of time before it could read every page." : "This import did not finish."}`,
         },
         {
           term: "Source snapshot",
@@ -108,7 +117,7 @@ function Summary({ found }: { found: SourceImport }) {
 function Pages({ pages }: { pages: readonly ImportPage[] }) {
   return (
     <>
-      <h2 className={styles.sectionTitle}>Pages read</h2>
+      <h3 className={styles.sectionTitle}>Pages read</h3>
       <div className={styles.tableScroll} tabIndex={0} aria-label="Pages read">
         <table className={styles.table}>
           <thead>
@@ -137,7 +146,12 @@ function Pages({ pages }: { pages: readonly ImportPage[] }) {
                 <td>{entry.kind === "POLICY" ? (entry.name ?? "Policy") : "Product"}</td>
                 <td>
                   {entry.retrieved ? (
-                    <StatusMark tone="ok" label={`HTTP ${String(entry.status_code ?? 200)}`} />
+                    <StatusMark
+                      tone="ok"
+                      label={
+                        entry.status_code === null ? "Read" : `HTTP ${String(entry.status_code)}`
+                      }
+                    />
                   ) : (
                     <>
                       <StatusMark tone="fail" label="Not read" />
@@ -163,14 +177,14 @@ function Products({ products }: { products: readonly ImportProduct[] }) {
   if (products.length === 0) {
     return (
       <>
-        <h2 className={styles.sectionTitle}>Products extracted</h2>
+        <h3 className={styles.sectionTitle}>Products extracted</h3>
         <p>No product could be extracted from these pages.</p>
       </>
     );
   }
   return (
     <>
-      <h2 className={styles.sectionTitle}>Products extracted</h2>
+      <h3 className={styles.sectionTitle}>Products extracted</h3>
       <div className={styles.tableScroll} tabIndex={0} aria-label="Products extracted">
         <table className={styles.table}>
           <thead>
@@ -193,6 +207,10 @@ function Products({ products }: { products: readonly ImportProduct[] }) {
                         <br />
                         <span className={styles.cellMuted}>
                           {product.category ?? "No category published"}
+                        </span>
+                        <br />
+                        <span className={styles.cellMuted}>
+                          {product.description ?? "No description published"}
                         </span>
                       </>
                     ) : null}
@@ -241,14 +259,14 @@ function Policies({ policies }: { policies: readonly ImportPolicy[] }) {
   if (policies.length === 0) return null;
   return (
     <>
-      <h2 className={styles.sectionTitle}>Policy text</h2>
+      <h3 className={styles.sectionTitle}>Policy text</h3>
       {policies.map((policy) => (
         <div key={policy.name}>
           <p className={styles.reviewMeta}>
             {policy.name} from {policy.source_url}
             {policy.truncated ? ", cut to the length a source document holds" : ""}
           </p>
-          <p className={styles.tracePayload}>{policy.body}</p>
+          <p className={styles.policyBody}>{policy.body}</p>
         </div>
       ))}
     </>
@@ -266,7 +284,7 @@ function Notes({
 }) {
   return (
     <>
-      <h2 className={styles.sectionTitle}>{title}</h2>
+      <h3 className={styles.sectionTitle}>{title}</h3>
       {notes.length === 0 ? (
         <p className={styles.reviewMeta}>{empty}</p>
       ) : (
@@ -306,7 +324,7 @@ function Confirm({ found, action }: { found: SourceImport; action: ConfirmImport
   if (found.summary.source_snapshot_id !== null) {
     return (
       <>
-        <h2 className={styles.sectionTitle}>Source snapshot</h2>
+        <h3 className={styles.sectionTitle}>Source snapshot</h3>
         <p role="status">
           This import has already been confirmed and is part of your source history.
         </p>
@@ -324,11 +342,11 @@ function Confirm({ found, action }: { found: SourceImport; action: ConfirmImport
   const showsError = state.message !== null && !pending;
   return (
     <>
-      <h2 className={styles.sectionTitle}>Create the source snapshot</h2>
+      <h3 className={styles.sectionTitle}>Create the source snapshot</h3>
       {found.blockers.length > 0 ? (
         <>
           <p>This import cannot become a source snapshot yet.</p>
-          <ul className={styles.warningList}>
+          <ul className={styles.warningList} id="confirm-blockers">
             {found.blockers.map((blocker) => (
               <li key={blocker.code} className={styles.warningItem}>
                 <span className={styles.warningCode}>{blocker.code}</span>
@@ -367,7 +385,7 @@ function Confirm({ found, action }: { found: SourceImport; action: ConfirmImport
                 max={found.max_stock_level}
                 step={1}
                 required
-                defaultValue="10"
+                defaultValue={state.values?.stockLevel ?? ""}
                 aria-describedby={showsError ? "confirm-error" : "stock-level-hint"}
               />
             </label>
@@ -389,7 +407,7 @@ function Confirm({ found, action }: { found: SourceImport; action: ConfirmImport
         {showsError ? (
           <p className={styles.mutationAlert} role="alert" id="confirm-error">
             {state.message}
-            {state.stale ? " The state shown here is current." : ""}
+            {state.stale && !state.unknown ? " The state shown here is current." : ""}
           </p>
         ) : null}
       </form>
@@ -400,13 +418,9 @@ function Confirm({ found, action }: { found: SourceImport; action: ConfirmImport
 export function Confirmed({ state }: { state: ConfirmState }) {
   return (
     <>
-      <h2 className={styles.sectionTitle}>Source snapshot</h2>
+      <h3 className={styles.sectionTitle}>Source snapshot</h3>
       <div role="status">
-        <p>
-          {state.createdSnapshot
-            ? `Source snapshot ${state.sourceLabel ?? ""} created. Nothing has been compiled and no evaluation has run.`
-            : "This import says the same thing as your current source snapshot, so no new snapshot was created."}
-        </p>
+        <p>{outcome(state)}</p>
         {state.snapshotId === null ? null : (
           <>
             <p className={styles.reviewMeta}>
@@ -427,6 +441,24 @@ export function Confirmed({ state }: { state: ConfirmState }) {
       </div>
     </>
   );
+}
+
+/**
+ * What a confirmation actually did, in one sentence, distinguishing three different facts.
+ *
+ * A new snapshot. A document identical to the merchant's current snapshot, which is what a
+ * re-import of an unchanged storefront produces and which wrote nothing. And an import that had
+ * already been confirmed, where this command wrote nothing either and the snapshot it names was
+ * created by an earlier one.
+ */
+function outcome(state: ConfirmState): string {
+  if (state.alreadyConfirmed) {
+    return "This import had already been confirmed, so nothing was written. It names the source snapshot an earlier confirmation created.";
+  }
+  if (state.createdSnapshot) {
+    return `Source snapshot ${state.sourceLabel ?? ""} created. Nothing has been compiled and no evaluation has run.`;
+  }
+  return "This import says the same thing as your current source snapshot, so no new snapshot was created.";
 }
 
 /** A content digest, short enough for a table cell and long enough to compare two by eye. */

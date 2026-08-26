@@ -356,17 +356,42 @@ def test_the_same_page_read_twice_produces_the_same_draft() -> None:
 def test_two_different_merchant_identifiers_never_collide_onto_one() -> None:
     """A collision would lose a product to the source document's uniqueness check."""
     identifiers = Identifiers()
-    first = identifiers.of("Blue / Large")
-    second = identifiers.of("Blue - Large")
+    first = identifiers.sku("Blue / Large")
+    second = identifiers.sku("Blue - Large")
     assert first != second
-    assert identifiers.of("Blue / Large") == first
+    assert identifiers.sku("Blue / Large") == first
+
+
+def test_an_identifier_depends_on_the_string_and_on_nothing_else() -> None:
+    """The property a re-import of an unchanged storefront rests on.
+
+    An identifier that also depended on what had already been assigned would depend on the order
+    the merchant listed their URLs in, so the same pages listed differently would produce a
+    different canonical document and therefore a spurious new source snapshot.
+    """
+    forward = Identifiers()
+    backward = Identifiers()
+    assert forward.sku("Blue / Large") == backward.sku("Blue / Large")
+    assert forward.sku("Blue - Large") == backward.sku("Blue - Large")
+    # Asked in the opposite order, each string still answers with its own identifier.
+    reversed_first = Identifiers()
+    assert reversed_first.sku("Blue - Large") == backward.sku("Blue - Large")
+    assert reversed_first.sku("Blue / Large") == backward.sku("Blue / Large")
+
+
+def test_a_merchant_identifier_that_is_already_an_identifier_is_used_as_it_is() -> None:
+    identifiers = Identifiers()
+    assert identifiers.sku("VE-65-BLK") == "VE-65-BLK"
+    # Separate namespaces, because a source document requires product identifiers unique among
+    # products and SKUs unique among variants, which are separate questions.
+    assert identifiers.product("VE-65-BLK") == "VE-65-BLK"
 
 
 def test_an_identifier_with_nothing_usable_in_it_still_produces_a_valid_one() -> None:
     identifiers = Identifiers()
-    produced = identifiers.of("///")
+    produced = identifiers.sku("///")
     assert produced.startswith("item-")
-    assert identifiers.of("///") == produced
+    assert identifiers.sku("///") == produced
 
 
 def test_a_page_only_publishing_a_breadcrumb_still_states_its_category() -> None:

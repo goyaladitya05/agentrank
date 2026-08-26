@@ -431,3 +431,28 @@ async def test_the_source_namespace_is_authenticated_and_merchant_scoped(
     assert token not in joined
     assert token.split("_")[-1] not in joined
     assert "secret_hash" not in joined
+
+
+async def test_a_merchant_may_not_claim_a_request_key_the_server_derives(
+    settings: Settings,
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+    issue_credential: CredentialIssuer,
+) -> None:
+    """A confirmed merchant import submits under `import-<import id>`.
+
+    A merchant who claimed that key first with different evidence would make their own
+    confirmation refusable forever, because a reused key carrying different evidence is refused.
+    The namespace has one owner instead of two parties sharing it carefully.
+    """
+    merchant, _ = await merchant_with_source(session, "reserved-key-shop")
+    token = await issue_credential(merchant.id)
+    http = client(settings, factory)
+
+    refused = http.post(
+        SOURCES,
+        headers=bearer(token),
+        json=submission(contradicted_document(), "import-0123456789abcdef"),
+    )
+    assert refused.status_code == 422
+    assert "request_key" in json.dumps(refused.json())

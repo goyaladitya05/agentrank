@@ -26,15 +26,18 @@ import { revalidatePath } from "next/cache";
 import { requireConsoleCredential } from "@/lib/auth/credential";
 import { apiBaseUrl } from "@/lib/config";
 import { decodeImportConfirmation, decodeSourceImport } from "@/lib/import";
-import type { ConfirmState, ImportState, ImportValues } from "@/lib/import-mutation";
+import type { ConfirmState, ConfirmValues, ImportState, ImportValues } from "@/lib/import-mutation";
 import { CONFIRM_REFUSALS, IMPORT_REFUSALS, refusal } from "@/lib/source-refusal";
 
 /**
  * The most pages one import command may name.
  *
- * The API states the same number and is the one that decides. This gets there first so that a
- * merchant pasting a hundred URLs is told which bound they crossed instead of watching a request
- * fail, and so that a request that was never going to be accepted does not reach a storefront.
+ * The API states the same number, as `MAX_IMPORT_PAGES` in `agentrank_api.importer.service`, and
+ * is the one that decides. This gets there first so that a merchant pasting a hundred URLs is told
+ * which bound they crossed instead of watching a request fail, and so that a request that was
+ * never going to be accepted does not reach a storefront. The sentence in `RunImport.tsx` states
+ * the same number in words, so a change to the API constant is three edits and drift shows up as
+ * a merchant refused for a bound the console told them was different.
  */
 const MAX_PAGES = 12;
 
@@ -59,6 +62,7 @@ function failed(
     stale: options.stale ?? false,
     unknown: options.unknown ?? false,
     importId: null,
+    completed: false,
     values,
   };
 }
@@ -159,12 +163,14 @@ export async function runImport(
     stale: false,
     unknown: false,
     importId: found.summary.import_id,
+    completed: found.summary.state === "COMPLETED",
     values: null,
   };
 }
 
 function confirmFailed(
   message: string,
+  values: ConfirmValues,
   options: { stale?: boolean; unknown?: boolean } = {},
 ): ConfirmState {
   return {
@@ -176,6 +182,7 @@ function confirmFailed(
     sourceLabel: null,
     createdSnapshot: false,
     alreadyConfirmed: false,
+    values,
   };
 }
 
@@ -185,16 +192,21 @@ export async function confirmImport(
   _: ConfirmState,
   formData: FormData,
 ): Promise<ConfirmState> {
+  const raw = String(formData.get("stock_level") ?? "").trim();
+  // Echoed back on every correctable failure. A form is reset to its defaults once its action
+  // resolves, so a merchant who typed 250 and was refused would otherwise find the field showing
+  // something they never said, and pressing the button again would store that instead.
+  const values: ConfirmValues = { stockLevel: raw };
   let stockLevel: number | null = null;
   if (stockLevelRequired) {
-    const raw = String(formData.get("stock_level") ?? "").trim();
     if (raw === "") {
       return confirmFailed(
         "State the stock level the evaluation world should hold before creating the snapshot.",
+        values,
       );
     }
     if (!/^\d+$/.test(raw)) {
-      return confirmFailed("The evaluation stock level must be a whole number.");
+      return confirmFailed("The evaluation stock level must be a whole number.", values);
     }
     stockLevel = Number(raw);
   }
@@ -214,6 +226,7 @@ export async function confirmImport(
   } catch {
     return confirmFailed(
       "The console could not reach AgentRank, so whether a source snapshot was created is unknown. Reload this page; confirming again cannot create a second one.",
+      values,
       { unknown: true },
     );
   }
@@ -222,7 +235,7 @@ export async function confirmImport(
   if (!response.ok) {
     const refused = refusal(response.status, payload, CONFIRM_REFUSALS);
     if (refused.stale) revalidatePath(`/sources/imports/${importId}`);
-    return confirmFailed(refused.message, { stale: refused.stale });
+    return confirmFailed(refused.message, values, { stale: refused.stale });
   }
 
   let confirmed;
@@ -231,6 +244,7 @@ export async function confirmImport(
   } catch {
     return confirmFailed(
       "AgentRank answered with something this console cannot read. Reload to see your source history.",
+      values,
       { stale: true, unknown: true },
     );
   }
@@ -248,5 +262,6 @@ export async function confirmImport(
     sourceLabel: confirmed.source_label,
     createdSnapshot: confirmed.created_snapshot,
     alreadyConfirmed: confirmed.already_confirmed,
+    values: null,
   };
 }

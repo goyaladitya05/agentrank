@@ -706,3 +706,16 @@
   color: var(--text-muted);
   font-size: 12px;
 }
+
+/* Merchant policy prose. Wraps, unlike .tracePayload, which is a preformatted payload and would
+   render a returns policy as one line nobody can scroll without a pointer. */
+.policyBody {
+  margin: 4px 0 12px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

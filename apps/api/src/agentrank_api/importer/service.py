@@ -38,10 +38,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, func, literal_column, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from agentrank_api.benchmark.identity import canonical_json
 from agentrank_api.commerce.models import Merchant
 from agentrank_api.commerce.repository import MerchantRepository
 from agentrank_api.errors import ConflictError, NotFoundError
@@ -73,12 +74,35 @@ from agentrank_api.representation.models import SourceOrigin
 from agentrank_api.representation.schemas import (
     MAX_PRODUCTS,
     MAX_TOTAL_VARIANTS,
+    RESERVED_KEY_PREFIX,
     SourceDocumentInput,
 )
 
 logger = logging.getLogger(__name__)
 
 IMPORT_RESOURCE = "merchant_source_import"
+
+# Counts computed by PostgreSQL rather than by loading every historical draft into Python, for the
+# reason argued in `MerchantSourceImportService.history`.
+_PAGE_COUNT: ColumnElement[int] = literal_column("jsonb_array_length(merchant_source_import.pages)")
+_RETRIEVED_COUNT: ColumnElement[int] = literal_column(
+    "(SELECT count(*) FROM jsonb_array_elements(merchant_source_import.pages) AS entry"
+    " WHERE (entry ->> 'retrieved')::boolean)"
+)
+_PRODUCT_COUNT: ColumnElement[int] = literal_column(
+    "jsonb_array_length(coalesce(merchant_source_import.draft -> 'products', '[]'::jsonb))"
+)
+_VARIANT_COUNT: ColumnElement[int] = literal_column(
+    "(SELECT coalesce(sum(jsonb_array_length(entry -> 'variants')), 0)"
+    " FROM jsonb_array_elements(coalesce(merchant_source_import.draft -> 'products',"
+    " '[]'::jsonb)) AS entry)"
+)
+_POLICY_COUNT: ColumnElement[int] = literal_column(
+    "jsonb_array_length(coalesce(merchant_source_import.draft -> 'policies', '[]'::jsonb))"
+)
+_OMISSION_COUNT: ColumnElement[int] = literal_column(
+    "jsonb_array_length(coalesce(merchant_source_import.draft -> 'omissions', '[]'::jsonb))"
+)
 
 # How many URLs one import may name. A dozen covers a storefront's product pages plus its returns,
 # warranty and shipping pages, which is what this is for. It is not a number to raise until
@@ -149,6 +173,45 @@ class PageRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class ImportSummary:
+    """One import as identity and size, with no part of its draft in it."""
+
+    import_id: uuid.UUID
+    origin: str
+    state: ImportState
+    failure_reason: str | None
+    created_at: datetime
+    source_snapshot_id: uuid.UUID | None
+    confirmed_at: datetime | None
+    page_count: int
+    retrieved_count: int
+    product_count: int
+    variant_count: int
+    policy_count: int
+    omission_count: int
+
+    @classmethod
+    def of(cls, record: MerchantSourceImport) -> ImportSummary:
+        """The same summary for one already loaded record, so both paths agree on the numbers."""
+        draft = SourceDraft.of(record.draft)
+        return cls(
+            import_id=record.id,
+            origin=record.origin,
+            state=record.state,
+            failure_reason=record.failure_reason,
+            created_at=record.created_at,
+            source_snapshot_id=record.source_snapshot_id,
+            confirmed_at=record.confirmed_at,
+            page_count=len(record.pages),
+            retrieved_count=sum(1 for page in record.pages if page.get("retrieved")),
+            product_count=len(draft.products),
+            variant_count=draft.variant_count,
+            policy_count=len(draft.policies),
+            omission_count=len(draft.omissions),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ImportBlocker:
     """One reason an import cannot become a source snapshot as it stands."""
 
@@ -197,11 +260,10 @@ class MerchantSourceImportService:
         the cost of not holding a database lock across somebody else's network.
         """
         await self._merchant(merchant_id)
+        targets = self._targets(pages)
         settled = await self._by_request_key(merchant_id, request_key)
         if settled is not None:
-            return settled
-
-        targets = self._targets(pages)
+            return _same_request(settled, targets, request_key)
         origin = targets[0][0].origin
         records, draft, failure = await self._retrieve(targets)
         record = MerchantSourceImport(
@@ -220,7 +282,7 @@ class MerchantSourceImportService:
             await self._session.rollback()
             duplicate = await self._by_request_key(merchant_id, request_key)
             if duplicate is not None:
-                return duplicate
+                return _same_request(duplicate, targets, request_key)
             raise
         return record
 
@@ -248,6 +310,16 @@ class MerchantSourceImportService:
                     f"a merchant page URL may be at most {MAX_IMPORT_URL_LENGTH} characters",
                 )
             target = validate_target(page.url, policy=self._policy)
+            if len(target.text) > MAX_IMPORT_URL_LENGTH:
+                # Checked again after normalization, not only on what was submitted. Percent
+                # encoding a path expands it, so a URL inside the submitted bound can leave it,
+                # and this is the string that is stored in a source document's merchant metadata
+                # where five hundred characters is the limit.
+                raise RefusedTargetError(
+                    "url_too_long",
+                    f"that URL is longer than {MAX_IMPORT_URL_LENGTH} characters once AgentRank"
+                    " has normalized it",
+                )
             if origin is None:
                 origin = target.origin
             elif target.origin != origin:
@@ -352,7 +424,11 @@ class MerchantSourceImportService:
             if extracted.omission is not None:
                 omissions.append(extracted.omission)
             if extracted.product is not None:
-                products.append(extracted.product)
+                duplicate = _duplicate_identity(extracted.product, products)
+                if duplicate is None:
+                    products.append(extracted.product)
+                else:
+                    omissions.append(duplicate)
             return
         name = page.name
         if name is None:  # pragma: no cover - the request schema requires one
@@ -379,17 +455,52 @@ class MerchantSourceImportService:
             raise NotFoundError(IMPORT_RESOURCE, str(import_id))
         return found
 
-    async def history(
-        self, merchant_id: uuid.UUID, *, limit: int = 10
-    ) -> list[MerchantSourceImport]:
-        """This merchant's imports, newest first."""
+    async def history(self, merchant_id: uuid.UUID, *, limit: int = 10) -> list[ImportSummary]:
+        """This merchant's imports as identity and size, newest first.
+
+        The counts are computed by PostgreSQL rather than by loading every historical draft into
+        Python. A history page renders a table of numbers, and a merchant with a long history and
+        full drafts would otherwise pay to deserialize all of them to draw one. The same reason
+        `MerchantSourceIntakeService` computes its snapshot summaries in SQL.
+        """
         rows = await self._session.execute(
-            select(MerchantSourceImport)
+            select(
+                MerchantSourceImport.id,
+                MerchantSourceImport.origin,
+                MerchantSourceImport.state,
+                MerchantSourceImport.failure_reason,
+                MerchantSourceImport.created_at,
+                MerchantSourceImport.source_snapshot_id,
+                MerchantSourceImport.confirmed_at,
+                _PAGE_COUNT,
+                _RETRIEVED_COUNT,
+                _PRODUCT_COUNT,
+                _VARIANT_COUNT,
+                _POLICY_COUNT,
+                _OMISSION_COUNT,
+            )
             .where(MerchantSourceImport.merchant_id == merchant_id)
             .order_by(MerchantSourceImport.created_at.desc(), MerchantSourceImport.id.desc())
             .limit(limit)
         )
-        return list(rows.scalars().all())
+        return [
+            ImportSummary(
+                import_id=row[0],
+                origin=row[1],
+                state=row[2],
+                failure_reason=row[3],
+                created_at=row[4],
+                source_snapshot_id=row[5],
+                confirmed_at=row[6],
+                page_count=int(row[7]),
+                retrieved_count=int(row[8]),
+                product_count=int(row[9]),
+                variant_count=int(row[10]),
+                policy_count=int(row[11]),
+                omission_count=int(row[12]),
+            )
+            for row in rows.all()
+        ]
 
     async def confirm(
         self, merchant_id: uuid.UUID, import_id: uuid.UUID, *, stock_level: int | None
@@ -400,21 +511,37 @@ class MerchantSourceImportService:
         not come through here, and nothing calls this except a merchant command naming an import
         they have been shown.
 
-        The submission key is derived from the import rather than supplied, so confirming twice
-        is one submission and answers with what the first one did. That also makes the two writes
-        recoverable: the snapshot is written and committed by the intake, and this row is linked
-        to it afterwards, so a process that died between them relinks on the retry instead of
-        writing a second snapshot.
+        The submission key is derived from the import rather than supplied, and this reads it back
+        before doing anything else. That one read is what makes the whole command recoverable,
+        because the two writes it performs cannot be one transaction: the intake commits the
+        snapshot, and only then can this row be linked to it.
+
+        ```text
+        the submission exists   this import already produced a snapshot. Link it if the link is
+                                missing, and answer with what that submission did
+        it does not             check the blockers, submit, and link
+        ```
+
+        Three situations that all used to be wrong resolve to the first branch. A retry after a
+        response nobody saw. A process that died between the two writes, including one whose retry
+        states a different stock level, which used to be a permanent 409 with the snapshot orphaned
+        from the import that produced it. And two simultaneous confirmations, where the loser used
+        to write over a row the immutability trigger then refused, surfacing to a merchant as "the
+        database is unavailable" on a command that had in fact succeeded.
         """
         record = await self.read(merchant_id, import_id)
+        intake = MerchantSourceIntakeService(self._session)
+        key = submission_key(record.id)
         draft = SourceDraft.of(record.draft)
-        if record.confirmed_at is not None:
-            outcome = await MerchantSourceIntakeService(self._session).by_request_key(
-                merchant_id, _submission_key(record.id)
-            )
-            if outcome is not None:
-                return ConfirmationOutcome(record, outcome, already_confirmed=True)
-
+        settled = await intake.by_request_key(merchant_id, key)
+        if settled is not None:
+            # The stock level is recorded only when it is the one the settled snapshot actually
+            # carries, which is decided by rebuilding the document rather than assumed. Two
+            # simultaneous confirmations name the same number and both are right; a retry after a
+            # lost link may name a different one, and writing that against a snapshot built from
+            # another figure would have the row state something the snapshot does not.
+            record = await self._link(record, settled, _stated(draft, stock_level, settled))
+            return ConfirmationOutcome(record, settled, already_confirmed=True)
         blockers = blockers_for(record, draft, stock_level=stock_level)
         if blockers:
             raise ConflictError(
@@ -423,20 +550,45 @@ class MerchantSourceImportService:
                 resource=IMPORT_RESOURCE,
                 identifier=str(import_id),
             )
-        body = canonical_document(draft, stock_level=stock_level)
-        document = SourceDocumentInput.model_validate(body)
-        submission = await MerchantSourceIntakeService(self._session).submit(
-            merchant_id,
-            request_key=_submission_key(record.id),
-            document=document,
-            origin=SourceOrigin.MERCHANT_IMPORT,
+        document = SourceDocumentInput.model_validate(
+            canonical_document(draft, stock_level=stock_level)
         )
-        if record.confirmed_at is None:
-            record.source_snapshot_id = submission.snapshot.id
-            record.stock_level = stock_level
-            record.confirmed_at = datetime.now(UTC)
-            await self._session.commit()
+        submission = await intake.submit(
+            merchant_id, request_key=key, document=document, origin=SourceOrigin.MERCHANT_IMPORT
+        )
+        record = await self._link(record, submission, stock_level)
         return ConfirmationOutcome(record, submission, already_confirmed=False)
+
+    async def _link(
+        self,
+        record: MerchantSourceImport,
+        submission: SubmissionOutcome,
+        stock_level: int | None,
+    ) -> MerchantSourceImport:
+        """Record which snapshot this import became, exactly once, whoever gets there first.
+
+        A conditional statement rather than an ORM write, and that is the point. The immutability
+        trigger refuses any update to a row that is already confirmed, so a second writer using
+        the ORM would raise a database error on a command that had succeeded. `WHERE confirmed_at
+        IS NULL` means the second writer matches no row, the trigger never fires, and both callers
+        end up reading the same settled state.
+        """
+        if record.confirmed_at is None:
+            await self._session.execute(
+                update(MerchantSourceImport)
+                .where(
+                    MerchantSourceImport.id == record.id,
+                    MerchantSourceImport.merchant_id == record.merchant_id,
+                    MerchantSourceImport.confirmed_at.is_(None),
+                )
+                .values(
+                    source_snapshot_id=submission.snapshot.id,
+                    stock_level=stock_level,
+                    confirmed_at=func.now(),
+                )
+            )
+            await self._session.commit()
+        return await self.read(record.merchant_id, record.id)
 
     async def _by_request_key(
         self, merchant_id: uuid.UUID, request_key: str
@@ -455,6 +607,78 @@ class MerchantSourceImportService:
         if merchant is None:
             raise NotFoundError("merchant", str(merchant_id))
         return merchant
+
+
+def _stated(draft: SourceDraft, stock_level: int | None, settled: SubmissionOutcome) -> int | None:
+    """The stock level to record, which is this caller's only if it produced this snapshot."""
+    try:
+        rebuilt = canonical_document(draft, stock_level=stock_level)
+    except ValueError:
+        return None
+    evidence = {
+        "products": settled.snapshot.payload.get("products", []),
+        "policy_text": settled.snapshot.payload.get("policy_text", {}),
+    }
+    return stock_level if canonical_json(rebuilt) == canonical_json(evidence) else None
+
+
+def _same_request(
+    settled: MerchantSourceImport,
+    targets: Sequence[tuple[ImportTarget, RequestedPage]],
+    request_key: str,
+) -> MerchantSourceImport:
+    """The import this key already produced, if this really is the same command.
+
+    A key names a command, so a repeat naming the same pages is that command and answers with what
+    it did. A repeat naming different pages is a different command wearing another one's name, and
+    answering it with somebody else's result would tell a merchant their import of B succeeded
+    while showing them the results for A. The same rule the source intake applies to a reused
+    submission key, for the same reason.
+    """
+    requested = [
+        {"url": target.text, "kind": page.kind.value, "name": page.name} for target, page in targets
+    ]
+    stored = [
+        {"url": entry.get("url"), "kind": entry.get("kind"), "name": entry.get("name")}
+        for entry in settled.pages
+    ]
+    if requested != stored:
+        raise ConflictError(
+            "import_request_key_reused",
+            "this request key has already imported a different set of pages",
+            resource=IMPORT_RESOURCE,
+            identifier=request_key,
+        )
+    return settled
+
+
+def _duplicate_identity(product: DraftProduct, accepted: Sequence[DraftProduct]) -> Omission | None:
+    """Whether this product repeats an identity another page already published.
+
+    A canonical URL and a variant URL for one product is an everyday storefront shape, and both
+    pages publish the same SKU. A source document requires product identifiers unique among
+    products and SKUs unique among variants, so importing both would produce a document that
+    passes the request schema and is then refused by the domain, deeper down, with nothing the
+    merchant could act on. Refusing the second page here says which page and why.
+    """
+    identities = {existing.external_id for existing in accepted}
+    if product.external_id in identities:
+        return Omission(
+            product.source_url,
+            "duplicate_product",
+            "another page in this import already published this product",
+            product.external_id,
+        )
+    skus = {variant.sku for existing in accepted for variant in existing.variants}
+    shared = sorted(skus.intersection(variant.sku for variant in product.variants))
+    if shared:
+        return Omission(
+            product.source_url,
+            "duplicate_variant",
+            "another page in this import already published this SKU",
+            shared[0],
+        )
+    return None
 
 
 def blockers_for(
@@ -511,9 +735,13 @@ def blockers_for(
     return blockers
 
 
-def _submission_key(import_id: uuid.UUID) -> str:
-    """The one source submission key one import may ever produce."""
-    return f"import-{import_id.hex}"
+def submission_key(import_id: uuid.UUID) -> str:
+    """The one source submission key one import may ever produce.
+
+    Under the prefix `SourceSubmissionRequest` refuses, so a merchant cannot claim this key with
+    other evidence and make their own confirmation permanently refusable.
+    """
+    return f"{RESERVED_KEY_PREFIX}{import_id.hex}"
 
 
 def _bounded(

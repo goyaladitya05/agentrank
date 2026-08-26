@@ -217,13 +217,18 @@ class FetchLimits:
 
 @dataclass(frozen=True, slots=True)
 class ImportTarget:
-    """One URL that passed every check that can be made without connecting to anything."""
+    """One URL that passed every check that can be made without connecting to anything.
+
+    The host is carried as a field rather than read back off the URL, and that is not tidiness.
+    `httpx2.URL.host` is a lazy property that IDNA *decodes* on every access, so reading it back
+    returns Unicode for an internationalized name, which then fails to encode as a `Host` header,
+    and raises outright for a name whose punycode is malformed. Both are page or request content,
+    so both were an unhandled server error. What is stored here is the ASCII form that actually
+    goes on the wire.
+    """
 
     url: httpx2.URL
-
-    @property
-    def host(self) -> str:
-        return self.url.host
+    host: str
 
     @property
     def port(self) -> int:
@@ -332,7 +337,7 @@ def validate_target(raw: str, *, policy: AddressPolicy = PUBLIC_ONLY) -> ImportT
             "port_not_permitted", "a merchant page must be served on port 80 or 443"
         )
 
-    host = _canonical_host(url.host)
+    host = _canonical_host(url)
     literal = _address_literal(host)
     if literal is not None and not policy.permits(literal):
         raise RefusedTargetError(
@@ -341,30 +346,36 @@ def validate_target(raw: str, *, policy: AddressPolicy = PUBLIC_ONLY) -> ImportT
     # The fragment is dropped rather than carried. It is never sent to a server, so keeping one
     # would mean storing a piece of a URL that had no effect on what was fetched, and comparing
     # two imports would report a difference that was not one.
-    return ImportTarget(url=url.copy_with(host=host, fragment=None))
+    return ImportTarget(url=url.copy_with(host=host, fragment=None), host=host)
 
 
-def _canonical_host(host: str) -> str:
-    """One host, in the single spelling everything downstream compares against.
+def _canonical_host(url: httpx2.URL) -> str:
+    """One host, in the single ASCII spelling everything downstream compares and connects against.
 
-    Three normalizations, each of which is a way for two spellings of one host to look like two
-    hosts. Case, because DNS is case insensitive and a same-origin check is not. The root label,
-    because `example.com.` and `example.com` are the same name to a resolver. And the ASCII form
-    of an international name, because that is what actually goes on the wire.
+    Taken from `raw_host`, which is the form the URL parser already produced for the wire. Doing
+    the conversion here instead was a real defect twice over. It used the standard library's
+    `idna` codec, which is IDNA 2003 with nameprep, while the parser uses the `idna` package,
+    which is IDNA 2008; the two disagree, and `fa\u00df.de` and `fass.de` are the canonical
+    disagreement and are separately registrable domains. A merchant asking for one would have had
+    the other fetched, and the import record would have said so. It also read `URL.host`, which
+    decodes back to Unicode and raises for a malformed punycode label.
+
+    Two normalizations remain, each a way for two spellings of one host to look like two hosts.
+    Case, because DNS is case insensitive and a same-origin check is not. And the root label,
+    because `example.com.` and `example.com` are one name to a resolver.
     """
-    if not host:
+    raw = url.raw_host
+    if not raw:
         raise RefusedTargetError("url_malformed", "that URL names no host")
-    lowered = host.lower().rstrip(".")
+    try:
+        lowered = raw.decode("ascii").lower().rstrip(".")
+    except UnicodeDecodeError as error:  # pragma: no cover - the parser produces ASCII
+        raise RefusedTargetError(
+            "url_malformed", "that URL names a host AgentRank cannot read"
+        ) from error
     if not lowered:
         raise RefusedTargetError("url_malformed", "that URL names no host")
-    if lowered.isascii():
-        return lowered
-    try:
-        return lowered.encode("idna").decode("ascii")
-    except UnicodeError as error:
-        raise RefusedTargetError(
-            "url_malformed", "that URL names a host AgentRank cannot resolve"
-        ) from error
+    return lowered
 
 
 def _address_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
@@ -438,9 +449,15 @@ class MerchantPageFetcher:
                 self._limits.page_timeout_seconds,
                 connect=self._limits.connect_timeout_seconds,
             ),
-            # A merchant page is fetched once. Keeping many connections open to a storefront
-            # would be this application deciding how much of somebody else's capacity to hold.
-            limits=httpx2.Limits(max_connections=4, max_keepalive_connections=2),
+            # No connection is kept alive, and that is a security decision rather than a
+            # politeness one. The pool keys a connection on the origin it was opened for, and
+            # this module rewrites every request's host to the validated address literal, so the
+            # key is an address. Two host names behind one address, which is what shared hosting
+            # and every CDN are, would therefore share one TLS connection, and `sni_hostname` is
+            # read only when a connection is established. The second name's certificate would
+            # never be checked. One connection per page costs a handshake and removes that
+            # entirely.
+            limits=httpx2.Limits(max_connections=1, max_keepalive_connections=0),
             headers={"User-Agent": USER_AGENT, "Accept": ACCEPT},
         )
 
@@ -479,6 +496,15 @@ class MerchantPageFetcher:
             # not distinctions a merchant can act on differently, and the exception text is a
             # library's prose that would end up in a stored import record.
             return RetrievalFailure(target, "unreachable", "that page could not be retrieved")
+        except UnicodeError, httpx2.InvalidURL:
+            # A `Location` header this repository never asked anybody to parse. The client builds
+            # a redirect request on every redirect response in order to expose it, whether or not
+            # it is configured to follow one, and building it reads the target's host, which IDNA
+            # decodes and raises on a malformed punycode label. So an attacker chosen page could
+            # raise out of the whole boundary, discarding an in-flight import of a dozen pages
+            # with nothing written and nothing the merchant could see. It is a refusal like any
+            # other unreadable redirect.
+            return self._unreadable_redirect(target)
 
     async def _chain(self, target: ImportTarget) -> RetrievedDocument | RetrievalFailure:
         """Follow up to the permitted number of redirects, validating every hop as a new target."""
@@ -569,6 +595,14 @@ class MerchantPageFetcher:
             )
         finally:
             await response.aclose()
+
+    @staticmethod
+    def _unreadable_redirect(target: ImportTarget) -> RetrievalFailure:
+        return RetrievalFailure(
+            target,
+            "redirect_malformed",
+            "that page redirected to something AgentRank cannot read",
+        )
 
     def _next_hop(self, target: ImportTarget, response: httpx2.Response) -> ImportTarget:
         """Where a redirect points, as a target that has proved nothing yet.

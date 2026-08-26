@@ -121,9 +121,11 @@ function History({ imports }: { imports: readonly ImportSummary[] }) {
                 {String(entry.product_count)} product(s)
                 <br />
                 <span className={styles.cellMuted}>
-                  {entry.omission_count === 0
-                    ? "Nothing left out"
-                    : `${String(entry.omission_count)} not imported`}
+                  {entry.omission_count > 0
+                    ? `${String(entry.omission_count)} not imported`
+                    : entry.state === "COMPLETED"
+                      ? "Nothing left out"
+                      : "Did not finish"}
                 </span>
               </td>
               <td>

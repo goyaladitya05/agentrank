@@ -29,14 +29,18 @@ a page designed to be expensive to read costs the bound and not the page.
 """
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from html.parser import HTMLParser
 
 # Elements whose content is not merchant prose. Their text is dropped entirely rather than
 # collected and filtered later: a stylesheet or a script body is never evidence about a product,
 # and the surest way for it never to become one is for it never to enter the text at all.
+# `head` is deliberately not among them. Suppression now covers metadata and headings as well as
+# text, and every tag this module reads is in the head, so suppressing it would make the reader
+# see nothing. It contributes no text either way: its script and style children are suppressed by
+# name, and its title is captured rather than appended.
 NON_TEXT_ELEMENTS = frozenset(
-    {"script", "style", "template", "noscript", "svg", "canvas", "iframe", "head"}
+    {"script", "style", "template", "noscript", "svg", "canvas", "iframe"}
 )
 
 # Elements that separate words. Without this, "Free returns</p><p>within 30 days" reads as one
@@ -110,13 +114,13 @@ class PageReading:
     """
 
     title: str | None
+    heading: str | None
     headings: tuple[str, ...]
     metadata: dict[str, str]
     structured_blocks: tuple[str, ...]
     text: str
     links: tuple[str, ...]
     truncated: bool
-    malformed_structured_blocks: int
 
     def meta(self, *names: str) -> str | None:
         """The first of several metadata names that this page actually published.
@@ -143,17 +147,18 @@ class _Reader(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.title: str | None = None
+        self.heading: str | None = None
         self.headings: list[str] = []
         self.metadata: dict[str, str] = {}
         self.structured_blocks: list[str] = []
         self.links: list[str] = []
         self.truncated = False
-        self.malformed_structured_blocks = 0
         self._text: list[str] = []
         self._length = 0
         self._suppressed: list[str] = []
         self._capturing: str | None = None
         self._captured: list[str] = []
+        self._captured_length = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         name = tag.lower()
@@ -166,14 +171,21 @@ class _Reader(HTMLParser):
             else:
                 self._suppressed.append(name)
             return
+        if name in NON_TEXT_ELEMENTS:
+            self._suppressed.append(name)
+            return
+        # Everything below is inert while suppressed. A `<template>`, a `<noscript>` or an `<svg>`
+        # is markup a browser does not render, so a `<meta>` or an `<h1>` inside one is not
+        # something the page published: it is a placeholder, a fallback or an icon label. Reading
+        # them was a real defect, because metadata is first wins and a template's placeholder
+        # price therefore beat the merchant's real one.
+        if self._suppressed:
+            return
         if name == "title":
             self._begin_capture("title")
             return
         if name in _HEADING_ELEMENTS:
             self._begin_capture(name)
-            return
-        if name in NON_TEXT_ELEMENTS:
-            self._suppressed.append(name)
             return
         if name == "meta":
             self._record_meta(attributes)
@@ -186,6 +198,8 @@ class _Reader(HTMLParser):
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         name = tag.lower()
         attributes = {key.lower(): (value or "") for key, value in attrs}
+        if self._suppressed:
+            return
         if name == "meta":
             self._record_meta(attributes)
         elif name == "a":
@@ -225,17 +239,23 @@ class _Reader(HTMLParser):
         if self._capturing is None:
             self._capturing = name
             self._captured = []
+            self._captured_length = 0
 
     def _capture(self, data: str) -> None:
-        if sum(len(part) for part in self._captured) > MAX_STRUCTURED_BLOCK_CHARACTERS:
+        # A running count rather than a sum over the accumulated pieces. `handle_data` is called
+        # once per chunk the parser produces, so re-summing would be quadratic in the number of
+        # chunks, which is a property of the page rather than of its size.
+        if self._captured_length > MAX_STRUCTURED_BLOCK_CHARACTERS:
             self.truncated = True
             return
         self._captured.append(data)
+        self._captured_length += len(data)
 
     def _end_capture(self, name: str) -> None:
         content = "".join(self._captured)
         self._capturing = None
         self._captured = []
+        self._captured_length = 0
         if name == "script":
             if len(self.structured_blocks) < MAX_STRUCTURED_BLOCKS:
                 self.structured_blocks.append(content)
@@ -249,6 +269,8 @@ class _Reader(HTMLParser):
             if self.title is None:
                 self.title = collapsed[:MAX_HEADING_CHARACTERS]
             return
+        if name == "h1" and self.heading is None:
+            self.heading = collapsed[:MAX_HEADING_CHARACTERS]
         if len(self.headings) < MAX_HEADINGS:
             self.headings.append(collapsed[:MAX_HEADING_CHARACTERS])
         # A heading is part of the page's prose as well as being a heading, so it goes into the
@@ -290,26 +312,11 @@ def read_page(markup: str) -> PageReading:
     reader.close()
     return PageReading(
         title=reader.title,
+        heading=reader.heading,
         headings=tuple(reader.headings),
         metadata=dict(reader.metadata),
         structured_blocks=tuple(reader.structured_blocks),
         text=reader.text(),
         links=tuple(reader.links),
         truncated=reader.truncated,
-        malformed_structured_blocks=reader.malformed_structured_blocks,
     )
-
-
-@dataclass(frozen=True, slots=True)
-class StructuredData:
-    """The schema.org nodes a page published, and how many blocks could not be read.
-
-    Nodes are collected from three places and no others: the top level of a block, a `@graph`
-    array, and a `mainEntity` pointer. Every one of those is the merchant saying "this document
-    is about this thing". Walking arbitrary keys instead would collect the related products, the
-    breadcrumb entries and the reviews as though the page were about them, and the page's actual
-    subject would then be whichever one happened to come first.
-    """
-
-    nodes: tuple[dict[str, object], ...] = field(default=())
-    malformed_blocks: int = 0

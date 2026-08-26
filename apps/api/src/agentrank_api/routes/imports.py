@@ -27,8 +27,12 @@ are constants this repository states.
 Two translations happen here and nowhere else. `RefusedTargetError` is a 422 because the request
 named something AgentRank will not fetch, which is a fact about the request. Everything else the
 domain raises already has a response: `NotFoundError` is a 404 including for another merchant's
-import, `ConflictError` is a 409 for a confirmation the draft refuses, and the body size bound is
-answered by `agentrank_api.limits` before the body is read.
+import, `ConflictError` is a 409 for a confirmation the draft refuses, and a `ValueError` from
+the source schema or the source domain is a 422 for the same reason a submitted document's is.
+
+The body size bound applies to the import command, which is the body a caller composes freely.
+The confirmation body is one bounded integer and is not separately bounded, in common with every
+other route in this application that takes a small fixed shape.
 """
 
 import uuid
@@ -57,8 +61,10 @@ async def list_imports(
     limit: Annotated[int, Query(ge=1, le=50)] = 10,
 ) -> list[SourceImportSummaryView]:
     """This merchant's imports, newest first, as identity and counts only."""
-    records = await MerchantSourceImportService(session).history(merchant.merchant_id, limit=limit)
-    return [SourceImportSummaryView.of(record) for record in records]
+    summaries = await MerchantSourceImportService(session).history(
+        merchant.merchant_id, limit=limit
+    )
+    return [SourceImportSummaryView.of(summary) for summary in summaries]
 
 
 @router.get("/{import_id}")
@@ -119,9 +125,19 @@ async def confirm_import(
     Confirming twice is one submission and answers with what the first one did, because the
     submission key is derived from the import rather than supplied.
     """
-    outcome = await MerchantSourceImportService(session).confirm(
-        merchant.merchant_id, import_id, stock_level=request.stock_level
-    )
+    try:
+        outcome = await MerchantSourceImportService(session).confirm(
+            merchant.merchant_id, import_id, stock_level=request.stock_level
+        )
+    except ValueError as error:
+        # A draft that cannot become a source document. `blockers_for` catches the reasons a
+        # merchant can act on and cannot catch every one: the source schema and the domain both
+        # refuse documents for reasons this workflow does not model, and either would otherwise
+        # reach a caller as a 500. Translated here rather than swallowed, and by the same rule the
+        # source submission route uses, so a caller reads what was wrong with the request.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)
+        ) from error
     return ImportConfirmationView(
         import_id=outcome.record.id,
         already_confirmed=outcome.already_confirmed,

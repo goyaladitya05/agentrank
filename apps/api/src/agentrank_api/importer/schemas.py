@@ -35,6 +35,7 @@ from agentrank_api.importer.service import (
     MAX_IMPORT_URL_LENGTH,
     MAX_STOCK_LEVEL,
     ImportBlocker,
+    ImportSummary,
     RequestedPage,
     blockers_for,
 )
@@ -256,22 +257,21 @@ class SourceImportSummaryView(BaseModel):
     confirmed_at: datetime | None
 
     @classmethod
-    def of(cls, record: MerchantSourceImport) -> Self:
-        draft = SourceDraft.of(record.draft)
+    def of(cls, summary: ImportSummary) -> Self:
         return cls(
-            import_id=record.id,
-            origin=record.origin,
-            state=record.state,
-            failure_reason=record.failure_reason,
-            created_at=record.created_at,
-            page_count=len(record.pages),
-            retrieved_count=sum(1 for page in record.pages if page.get("retrieved")),
-            product_count=len(draft.products),
-            variant_count=draft.variant_count,
-            policy_count=len(draft.policies),
-            omission_count=len(draft.omissions),
-            source_snapshot_id=record.source_snapshot_id,
-            confirmed_at=record.confirmed_at,
+            import_id=summary.import_id,
+            origin=summary.origin,
+            state=summary.state,
+            failure_reason=summary.failure_reason,
+            created_at=summary.created_at,
+            page_count=summary.page_count,
+            retrieved_count=summary.retrieved_count,
+            product_count=summary.product_count,
+            variant_count=summary.variant_count,
+            policy_count=summary.policy_count,
+            omission_count=summary.omission_count,
+            source_snapshot_id=summary.source_snapshot_id,
+            confirmed_at=summary.confirmed_at,
         )
 
 
@@ -306,7 +306,7 @@ class SourceImportView(BaseModel):
         assumed = 0 if draft.stock_level_required else None
         blockers = blockers_for(record, draft, stock_level=assumed)
         return cls(
-            summary=SourceImportSummaryView.of(record),
+            summary=SourceImportSummaryView.of(ImportSummary.of(record)),
             pages=[ImportPageView.model_validate(page) for page in record.pages],
             products=[ImportProductView.of(product) for product in draft.products],
             policies=[

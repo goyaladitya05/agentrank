@@ -292,3 +292,22 @@ def test_a_network_allowance_that_is_not_cidr_is_a_startup_failure(
 
     with pytest.raises(ValueError, match="CIDR"):
         build_settings()
+
+
+def test_a_process_that_never_stated_its_environment_may_not_widen_the_importer(
+    environment: dict[str, str], elsewhere: Path
+) -> None:
+    """The half of the structural block that an absence used to satisfy.
+
+    `AGENTRANK_ENV` defaults to development, so a process where nobody set it, a chart that
+    dropped it or an image that cleared it, was authorised to point the merchant page importer at
+    a private network by an absence. Every other guard keyed on that variable fails in the same
+    silence, so the allowance requires it to have been stated.
+    """
+    del elsewhere
+    os.environ.pop(ENVIRONMENT_VARIABLE, None)
+    os.environ.update(environment)
+    os.environ["AGENTRANK_IMPORT_ALLOWED_NETWORKS"] = "0.0.0.0/0"
+
+    with pytest.raises(ValueError, match=ENVIRONMENT_VARIABLE):
+        build_settings()

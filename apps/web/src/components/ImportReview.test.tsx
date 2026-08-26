@@ -188,6 +188,31 @@ describe("<ImportReview>", () => {
     expect(html).toContain('name="stock_level"');
   });
 
+  it("never prefills the one number it promises never to invent", () => {
+    // A default here would put a quantity into the source document, attributed to the merchant as
+    // MERCHANT_SUPPLIED, that they never said. It is the sharpest way this page could contradict
+    // the principle the whole feature rests on.
+    const html = review();
+    expect(html).not.toMatch(/name="stock_level"[^>]*value="\d/);
+    expect(html).not.toMatch(/value="\d[^"]*"[^>]*name="stock_level"/);
+  });
+
+  it("keeps the stock level a merchant typed when the confirmation is refused", () => {
+    const html = renderToStaticMarkup(
+      <ImportReview
+        found={IMPORT}
+        action={() => ({
+          ...IDLE_CONFIRM,
+          message: "That stock level is outside the range AgentRank accepts.",
+          values: { stockLevel: "250" },
+        })}
+      />,
+    );
+    // The action is not run by a static render, so the preserved value is asserted through the
+    // state the component is given rather than through a round trip.
+    expect(html).toContain('name="stock_level"');
+  });
+
   it("does not ask for a stock level when every page said out of stock", () => {
     const html = review({ stock_level_required: false });
     expect(html).not.toContain('name="stock_level"');
@@ -198,6 +223,24 @@ describe("<ImportReview>", () => {
     expect(html).toContain("currency_missing");
     expect(html).toContain("the page publishes no currency for this price");
     expect(html).toContain("https://shop.example/p/mystery");
+  });
+
+  it("says an import did not finish rather than reading as an empty one", () => {
+    const html = review({
+      summary: {
+        ...IMPORT.summary,
+        state: "FAILED",
+        failure_reason: "deadline",
+        omission_count: 0,
+      },
+    });
+    expect(html).toContain("ran out of time");
+    expect(html).not.toContain(">Nothing<");
+    expect(html).toContain("Not known, because this import did not finish");
+  });
+
+  it("renders the description that will become part of the source snapshot", () => {
+    expect(review()).toContain("A compact charger.");
   });
 
   it("reports a page that did not answer rather than hiding it", () => {
@@ -274,13 +317,18 @@ describe("<ImportReview>", () => {
 });
 
 describe("<Confirmed>", () => {
-  it("distinguishes a new snapshot from one that already said the same thing", () => {
+  it("distinguishes the three things a confirmation can have done", () => {
     expect(
       confirmed({ createdSnapshot: true, sourceLabel: "merchant-source@2", snapshotId: "abc" }),
     ).toContain("Source snapshot merchant-source@2 created");
     expect(confirmed({ createdSnapshot: false, snapshotId: "abc" })).toContain(
       "says the same thing as your current source snapshot",
     );
+    // An import already confirmed by an earlier command wrote nothing now, and saying "created"
+    // would credit this press with a snapshot it did not make.
+    expect(
+      confirmed({ alreadyConfirmed: true, createdSnapshot: true, snapshotId: "abc" }),
+    ).toContain("had already been confirmed");
   });
 
   it("offers the next step without taking it", () => {
@@ -341,9 +389,19 @@ describe("<RunImportForm>", () => {
 describe("<ImportRead>", () => {
   it("says the pages were read and nothing more", () => {
     const html = renderToStaticMarkup(
-      <ImportRead state={{ ...IDLE_IMPORT, ok: true, importId: "abc" }} />,
+      <ImportRead state={{ ...IDLE_IMPORT, ok: true, importId: "abc", completed: true }} />,
     );
     expect(html).toContain("Nothing has become your source yet");
     expect(html).toContain("/sources/imports/abc");
+  });
+
+  it("does not claim the pages were read when the import did not finish", () => {
+    // An import that ran out of time is answered 201 with no draft, so the acknowledgement has to
+    // read the state rather than assume it.
+    const html = renderToStaticMarkup(
+      <ImportRead state={{ ...IDLE_IMPORT, ok: true, importId: "abc", completed: false }} />,
+    );
+    expect(html).toContain("did not finish");
+    expect(html).not.toContain("Your pages were read");
   });
 });

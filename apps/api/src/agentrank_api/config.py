@@ -186,15 +186,24 @@ class Settings(BaseSettings):
         combination of environment variables that produces a production process with a widened
         importer. Removing this check would be the deliberate act of enabling it.
 
+        The environment has to have been *stated*, not merely defaulted, and that half was
+        missing. `AGENTRANK_ENV` defaults to `development`, so a process where nobody set it, a
+        chart that dropped it or an image that cleared it, would have been authorised to widen the
+        importer by an absence. That is the one shape a structural block must not have, because
+        every other guard keyed on the same variable fails in the same silence. The Razorpay
+        refusal does not have it: `rzp_test_` is checked on the value, and there is no unset that
+        means permitted.
+
         Parsed here rather than at first use so that a malformed block is a startup failure
         naming the variable, not a refused import naming nothing.
         """
         if not self.import_allowed_networks.strip():
             return self
-        if not self.file_configured:
+        if not self.file_configured or ENVIRONMENT_VARIABLE not in os.environ:
             raise ValueError(
-                "AGENTRANK_IMPORT_ALLOWED_NETWORKS may not be set in a deployment; the merchant"
-                " page importer reaches public internet addresses only"
+                f"AGENTRANK_IMPORT_ALLOWED_NETWORKS requires {ENVIRONMENT_VARIABLE} to be set in"
+                " the process environment to development, ci or test; the merchant page importer"
+                " reaches public internet addresses only"
             )
         PermittedNetworks.parse(self.import_allowed_networks)
         return self

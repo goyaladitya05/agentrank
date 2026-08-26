@@ -42,22 +42,30 @@ export function RunImport({ action }: { action: RunImportAction }) {
 }
 
 /**
- * What a merchant is told when the pages have been read.
+ * What a merchant is told when the command came back.
  *
  * Deliberately not "your catalog is ready". The pages were read and nothing else happened, and
  * the next thing is the merchant deciding whether what came out is right.
+ *
+ * An import that ran out of time is also answered 201, with no draft, so "your pages were read"
+ * is not a sentence to print unconditionally: it would be telling a merchant something that did
+ * not happen. What that import found, which is nothing and the reason, is on its own page.
  */
 export function ImportRead({ state }: { state: ImportState }) {
   return (
     <div role="status">
-      <p>Your pages were read. Nothing has become your source yet.</p>
+      <p>
+        {state.completed
+          ? "Your pages were read. Nothing has become your source yet."
+          : "This import did not finish. Nothing has become your source."}
+      </p>
       {state.importId === null ? null : (
         <p className={styles.reviewMeta}>
           <Link
             className={styles.rowLink}
             href={`/sources/imports/${encodeURIComponent(state.importId)}`}
           >
-            Review what AgentRank read
+            {state.completed ? "Review what AgentRank read" : "See what happened"}
           </Link>
         </p>
       )}

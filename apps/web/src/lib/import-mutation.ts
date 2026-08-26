@@ -35,6 +35,12 @@ export interface ImportState {
   readonly unknown: boolean;
   /** The import this command produced, when the API answered with one. */
   readonly importId: string | null;
+  /**
+   * Whether the import finished, because an import that ran out of time is answered 201 with an
+   * empty draft. Telling a merchant "your pages were read" for one would be telling them
+   * something that did not happen.
+   */
+  readonly completed: boolean;
   readonly values: ImportValues | null;
 }
 
@@ -44,6 +50,7 @@ export const IDLE_IMPORT: ImportState = {
   stale: false,
   unknown: false,
   importId: null,
+  completed: false,
   values: null,
 };
 
@@ -63,6 +70,13 @@ export interface ConfirmState {
   readonly createdSnapshot: boolean;
   /** True when this import had already been confirmed, so this command wrote nothing. */
   readonly alreadyConfirmed: boolean;
+  /** What the merchant typed, echoed back so a refusal never discards their own number. */
+  readonly values: ConfirmValues | null;
+}
+
+/** The one number a merchant states in this workflow. */
+export interface ConfirmValues {
+  readonly stockLevel: string;
 }
 
 export const IDLE_CONFIRM: ConfirmState = {
@@ -74,4 +88,5 @@ export const IDLE_CONFIRM: ConfirmState = {
   sourceLabel: null,
   createdSnapshot: false,
   alreadyConfirmed: false,
+  values: null,
 };

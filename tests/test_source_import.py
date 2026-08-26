@@ -21,6 +21,7 @@ that same loop: a client that blocked the loop waiting for a response would be b
 that has to produce it.
 """
 
+import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
@@ -44,11 +45,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 import agentrank_api.importer.service as service_module
 from agentrank_api.commerce.repository import MerchantRepository
 from agentrank_api.config import Settings
+from agentrank_api.importer.draft import SourceDraft, canonical_document
 from agentrank_api.importer.models import MerchantSourceImport
 from agentrank_api.main import create_app
 from agentrank_api.payments.fake import FakePaymentProvider
 from agentrank_api.representation.intake import MerchantSourceIntakeService
-from agentrank_api.representation.models import MerchantSourceSubmission
+from agentrank_api.representation.models import MerchantSourceSubmission, SourceOrigin
+from agentrank_api.representation.schemas import SourceDocumentInput
 from agentrank_api.workspace.service import MerchantEvaluationWorkspaceService
 
 pytestmark = pytest.mark.anyio
@@ -989,3 +992,194 @@ async def test_a_failed_import_cannot_be_confirmed_into_anything(
     assert refused.status_code == 409
     assert refused.json()["error"] == "import_failed"
     assert await MerchantSourceIntakeService(session).current(shop.id) is None
+
+
+async def test_two_pages_publishing_one_product_import_it_once_and_say_so(
+    settings: Settings,
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+    issue_credential: CredentialIssuer,
+) -> None:
+    """A canonical URL and a variant URL for one product is an everyday storefront shape.
+
+    Importing both would produce a document that passes the request schema and is then refused by
+    the source domain, deeper down, over a uniqueness rule the merchant never saw. The second page
+    is refused here instead, naming the page and the identity.
+    """
+    shop = await merchant(session, "import-duplicate-identity")
+    token = await issue_credential(shop.id)
+    routes = dict(Storefront.voltedge().routes)
+    routes["/p/charger-copy"] = routes["/p/charger"]
+    async with MerchantFixtureServer(routes) as server:
+        async for http in api(settings, factory):
+            body = (
+                await http.post(
+                    IMPORTS,
+                    headers=bearer(token),
+                    json=import_command(
+                        [page(server.url("/p/charger")), page(server.url("/p/charger-copy"))],
+                        FIRST,
+                    ),
+                )
+            ).json()
+
+    assert body["summary"]["product_count"] == 1
+    assert [note["code"] for note in body["omissions"]] == ["duplicate_product"]
+    assert body["omissions"][0]["source_url"].endswith("/p/charger-copy")
+
+
+async def test_one_import_key_naming_different_pages_is_a_different_command(
+    settings: Settings,
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+    issue_credential: CredentialIssuer,
+) -> None:
+    """Answering it with the first import's result would say an import of B read the pages of A."""
+    shop = await merchant(session, "import-key-reused")
+    token = await issue_credential(shop.id)
+    async with MerchantFixtureServer(Storefront.voltedge().routes) as server:
+        async for http in api(settings, factory):
+            first = await http.post(
+                IMPORTS,
+                headers=bearer(token),
+                json=import_command([page(server.url("/p/charger"))], FIRST),
+            )
+            second = await http.post(
+                IMPORTS,
+                headers=bearer(token),
+                json=import_command([page(server.url("/p/cable"))], FIRST),
+            )
+    assert first.status_code == 201
+    assert second.status_code == 409
+    assert second.json()["error"] == "import_request_key_reused"
+
+
+async def test_two_simultaneous_confirmations_produce_one_snapshot_and_no_error(
+    settings: Settings,
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+    issue_credential: CredentialIssuer,
+) -> None:
+    """The merchant double clicked. Both requests succeed and one snapshot exists.
+
+    The loser used to write over a row the immutability trigger then refused, which reached the
+    merchant as "the database is unavailable" on a command that had in fact succeeded.
+    """
+    shop = await merchant(session, "import-confirm-race")
+    token = await issue_credential(shop.id)
+    async with MerchantFixtureServer(Storefront.voltedge().routes) as server:
+        async for http in api(settings, factory):
+            record = (
+                await http.post(
+                    IMPORTS,
+                    headers=bearer(token),
+                    json=import_command([page(server.url("/p/charger"))], FIRST),
+                )
+            ).json()
+            target = f"{IMPORTS}/{record['summary']['import_id']}/confirm"
+            both = await asyncio.gather(
+                http.post(target, headers=bearer(token), json={"stock_level": 4}),
+                http.post(target, headers=bearer(token), json={"stock_level": 4}),
+            )
+
+    assert [response.status_code for response in both] == [201, 201]
+    assert len({response.json()["source_snapshot_id"] for response in both}) == 1
+    snapshots = (
+        (
+            await session.execute(
+                select(MerchantSourceSubmission).where(
+                    MerchantSourceSubmission.merchant_id == shop.id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(snapshots) == 1
+    linked = (await session.execute(select(MerchantSourceImport))).scalars().one()
+    assert linked.source_snapshot_id is not None
+    assert linked.stock_level == 4
+
+
+async def test_a_retry_after_a_lost_link_answers_with_the_snapshot_that_already_exists(
+    settings: Settings,
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+    issue_credential: CredentialIssuer,
+) -> None:
+    """The crash between the two writes, including a retry that states a different stock level.
+
+    The snapshot is committed by the intake and the import row is linked afterwards, so a process
+    that died between them leaves a snapshot with no link. The state is reproduced by submitting
+    under the key the import derives, which is exactly what the first half of a confirmation does
+    and all it managed to do. The retry finds that submission, repairs the link and says the import
+    was already confirmed, rather than refusing forever because the second attempt named a
+    different number.
+    """
+    shop = await merchant(session, "import-lost-link")
+    token = await issue_credential(shop.id)
+    async with MerchantFixtureServer(Storefront.voltedge().routes) as server:
+        async for http in api(settings, factory):
+            record = (
+                await http.post(
+                    IMPORTS,
+                    headers=bearer(token),
+                    json=import_command([page(server.url("/p/charger"))], FIRST),
+                )
+            ).json()
+            import_id = uuid.UUID(record["summary"]["import_id"])
+
+            service = service_module.MerchantSourceImportService(session)
+            stored = await service.read(shop.id, import_id)
+            document = SourceDocumentInput.model_validate(
+                canonical_document(SourceDraft.of(stored.draft), stock_level=3)
+            )
+            orphaned = await MerchantSourceIntakeService(session).submit(
+                shop.id,
+                request_key=service_module.submission_key(import_id),
+                document=document,
+                origin=SourceOrigin.MERCHANT_IMPORT,
+            )
+            assert (await service.read(shop.id, import_id)).confirmed_at is None
+            snapshot_id = orphaned.snapshot.id
+
+            retried = await http.post(
+                f"{IMPORTS}/{import_id}/confirm",
+                headers=bearer(token),
+                json={"stock_level": 9},
+            )
+
+    assert retried.status_code == 201
+    assert retried.json()["already_confirmed"] is True
+    assert retried.json()["source_snapshot_id"] == str(snapshot_id)
+    # The link was repaired by the API's own session, so this one has to be told to look again.
+    session.expire_all()
+    repaired = (await session.execute(select(MerchantSourceImport))).scalars().one()
+    assert repaired.source_snapshot_id == snapshot_id
+    # No stock level, because this attempt named 9 and the snapshot was built from 3. Recording it
+    # would have the row state a figure the snapshot does not carry.
+    assert repaired.stock_level is None
+
+
+async def test_a_page_that_cannot_become_a_source_document_is_refused_rather_than_raised(
+    settings: Settings,
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+    issue_credential: CredentialIssuer,
+) -> None:
+    """A URL that grows past what a source document holds once it has been normalized.
+
+    Percent encoding a path expands it, so a URL inside the submitted bound can leave it, and that
+    string is stored in a source document's merchant metadata. It used to pass every blocker and
+    then raise out of the confirm route as a 500 the merchant could do nothing about.
+    """
+    shop = await merchant(session, "import-long-url")
+    token = await issue_credential(shop.id)
+    async for http in public_api(settings, factory):
+        response = await http.post(
+            IMPORTS,
+            headers=bearer(token),
+            json=import_command([page("https://shop.example/p/" + "\u00fc" * 370)], FIRST),
+        )
+    assert response.status_code == 422
+    assert "normalized" in response.json()["detail"]

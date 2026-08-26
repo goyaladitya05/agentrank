@@ -65,6 +65,9 @@ export default defineConfig({
       env: {
         OPENAI_API_KEY: "",
         GEMINI_API_KEY: "",
+        // Both halves, because the allowance is refused unless the environment was stated rather
+        // than defaulted. An absence is never what authorises reaching a private network.
+        AGENTRANK_ENV: "test",
         AGENTRANK_IMPORT_ALLOWED_NETWORKS: "127.0.0.0/8",
       },
       url: "http://127.0.0.1:8001/health",

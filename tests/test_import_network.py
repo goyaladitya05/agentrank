@@ -156,6 +156,39 @@ async def test_a_port_a_storefront_does_not_answer_on_is_refused(url: str) -> No
     assert refused.value.reason == "port_not_permitted"
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://xn--p1ai..example/",
+        "http://xn--p1ai." + "a" * 250 + ".example/",
+        "https://xn--fiqs8s.icom.museum/p",
+    ],
+)
+async def test_an_internationalized_host_is_read_without_escaping(url: str) -> None:
+    """Every one of these used to raise out of the boundary as an unhandled server error.
+
+    `httpx2.URL.host` is a lazy property that IDNA decodes on access: it raises for a malformed
+    punycode label and returns Unicode for a valid one, and the Unicode then fails to encode as a
+    `Host` header. Both are reachable from a request body and from a redirect a merchant page
+    chose, so both were a way for a page to 500 the endpoint. The ASCII form goes on the wire and
+    is what is stored.
+    """
+    target = validate_target(url)
+    assert target.host.isascii()
+    assert target.host == target.host.lower()
+
+
+async def test_a_host_is_never_replaced_by_a_different_registrable_domain() -> None:
+    """Two hosts IDNA 2003 folds together are separate registrations, and stay separate here.
+
+    Converting the host here with the standard library codec did exactly that, so a merchant
+    asking for one would have had the other fetched and the import record would have said so. The
+    host now comes from the parser's own wire form, which is the one the connection uses.
+    """
+    assert validate_target("http://xn--fa-hia.de/").host == "xn--fa-hia.de"
+    assert validate_target("https://SHOP.Example./p").host == "shop.example"
+
+
 async def test_a_url_longer_than_the_bound_is_refused_before_it_is_parsed() -> None:
     with pytest.raises(RefusedTargetError) as refused:
         validate_target("https://shop.example/" + "a" * 4000)
@@ -260,6 +293,19 @@ async def test_more_redirects_than_the_bound_are_refused() -> None:
         outcome = await _fetch_from(server, "/hop0", limits=FetchLimits(max_redirects=3))
     assert isinstance(outcome, RetrievalFailure)
     assert outcome.reason == "too_many_redirects"
+
+
+async def test_a_redirect_to_a_host_that_cannot_be_read_is_a_refusal_rather_than_an_error() -> None:
+    """A merchant page choosing a `Location` must never be able to escape the boundary.
+
+    A malformed punycode label in a redirect target used to raise out of `fetch` and discard the
+    entire in-flight import, twelve pages and all, with nothing written and nothing the merchant
+    could see.
+    """
+    async with MerchantFixtureServer({"/p": redirect("http://xn--p1ai..example/")}) as server:
+        outcome = await _fetch_from(server, "/p")
+    assert isinstance(outcome, RetrievalFailure)
+    assert outcome.reason == "redirect_malformed"
 
 
 async def test_a_redirect_to_nowhere_is_refused() -> None:
