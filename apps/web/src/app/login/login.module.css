@@ -35,9 +35,9 @@
 }
 
 .input {
-  padding: 8px 10px;
+  padding: 9px 11px;
   border: 1px solid var(--border-strong);
-  border-radius: 3px;
+  border-radius: 6px;
   background: var(--surface-raised);
   color: var(--text);
   font-family: var(--mono);
@@ -52,18 +52,18 @@
 .submit {
   align-self: flex-start;
   margin-top: 8px;
-  padding: 8px 16px;
-  border: 1px solid var(--border-strong);
-  border-radius: 3px;
-  background: var(--surface-raised);
-  color: var(--text);
+  padding: 9px 18px;
+  border: 1px solid var(--accent-strong);
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--surface-raised);
   font: inherit;
+  font-weight: 600;
   cursor: pointer;
 }
 
 .submit:hover {
-  border-color: var(--accent);
-  color: var(--accent);
+  background: var(--accent-strong);
 }
 
 .submit:focus-visible {
