@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { Confirmed, ImportReview } from "./ImportReview";
 import { ImportRead, RunImportForm } from "./RunImport";
-import type { SourceImport } from "@/lib/import";
+import type { ImportProduct, SourceImport } from "@/lib/import";
 import {
   IDLE_CONFIRM,
   IDLE_IMPORT,
@@ -24,6 +24,33 @@ import {
  * somebody else's web page, and a test that a script tag arrives escaped is a test that this page
  * cannot be turned into a delivery mechanism by a merchant AgentRank fetched.
  */
+
+const CHARGER: ImportProduct = {
+  external_id: "product-VE-65",
+  title: "VoltEdge 65W GaN Charger",
+  description: "A compact charger.",
+  category: "Chargers",
+  source_url: "https://shop.example/p/charger",
+  extraction: "STRUCTURED_DATA",
+  variants: [
+    {
+      sku: "VE-65-BLK",
+      label: "Black",
+      price_amount_minor: 349900,
+      currency: "INR",
+      availability: "IN_STOCK",
+      availability_text: "https://schema.org/InStock",
+    },
+    {
+      sku: "VE-65-WHT",
+      label: "White",
+      price_amount_minor: 349900,
+      currency: "INR",
+      availability: "OUT_OF_STOCK",
+      availability_text: "https://schema.org/OutOfStock",
+    },
+  ],
+};
 
 const IMPORT: SourceImport = {
   summary: {
@@ -85,34 +112,7 @@ const IMPORT: SourceImport = {
       retrieved_at: "2026-08-26T10:00:00Z",
     },
   ],
-  products: [
-    {
-      external_id: "product-VE-65",
-      title: "VoltEdge 65W GaN Charger",
-      description: "A compact charger.",
-      category: "Chargers",
-      source_url: "https://shop.example/p/charger",
-      extraction: "STRUCTURED_DATA",
-      variants: [
-        {
-          sku: "VE-65-BLK",
-          label: "Black",
-          price_amount_minor: 349900,
-          currency: "INR",
-          availability: "IN_STOCK",
-          availability_text: "https://schema.org/InStock",
-        },
-        {
-          sku: "VE-65-WHT",
-          label: "White",
-          price_amount_minor: 349900,
-          currency: "INR",
-          availability: "OUT_OF_STOCK",
-          availability_text: "https://schema.org/OutOfStock",
-        },
-      ],
-    },
-  ],
+  products: [CHARGER],
   policies: [
     {
       name: "returns",
@@ -229,7 +229,7 @@ describe("<ImportReview>", () => {
     const html = review({
       products: [
         {
-          ...IMPORT.products[0],
+          ...CHARGER,
           title: '<img src=x onerror="alert(1)">',
           description: "<script>window.stolen = 1</script>",
         },

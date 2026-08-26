@@ -18,6 +18,15 @@ process.env.AGENTRANK_CONSOLE_SESSION_SECRET ??= randomBytes(32).toString("hex")
 const SESSION_SECRET = process.env.AGENTRANK_CONSOLE_SESSION_SECRET;
 
 /**
+ * The synthetic merchant storefront the import workflow reads from.
+ *
+ * A port this repository chose rather than an ephemeral one, because the API process has to be
+ * told which networks it may reach before either process starts, and the spec has to be able to
+ * type a URL into a form.
+ */
+const STOREFRONT_PORT = "8002";
+
+/**
  * The critical browser workflow runs against real servers and a real database.
  *
  * Both servers are started here on ports the development ones do not use, and neither is reused:
@@ -48,8 +57,26 @@ export default defineConfig({
       // Provider credentials are emptied rather than inherited. A developer machine may have a
       // real key in `.env`, and a browser test must never spend one; with none configured the
       // launch is admitted for the deterministic reference buyer, which the console says.
-      env: { OPENAI_API_KEY: "", GEMINI_API_KEY: "" },
+      //
+      // The merchant page importer is separately permitted to reach
+      // loopback so that it can read the synthetic storefront below. `Settings` refuses that
+      // second variable in any environment that is not development, CI or test, which is what
+      // keeps this a local test allowance rather than a deployment setting.
+      env: {
+        OPENAI_API_KEY: "",
+        GEMINI_API_KEY: "",
+        AGENTRANK_IMPORT_ALLOWED_NETWORKS: "127.0.0.0/8",
+      },
       url: "http://127.0.0.1:8001/health",
+      reuseExistingServer: false,
+    },
+    {
+      // An ordinary web server with five invented pages on it. Separate from the API on purpose:
+      // a fixture served by the application under test would be one the application could special
+      // case, and the property being tested is that AgentRank fetches a real socket.
+      command: `uv run python scripts/serve_import_fixture.py --port ${STOREFRONT_PORT}`,
+      cwd: "../..",
+      url: `http://127.0.0.1:${STOREFRONT_PORT}/health`,
       reuseExistingServer: false,
     },
     {
