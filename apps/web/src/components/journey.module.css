@@ -166,10 +166,20 @@
     gap: 10px 16px;
     padding: 16px 0;
   }
+  .scenario {
+    grid-row: 1;
+    grid-column: 1;
+  }
+  .outcome {
+    grid-row: 1;
+    grid-column: 2;
+  }
   .track {
+    grid-row: 2;
     grid-column: 1 / -1;
   }
   .reason {
+    grid-row: 3;
     grid-column: 1 / -1;
   }
 }

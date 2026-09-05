@@ -3,7 +3,7 @@
    card and no number is smaller than the sentence beside it. */
 
 .hero {
-  margin-bottom: 64px;
+  margin-bottom: 56px;
   animation: settle 360ms ease-out both;
 }
 
@@ -67,7 +67,7 @@
 
 /* The scenario board sits directly under the result with no heading of its own. */
 .board {
-  margin-bottom: 72px;
+  margin-bottom: 64px;
   animation: settle 360ms ease-out 80ms both;
 }
 

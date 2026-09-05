@@ -19,32 +19,6 @@
   max-width: 62ch;
 }
 
-/* The masthead: the page's one statement, set large in the serif. */
-
-.masthead {
-  padding: 20px 0 0;
-  margin-bottom: 18px;
-  animation: settle 320ms ease-out both;
-}
-
-.mastStatementSub {
-  margin: 6px 0 10px;
-  font-family: var(--sans);
-  font-size: clamp(26px, 3.2vw, 38px);
-  font-weight: 700;
-  letter-spacing: -0.028em;
-  line-height: 1.18;
-  max-width: 38ch;
-}
-
-.mastReading {
-  margin: 0 0 30px;
-  font-size: 16.5px;
-  line-height: 1.5;
-  color: var(--text-muted);
-  max-width: 56ch;
-}
-
 .trackBarSegment[data-outcome="failed"] {
   background: var(--state-warn);
 }
@@ -149,118 +123,9 @@
   outline-offset: 2px;
 }
 
-/* Ledger entries: full-width rows with a fixed evidence gutter on the left. */
-
 .entryList {
   margin: 0;
   animation: settle 260ms ease-out 40ms both;
-}
-
-.entry {
-  display: grid;
-  grid-template-columns: 132px minmax(0, 1fr);
-  gap: 6px 24px;
-  padding: 18px 0;
-  border-top: 1px solid var(--border);
-}
-
-.entryGutter {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
-
-.entryTitle {
-  margin: 0;
-  font-family: var(--sans);
-  font-size: 20px;
-  font-weight: 600;
-  letter-spacing: -0.018em;
-  line-height: 1.32;
-}
-
-.entryTitleLink {
-  color: inherit;
-  text-decoration: none;
-}
-
-.entryTitleLink:hover {
-  color: var(--accent);
-}
-
-.entryTitleLink:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-.entryMeta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 18px;
-  margin: 5px 0 0;
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
-.entryConsequence {
-  color: var(--text);
-}
-
-.entryBody {
-  margin: 8px 0 0;
-  font-size: 13.5px;
-  max-width: 68ch;
-}
-
-.entryActions {
-  margin: 8px 0 0;
-  font-size: 12.5px;
-}
-
-/* Group dividers for the two issue piles. */
-
-.groupHead {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-  margin: 36px 0 0;
-  padding-top: 10px;
-  border-top: 2px solid var(--rule-strong);
-}
-
-.groupHead[data-tone="quiet"] {
-  border-top-width: 1px;
-  border-top-color: var(--border-strong);
-}
-
-.groupTitle {
-  margin: 0;
-  font-family: var(--mono);
-  font-size: 11.5px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.groupHead[data-tone="warn"] .groupTitle {
-  color: var(--state-warn);
-}
-
-.groupHead[data-tone="quiet"] .groupTitle {
-  color: var(--text-muted);
-}
-
-.groupCount {
-  font-family: var(--sans);
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text-muted);
 }
 
 /* Fix review: a typographic before/after per fact, not two filled boxes. */
@@ -430,33 +295,6 @@
   font-size: 30px;
   color: var(--border-strong);
   line-height: 1;
-}
-
-/* What an attempt could not establish, named as the gap it is. */
-
-.establishRow {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 6px 16px;
-  margin: 0 0 12px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border);
-}
-
-.establishLabel {
-  font-family: var(--mono);
-  font-size: 10.5px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--state-warn);
-}
-
-.establishValue {
-  font-family: var(--sans);
-  font-size: 21px;
-  font-weight: 700;
-  letter-spacing: -0.028em;
 }
 
 /* The journeys that moved, named before the aggregate is explained. */

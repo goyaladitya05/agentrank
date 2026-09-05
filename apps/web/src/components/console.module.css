@@ -65,11 +65,6 @@
   color: var(--text-muted);
 }
 
-.sectionIndex {
-  margin-right: 8px;
-  color: var(--accent);
-}
-
 .sectionHint {
   font-size: 14px;
   color: var(--text-muted);
@@ -176,6 +171,15 @@
 
 .tableScroll {
   overflow-x: auto;
+}
+
+/* A table with more columns than a merchant screen is wide: it scrolls rather than wraps. */
+.tableWide {
+  min-width: 1100px;
+}
+
+.tableWide td {
+  white-space: nowrap;
 }
 
 .table {

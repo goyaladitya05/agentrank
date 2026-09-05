@@ -1,0 +1,269 @@
+/* Issues, as a prioritised list. Each entry answers what went wrong, why it matters and what
+   the merchant can do, and the two groups are told apart by their heading rather than by a
+   box. The detail page is the same three answers with the affected scenarios drawn. */
+
+.group {
+  margin-bottom: 64px;
+  animation: settle 320ms ease-out both;
+}
+
+.groupHead {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.groupTitle {
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.group[data-tone="warn"] .groupTitle {
+  color: var(--state-warn);
+}
+
+.groupCount {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.issue {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px 48px;
+  align-items: start;
+  padding: 28px 0;
+  border-top: 1px solid var(--border);
+}
+
+.issue:last-child {
+  border-bottom: 1px solid var(--border);
+}
+
+.issueMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin: 0 0 12px;
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+.issueTitle {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  max-width: 40ch;
+}
+
+.issueTitle a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.issueTitle a:hover {
+  color: var(--accent);
+}
+
+.facts {
+  display: grid;
+  gap: 14px;
+  margin: 18px 0 0;
+  max-width: 68ch;
+}
+
+.facts dt {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.facts dd {
+  margin: 4px 0 0;
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.issueActions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+  padding-top: 6px;
+}
+
+.issueLink {
+  font-size: 15.5px;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.issueLink:hover {
+  text-decoration: underline;
+}
+
+.empty {
+  margin: 0;
+  padding: 24px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  font-size: 18px;
+  font-weight: 500;
+}
+
+.emptyBody {
+  display: block;
+  margin-top: 6px;
+  font-size: 15.5px;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+/* One issue in full. */
+
+.detailHead {
+  margin-bottom: 48px;
+  animation: settle 320ms ease-out both;
+}
+
+.detailMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin: 0 0 20px;
+  font-size: 14.5px;
+  color: var(--text-muted);
+}
+
+.detailTitle {
+  font-size: clamp(32px, 3.6vw, 48px);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  line-height: 1.06;
+  max-width: 26ch;
+  text-wrap: balance;
+}
+
+.detailLead {
+  margin: 22px 0 0;
+  font-size: 18px;
+  color: var(--text-muted);
+  max-width: 58ch;
+}
+
+.board {
+  margin-bottom: 64px;
+  animation: settle 320ms ease-out 80ms both;
+}
+
+.boardLabel {
+  margin: 0 0 18px;
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 48px;
+  margin-bottom: 64px;
+  animation: settle 320ms ease-out 140ms both;
+}
+
+.column h2 {
+  margin: 0 0 12px;
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.column p {
+  font-size: 16px;
+  line-height: 1.55;
+}
+
+.column p + p {
+  margin-top: 10px;
+}
+
+.missing {
+  display: block;
+  margin: 0 0 12px;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  color: var(--state-warn);
+}
+
+.columnAction {
+  margin-top: 20px;
+}
+
+.evidenceList {
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 15px;
+}
+
+.evidenceList li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.evidenceList li:last-child {
+  border-bottom: 1px solid var(--border);
+}
+
+@media (max-width: 860px) {
+  .columns {
+    grid-template-columns: 1fr;
+    gap: 36px;
+  }
+}
+
+@media (max-width: 720px) {
+  .issue {
+    grid-template-columns: 1fr;
+    gap: 16px;
+    padding: 22px 0;
+  }
+  .issueActions {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px 20px;
+  }
+  .group,
+  .board,
+  .columns {
+    margin-bottom: 48px;
+  }
+}
