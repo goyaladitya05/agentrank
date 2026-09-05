@@ -123,7 +123,7 @@ test("a judge's walk: evaluate, read the issues, review the fixes, publish, meas
   await page.getByRole("link", { name: "Review 4 fixes" }).click();
   await expect(page.getByRole("heading", { name: "Review fixes" })).toBeVisible();
   const wattage = fixOf(page, "variant.VE-CHG-100-BLK.attribute.wattage");
-  await expect(wattage.getByText("Proposed agent-ready fact")).toBeVisible();
+  await expect(wattage.getByText("Proposed", { exact: true })).toBeVisible();
   await wattage.getByText("View evidence").click();
   await expect(wattage.getByText("100W").first()).toBeVisible();
 
