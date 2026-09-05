@@ -578,7 +578,7 @@
 
 .warningItem {
   display: grid;
-  grid-template-columns: 200px minmax(0, 1fr);
+  grid-template-columns: minmax(160px, 240px) minmax(0, 1fr);
   gap: 4px 20px;
   align-items: baseline;
   padding: 10px 0;
@@ -593,6 +593,7 @@
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--state-warn);
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 640px) {
