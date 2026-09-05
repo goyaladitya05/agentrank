@@ -2,16 +2,6 @@
    voice for verdicts, mono for evidence, and the scenario track as the signature graphic.
    Boxes are rare on purpose; composition is carried by rules and whitespace. */
 
-.eyebrow {
-  margin: 0 0 6px;
-  font-family: var(--mono);
-  font-size: 11.5px;
-  font-weight: 500;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
-
 .pageIntro {
   margin: 4px 0 0;
   font-size: 14.5px;
@@ -24,50 +14,6 @@
 }
 .trackBarSegment[data-outcome="errored"] {
   background: var(--border-strong);
-}
-
-/* The next step: a full-width band under a strong rule. The loudest thing on the page. */
-
-.slip {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 12px 40px;
-  margin: 0 0 56px;
-  padding: 28px 32px;
-  border-radius: 8px;
-  background: var(--rule-strong);
-  color: var(--surface);
-  animation: settle 320ms ease-out 80ms both;
-}
-
-.slipText {
-  min-width: 240px;
-}
-
-.slipEyebrow {
-  margin: 0 0 6px;
-  font-family: var(--mono);
-  font-size: 10.5px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  opacity: 0.68;
-}
-
-.slipTitle {
-  margin: 0 0 6px;
-  font-family: var(--sans);
-  font-size: 30px;
-  font-weight: 700;
-  letter-spacing: -0.028em;
-  line-height: 1.15;
-}
-
-.slipBody {
-  margin: 0;
-  font-size: 14px;
-  opacity: 0.74;
-  max-width: 58ch;
 }
 
 .primaryButton {
@@ -89,144 +35,9 @@
   background: var(--accent-strong);
 }
 
-.slip .primaryButton {
-  background: var(--surface);
-  border-color: var(--surface);
-  color: var(--rule-strong);
-  padding: 12px 24px;
-  font-size: 15px;
-}
-
-.slip .primaryButton:hover {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--surface);
-}
-
 .primaryButton:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-}
-
-.secondaryAction {
-  font-size: 13px;
-  color: var(--accent);
-  text-decoration: none;
-}
-
-.secondaryAction:hover {
-  text-decoration: underline;
-}
-
-.secondaryAction:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-.entryList {
-  margin: 0;
-  animation: settle 260ms ease-out 40ms both;
-}
-
-/* Fix review: a typographic before/after per fact, not two filled boxes. */
-
-.factEntry {
-  padding: 20px 0;
-  border-top: 1px solid var(--border);
-}
-
-.factHead {
-  display: flex;
-  align-items: baseline;
-  gap: 14px;
-  flex-wrap: wrap;
-  margin-bottom: 12px;
-}
-
-.factSubject {
-  margin: 0;
-  font-family: var(--sans);
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: -0.018em;
-  flex: 1 1 auto;
-}
-
-.factAttribute {
-  font-family: var(--mono);
-  font-size: 12px;
-  font-weight: 400;
-  color: var(--text-muted);
-}
-
-.factConfidence {
-  font-family: var(--mono);
-  font-size: 10.5px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
-
-.factCompare {
-  display: grid;
-  grid-template-columns: minmax(0, 5fr) auto minmax(0, 6fr);
-  gap: 20px;
-  align-items: start;
-  margin: 0 0 10px;
-}
-
-.factColLabel {
-  display: block;
-  margin-bottom: 4px;
-  font-family: var(--mono);
-  font-size: 10.5px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
-
-.factBeforeValue {
-  font-size: 14.5px;
-  color: var(--text-muted);
-}
-
-.factArrow {
-  align-self: center;
-  font-family: var(--sans);
-  font-size: 22px;
-  color: var(--border-strong);
-  line-height: 1;
-}
-
-.factProposed {
-  border-left: 3px solid var(--accent);
-  padding-left: 16px;
-}
-
-.factValue {
-  font-family: var(--sans);
-  font-size: 22px;
-  font-weight: 700;
-  letter-spacing: -0.028em;
-  overflow-wrap: anywhere;
-}
-
-.factMeta {
-  display: block;
-  margin-top: 2px;
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
-@media (max-width: 640px) {
-  .factCompare {
-    grid-template-columns: 1fr;
-    gap: 10px;
-  }
-  .factArrow {
-    display: none;
-  }
 }
 
 /* The comparison verdict: the engine's own sentence, set as the reading it is. */

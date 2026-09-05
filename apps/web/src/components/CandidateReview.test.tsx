@@ -131,8 +131,8 @@ describe("<CandidateReviewForm> when a write fails", () => {
   });
 
   it("reopens the correction fields when a correction failed on an acceptable fact", () => {
-    expect(render(NEEDS_DECISION, invalid)).toContain("<details open");
-    expect(render(NEEDS_DECISION)).not.toContain("<details open");
+    expect(render(NEEDS_DECISION, invalid)).toMatch(/<details[^>]*open=""/);
+    expect(render(NEEDS_DECISION)).not.toMatch(/<details[^>]*open=""/);
   });
 
   it("shows the merchant that a decision is in flight and blocks a second submit", () => {

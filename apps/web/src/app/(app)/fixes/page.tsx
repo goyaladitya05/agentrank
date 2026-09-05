@@ -2,8 +2,8 @@ import Link from "next/link";
 
 import { InsightFailure } from "@/components/InsightFailure";
 import { EmptyState, Panel, Section, StatusMark } from "@/components/Primitives";
-import styles from "@/components/console.module.css";
-import merchant from "@/components/merchant.module.css";
+import shared from "@/components/console.module.css";
+import styles from "@/components/fixes.module.css";
 import { decodeCompilerOverview, type CompilerOverview } from "@/lib/compiler";
 import { formatTimestamp } from "@/lib/format";
 import { loadInsight } from "@/lib/insights/load";
@@ -27,10 +27,10 @@ export default async function FixesPage() {
   const data = outcome.data;
   return (
     <>
-      <div className={styles.pageHeader}>
+      <div className={shared.pageHeader}>
         <div>
-          <h1 className={styles.pageTitle}>Fixes</h1>
-          <p className={merchant.pageIntro}>
+          <h1 className={shared.pageTitle}>Fixes</h1>
+          <p className={shared.pageIntro}>
             Facts AgentRank read from your own store information that could make your products
             easier for shopping agents to understand. You approve every one before it is published.
           </p>
@@ -53,24 +53,13 @@ function Lead({ data }: { data: CompilerOverview }) {
   if (waiting !== null) {
     const open = waiting.review_required_count - waiting.reviewed_count;
     return (
-      <aside className={merchant.slip} aria-label="Waiting for you">
-        <div className={merchant.slipText}>
-          <p className={merchant.slipEyebrow}>Waiting for you</p>
-          <h2 className={merchant.slipTitle}>
-            AgentRank found {String(open)} {open === 1 ? "fact" : "facts"} you can review
-          </h2>
-          <p className={merchant.slipBody}>
-            From {waiting.source_label}. Accept, correct or reject each one. Nothing is published
-            until you decide.
-          </p>
-        </div>
-        <Link
-          className={merchant.primaryButton}
-          href={`/fixes/${encodeURIComponent(waiting.run_id)}`}
-        >
-          Review {String(open)} {open === 1 ? "fix" : "fixes"}
-        </Link>
-      </aside>
+      <LeadBlock
+        eyebrow="Waiting for you"
+        title={`AgentRank found ${String(open)} ${open === 1 ? "fact" : "facts"} you can review`}
+        body={`From ${waiting.source_label}. Accept, correct or reject each one. Nothing is published until you decide.`}
+        href={`/fixes/${encodeURIComponent(waiting.run_id)}`}
+        label={`Review ${String(open)} ${open === 1 ? "fix" : "fixes"}`}
+      />
     );
   }
   const publishable = data.runs.find(
@@ -81,47 +70,59 @@ function Lead({ data }: { data: CompilerOverview }) {
   );
   if (publishable !== undefined) {
     return (
-      <aside className={merchant.slip} aria-label="Waiting for you">
-        <div className={merchant.slipText}>
-          <p className={merchant.slipEyebrow}>Waiting for you</p>
-          <h2 className={merchant.slipTitle}>Your fixes are ready to publish</h2>
-          <p className={merchant.slipBody}>
-            {publishable.review_required_count === 0
-              ? `No fact from ${publishable.source_label} needs your decision. The fixes can be published.`
-              : `Every fact from ${publishable.source_label} is reviewed. The fixes can be published.`}
-          </p>
-        </div>
-        <Link
-          className={merchant.primaryButton}
-          href={`/fixes/${encodeURIComponent(publishable.run_id)}`}
-        >
-          Publish fixes
-        </Link>
-      </aside>
+      <LeadBlock
+        eyebrow="Waiting for you"
+        title="Your fixes are ready to publish"
+        body={
+          publishable.review_required_count === 0
+            ? `No fact from ${publishable.source_label} needs your decision. The fixes can be published.`
+            : `Every fact from ${publishable.source_label} is reviewed. The fixes can be published.`
+        }
+        href={`/fixes/${encodeURIComponent(publishable.run_id)}`}
+        label="Publish fixes"
+      />
     );
   }
   if (data.current_representation_id !== null) {
     return (
-      <aside className={merchant.slip} aria-label="Where you stand">
-        <div className={merchant.slipText}>
-          <p className={merchant.slipEyebrow}>Where you stand</p>
-          <h2 className={merchant.slipTitle}>Your reviewed fixes are published</h2>
-          <p className={merchant.slipBody}>
-            Shopping agents evaluated against your published description read them. To change what
-            is published, supply newer{" "}
-            <Link className={styles.rowLink} href="/sources">
-              store information
-            </Link>{" "}
-            and review the new facts it produces.
-          </p>
-        </div>
-        <Link className={merchant.primaryButton} href="/evaluations">
-          Measure again
-        </Link>
-      </aside>
+      <LeadBlock
+        eyebrow="Where you stand"
+        title="Your reviewed fixes are published"
+        body="Shopping agents evaluated against your published description read them. To change what is published, supply newer store information and review the new facts it produces."
+        href="/evaluations"
+        label="Measure again"
+      />
     );
   }
   return null;
+}
+
+function LeadBlock({
+  eyebrow,
+  title,
+  body,
+  href,
+  label,
+}: {
+  eyebrow: string;
+  title: string;
+  body: string;
+  href: string;
+  label: string;
+}) {
+  return (
+    <section className={styles.lead} aria-label={eyebrow}>
+      <div>
+        <p className={styles.leadEyebrow}>{eyebrow}</p>
+        <h2 className={styles.leadTitle}>{title}</h2>
+        <p className={styles.leadBody}>{body}</p>
+      </div>
+      <Link className={shared.primaryButton} href={href}>
+        {label}
+        <span aria-hidden="true"> &rarr;</span>
+      </Link>
+    </section>
+  );
 }
 
 function Batches({ runs }: { runs: readonly BatchSummary[] }) {
@@ -132,7 +133,7 @@ function Batches({ runs }: { runs: readonly BatchSummary[] }) {
           title="No fixes proposed yet"
           explanation="Fixes come from your store information: AgentRank reads it and proposes precise, agent-readable facts for you to approve. Your store information page is where that starts."
         >
-          <Link className={styles.textLink} href="/sources">
+          <Link className={shared.textLink} href="/sources">
             Open your store information
           </Link>
         </EmptyState>
@@ -140,8 +141,8 @@ function Batches({ runs }: { runs: readonly BatchSummary[] }) {
     );
   }
   return (
-    <div className={styles.tableScroll} tabIndex={0} aria-label="Fix batches">
-      <table className={styles.table}>
+    <div className={shared.tableScroll} tabIndex={0} aria-label="Fix batches">
+      <table className={shared.table}>
         <thead>
           <tr>
             <th scope="col">From</th>
@@ -155,7 +156,7 @@ function Batches({ runs }: { runs: readonly BatchSummary[] }) {
             <tr key={run.run_id}>
               <td>
                 <Link
-                  className={styles.rowLinkStrong}
+                  className={shared.rowLinkStrong}
                   href={`/fixes/${encodeURIComponent(run.run_id)}`}
                 >
                   {run.source_label}

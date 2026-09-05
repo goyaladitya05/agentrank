@@ -1,0 +1,238 @@
+/* Fixes. The index leads with what waits for the merchant; the review page sets each fact
+   as a before and a proposed value, one reason, and one obvious decision. No fact is a card
+   and nothing here resembles a code review. */
+
+.lead {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px 48px;
+  align-items: center;
+  margin-bottom: 64px;
+  animation: settle 320ms ease-out both;
+}
+
+.leadEyebrow {
+  margin: 0 0 12px;
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.leadTitle {
+  margin: 0;
+  font-size: clamp(26px, 2.6vw, 34px);
+  font-weight: 700;
+  letter-spacing: -0.028em;
+  line-height: 1.12;
+}
+
+.leadBody {
+  margin: 10px 0 0;
+  font-size: 16px;
+  color: var(--text-muted);
+  max-width: 56ch;
+}
+
+/* The facts under review. */
+
+.list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  animation: settle 320ms ease-out 80ms both;
+}
+
+.fact {
+  padding: 36px 0 40px;
+  border-top: 1px solid var(--border);
+}
+
+.fact:last-child {
+  border-bottom: 1px solid var(--border);
+}
+
+.factHead {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin-bottom: 28px;
+}
+
+.factSubject {
+  margin: 0;
+  flex: 1 1 auto;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.factAttribute {
+  margin-left: 10px;
+  font-size: 17px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.factConfidence {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.factBody {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: 32px 80px;
+  align-items: start;
+}
+
+.changeLabel {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.changeLabel[data-tone="accent"] {
+  color: var(--accent);
+}
+
+.before {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+  color: var(--text-muted);
+}
+
+.note {
+  margin: 8px 0 0;
+  font-size: 14.5px;
+  color: var(--text-muted);
+  max-width: 40ch;
+}
+
+.arrow {
+  margin: 22px 0;
+  font-size: 26px;
+  line-height: 1;
+  color: var(--border-strong);
+}
+
+.proposed {
+  margin: 0;
+  font-size: clamp(30px, 3vw, 42px);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+}
+
+.whyLabel {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.why {
+  margin: 0 0 24px;
+  font-size: 16.5px;
+  line-height: 1.5;
+  max-width: 56ch;
+}
+
+.why q {
+  quotes: "\201C" "\201D";
+}
+
+/* Facts already decided: one compact row each, evidence still one click away. */
+
+.settled {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settledRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1.2fr) auto;
+  gap: 6px 28px;
+  align-items: baseline;
+  padding: 16px 0;
+  border-top: 1px solid var(--border);
+}
+
+.settled li:last-child .settledRow {
+  border-bottom: 1px solid var(--border);
+}
+
+.settledSubject {
+  margin: 0;
+  font-size: 16.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.settledSubject .factAttribute {
+  font-size: 15px;
+}
+
+.settledValue {
+  margin: 0;
+  font-size: 16.5px;
+  font-weight: 500;
+}
+
+.settledDecision {
+  font-size: 15px;
+  color: var(--text-muted);
+}
+
+.settledDecision p {
+  font-size: 15px;
+}
+
+.settledEvidence {
+  margin: 0;
+}
+
+.settledEvidence > summary {
+  cursor: pointer;
+  font-size: 14.5px;
+  color: var(--text-muted);
+  user-select: none;
+  white-space: nowrap;
+}
+
+.settledEvidence[open] {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 860px) {
+  .settledRow {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .factBody {
+    grid-template-columns: 1fr;
+    gap: 28px;
+  }
+  .lead {
+    grid-template-columns: 1fr;
+    margin-bottom: 48px;
+  }
+  .fact {
+    padding: 28px 0 32px;
+  }
+}

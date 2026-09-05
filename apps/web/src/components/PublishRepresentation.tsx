@@ -29,7 +29,7 @@ export function PublishRepresentation({
   const [state, formAction, pending] = useActionState(action, IDLE_MUTATION);
   if (!confirming) {
     return (
-      <button className={styles.button} type="button" onClick={() => setConfirming(true)}>
+      <button className={styles.primaryButton} type="button" onClick={() => setConfirming(true)}>
         Publish fixes
       </button>
     );
@@ -67,7 +67,7 @@ export function PublishConfirmation({
         level or order. Measuring the difference is the next, separate step.
       </p>
       <div className={styles.buttonRow}>
-        <button className={styles.button} type="submit" disabled={pending}>
+        <button className={styles.primaryButton} type="submit" disabled={pending}>
           Publish fixes
         </button>
         <button className={styles.textLink} type="button" onClick={onCancel} disabled={pending}>

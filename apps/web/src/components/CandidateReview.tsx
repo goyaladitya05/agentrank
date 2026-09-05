@@ -83,7 +83,7 @@ export function CandidateReviewForm({
             <SubmitButton decision="accept" pending={pending} label="Accept fact" />
             <SubmitButton decision="reject" pending={pending} label="Reject fact" />
           </div>
-          <details open={state.values !== null}>
+          <details className={styles.tech} open={state.values !== null}>
             <summary className={styles.techSummary}>Correct this fact instead</summary>
             <CorrectionFields candidate={candidate} state={state} />
             <div className={styles.buttonRow}>
@@ -118,7 +118,7 @@ function SubmitButton({
 }) {
   return (
     <button
-      className={styles.button}
+      className={decision === "reject" ? styles.button : styles.primaryButton}
       type="submit"
       name="decision"
       value={decision}
