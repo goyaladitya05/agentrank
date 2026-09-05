@@ -1,89 +1,85 @@
 .main {
-  max-width: 460px;
+  max-width: 480px;
   margin: 0 auto;
-  padding: 64px 24px 24px;
+  padding: 88px 24px 48px;
+  animation: settle 320ms ease-out both;
 }
 
 .wordmark {
   display: inline-flex;
   align-items: center;
-  gap: 9px;
-  font-size: 13px;
+  gap: 10px;
+  font-size: 16px;
   font-weight: 700;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
+  letter-spacing: -0.01em;
 }
 
 .wordmark::before {
   content: "";
-  width: 9px;
-  height: 12px;
-  border-radius: 1.5px;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
   background: var(--accent);
 }
 
 .lede {
-  margin: 16px 0 24px;
+  margin: 20px 0 28px;
+  font-size: 15.5px;
+  line-height: 1.55;
   color: var(--text-muted);
 }
 
 .error {
-  margin: 0 0 16px;
-  padding: 10px 12px;
-  border: 1px solid var(--state-fail);
-  color: var(--state-fail);
+  margin: 0 0 20px;
+  padding: 12px 14px;
+  border-left: 3px solid var(--state-fail);
+  color: var(--text);
   background: var(--surface-raised);
+  font-size: 15px;
 }
 
 .form {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
 .label {
+  font-size: 15px;
   font-weight: 600;
 }
 
 .input {
-  padding: 9px 11px;
+  padding: 11px 13px;
   border: 1px solid var(--border-strong);
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: var(--surface-raised);
   color: var(--text);
   font-family: var(--mono);
-  font-size: 13px;
-}
-
-.input:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
+  font-size: 14px;
 }
 
 .submit {
   align-self: flex-start;
-  margin-top: 8px;
-  padding: 9px 18px;
-  border: 1px solid var(--accent-strong);
-  border-radius: 6px;
+  margin-top: 10px;
+  padding: 12px 22px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
   background: var(--accent);
-  color: var(--surface-raised);
+  color: var(--surface);
   font: inherit;
+  font-size: 16px;
   font-weight: 600;
   cursor: pointer;
 }
 
 .submit:hover {
   background: var(--accent-strong);
-}
-
-.submit:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
+  border-color: var(--accent-strong);
 }
 
 .note {
   margin-top: 24px;
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text-muted);
 }
