@@ -172,14 +172,31 @@ const COMPATIBILITY: Record<string, string> = {
 
 /** The proposed value, set as the thing agents would read. */
 function proposedText(candidate: CompilerCandidate): string {
-  if (
-    candidate.target.includes(".compatibility.") &&
-    typeof candidate.proposed_value === "string"
-  ) {
-    return COMPATIBILITY[candidate.proposed_value] ?? candidate.proposed_value;
+  return valueText(candidate, candidate.proposed_value);
+}
+
+function valueText(candidate: CompilerCandidate, raw: unknown): string {
+  if (candidate.target.includes(".compatibility.") && typeof raw === "string") {
+    return COMPATIBILITY[raw] ?? raw;
   }
-  const value = renderValue(candidate.proposed_value);
+  const value = renderValue(raw);
   return candidate.unit === null ? value : `${value} ${candidate.unit}`;
+}
+
+/**
+ * The value a decided fact carries: the merchant's correction where they made one, and the
+ * compiler's proposal otherwise. A corrected fact listed under its placeholder would show the
+ * one value the merchant explicitly replaced.
+ */
+function settledText(candidate: CompilerCandidate): string {
+  const review = candidate.review;
+  if (review !== null && review.decision === "CORRECT" && review.correction !== null) {
+    const fact = review.correction.fact;
+    if (typeof fact === "object" && fact !== null && "value" in fact) {
+      return valueText(candidate, (fact as { value?: unknown }).value);
+    }
+  }
+  return proposedText(candidate);
 }
 
 /**
@@ -359,7 +376,7 @@ function SettledFact({ candidate, run }: { candidate: CompilerCandidate; run: Co
         {subjectOf(candidate)}
         <span className={styles.factAttribute}>{candidate.attribute}</span>
       </h3>
-      <p className={styles.settledValue}>{proposedText(candidate)}</p>
+      <p className={styles.settledValue}>{settledText(candidate)}</p>
       <div className={styles.settledDecision}>
         <CandidateReview
           candidate={candidate}
