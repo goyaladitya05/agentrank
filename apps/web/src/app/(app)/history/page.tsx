@@ -2,8 +2,8 @@ import Link from "next/link";
 
 import { InsightFailure } from "@/components/InsightFailure";
 import { EmptyState, Panel, StatusMark } from "@/components/Primitives";
-import styles from "@/components/console.module.css";
-import merchant from "@/components/merchant.module.css";
+import shared from "@/components/console.module.css";
+import styles from "@/components/history.module.css";
 import { decodeCompilerOverview } from "@/lib/compiler";
 import { decodeEvaluationLaunchList } from "@/lib/evaluation";
 import { formatTimestamp } from "@/lib/format";
@@ -34,10 +34,10 @@ export default async function HistoryPage() {
 
   return (
     <>
-      <div className={styles.pageHeader}>
+      <div className={shared.pageHeader}>
         <div>
-          <h1 className={styles.pageTitle}>History</h1>
-          <p className={merchant.pageIntro}>
+          <h1 className={shared.pageTitle}>History</h1>
+          <p className={shared.pageIntro}>
             Everything that has happened to this store in AgentRank, newest first.
           </p>
         </div>
@@ -48,21 +48,21 @@ export default async function HistoryPage() {
             title="Nothing has happened yet"
             explanation="Once you import your store and run an evaluation, every step appears here."
           >
-            <Link className={styles.textLink} href="/overview">
+            <Link className={shared.textLink} href="/overview">
               Start from your overview
             </Link>
           </EmptyState>
         </Panel>
       ) : (
-        <ol className={merchant.eventList} aria-label="Merchant history">
+        <ol className={styles.list} aria-label="Merchant history">
           {events.map((event) => (
             <EventRow key={`${event.kind}:${event.at}:${event.title}`} event={event} />
           ))}
         </ol>
       )}
-      <p className={styles.finePrint}>
+      <p className={shared.finePrint}>
         The full run inventory with technical identifiers is in{" "}
-        <Link className={styles.rowLink} href="/lab/runs">
+        <Link className={shared.rowLink} href="/lab/runs">
           the Lab
         </Link>
         .
@@ -73,12 +73,14 @@ export default async function HistoryPage() {
 
 function EventRow({ event }: { event: MerchantEvent }) {
   return (
-    <li className={merchant.eventRow}>
-      <span className={merchant.eventWhen}>{formatTimestamp(event.at)}</span>
-      <span className={merchant.eventTitle}>
-        {event.href === null ? event.title : <Link href={event.href}>{event.title}</Link>}
-        <span className={merchant.eventDetail}>{event.detail}</span>
-      </span>
+    <li className={styles.event}>
+      <span className={styles.when}>{formatTimestamp(event.at)}</span>
+      <div>
+        <h2 className={styles.title}>
+          {event.href === null ? event.title : <Link href={event.href}>{event.title}</Link>}
+        </h2>
+        <p className={styles.detail}>{event.detail}</p>
+      </div>
       <StatusMark tone={event.status.tone} label={event.status.label} />
     </li>
   );

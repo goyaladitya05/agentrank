@@ -1,0 +1,58 @@
+/* History: one readable stream of what the merchant did and asked for, newest first. */
+
+.list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  animation: settle 320ms ease-out both;
+}
+
+.event {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr) auto;
+  gap: 8px 32px;
+  align-items: baseline;
+  padding: 22px 0;
+  border-top: 1px solid var(--border);
+}
+
+.event:last-child {
+  border-bottom: 1px solid var(--border);
+}
+
+.when {
+  font-size: 14.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.title {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.title a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.title a:hover {
+  color: var(--accent);
+}
+
+.detail {
+  margin: 4px 0 0;
+  font-size: 15px;
+  color: var(--text-muted);
+  max-width: 64ch;
+}
+
+@media (max-width: 720px) {
+  .event {
+    grid-template-columns: 1fr;
+    gap: 6px;
+    padding: 18px 0;
+  }
+}
