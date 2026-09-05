@@ -1,0 +1,202 @@
+/* The before and after: the payoff of the product. Two numbers set very large around one
+   arrow, one sentence about what moved, the scenarios that moved, then the engine's own
+   conclusion and every caveat, visible. When the engine says the two runs cannot be read
+   together, that is the whole surface and no number is drawn. */
+
+.payoff {
+  animation: settle 360ms ease-out both;
+}
+
+.numbers {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 0 48px;
+  align-items: center;
+  margin: 8px 0 32px;
+}
+
+.sideLabel {
+  display: block;
+  margin: 0 0 14px;
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.value {
+  display: block;
+  font-size: clamp(64px, 8vw, 120px);
+  font-weight: 700;
+  letter-spacing: -0.05em;
+  line-height: 0.9;
+  font-variant-numeric: lining-nums;
+}
+
+.value[data-tone="ok"] {
+  color: var(--accent);
+}
+
+.value[data-tone="warn"] {
+  color: var(--state-warn);
+}
+
+.sub {
+  display: block;
+  margin-top: 14px;
+  font-size: 15px;
+  color: var(--text-muted);
+}
+
+.arrow {
+  font-size: 44px;
+  line-height: 1;
+  color: var(--border-strong);
+}
+
+.sentence {
+  margin: 0 0 28px;
+  font-size: clamp(22px, 2.2vw, 28px);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  max-width: 34ch;
+}
+
+/* The scenarios that moved, named. */
+
+.moved {
+  margin: 0 0 32px;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--border);
+}
+
+.movedRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 6px 20px;
+  align-items: baseline;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.movedKey {
+  font-size: 16.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.movedFrom {
+  font-size: 15px;
+  color: var(--text-muted);
+}
+
+.movedArrow {
+  font-size: 18px;
+  line-height: 1;
+  color: var(--border-strong);
+}
+
+.movedTo {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+}
+
+.movedRow[data-direction="IMPROVED"] .movedTo {
+  color: var(--accent);
+}
+
+.movedRow[data-direction="REGRESSED"] .movedTo {
+  color: var(--state-warn);
+}
+
+/* The engine's conclusion, verbatim, and the caveats that qualify it. */
+
+.conclusion {
+  margin: 0;
+  font-size: 16.5px;
+  line-height: 1.55;
+  max-width: 70ch;
+}
+
+.conclusionMark {
+  display: block;
+  margin-bottom: 10px;
+}
+
+.caveatsLabel {
+  margin: 28px 0 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.runs {
+  margin: 16px 0 0;
+  font-size: 14.5px;
+  color: var(--text-muted);
+}
+
+/* When the engine refuses a reading, that refusal is the whole result. */
+
+.refused {
+  animation: settle 360ms ease-out both;
+}
+
+.refusedTitle {
+  margin: 12px 0 18px;
+  font-size: clamp(28px, 3vw, 40px);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  max-width: 26ch;
+}
+
+/* The full tables, present and out of the way. */
+
+.full {
+  margin-top: 36px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+}
+
+.full > summary {
+  cursor: pointer;
+  font-size: 15.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.full > summary:hover {
+  color: var(--text);
+}
+
+.fullBody {
+  display: grid;
+  gap: 28px;
+  margin-top: 24px;
+}
+
+@media (max-width: 720px) {
+  .numbers {
+    grid-template-columns: 1fr;
+    gap: 20px;
+  }
+  .arrow {
+    transform: rotate(90deg);
+    width: max-content;
+  }
+  .movedRow {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+  .movedArrow {
+    display: none;
+  }
+}

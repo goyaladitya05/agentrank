@@ -38,12 +38,33 @@ export function EvaluationLaunchDetailContent({
   const status = launchStatusLabel(launch.status);
   const pending = launch.status === "QUEUED" || launch.status === "EXECUTING";
   const initial = launch.purpose === "INITIAL";
+  const comparison = initial ? null : (
+    <Section
+      title="Compared with your previous run"
+      hint="A before and after over time, not a controlled experiment."
+    >
+      {launch.comparison === null ? (
+        <Panel>
+          <EmptyState title="No comparison yet" explanation={comparisonAbsence(launch)} />
+        </Panel>
+      ) : (
+        <RunComparisonPanel comparison={launch.comparison} />
+      )}
+    </Section>
+  );
   return (
     <>
       <div className={styles.pageHeader}>
-        <h1 className={styles.pageTitle}>{initial ? "First evaluation" : "Re-evaluation"}</h1>
-        <StatusMark tone={status.tone} label={status.label} />
+        <div>
+          <h1 className={styles.pageTitle}>{initial ? "First evaluation" : "Re-evaluation"}</h1>
+          <p className={styles.pageIntro}>
+            <StatusMark tone={status.tone} label={status.label} />
+          </p>
+        </div>
       </div>
+
+      {/* The payoff leads once it exists. Until then, what is happening leads. */}
+      {launch.comparison === null ? null : comparison}
 
       <Section title="Execution">
         <Panel>
@@ -99,20 +120,7 @@ export function EvaluationLaunchDetailContent({
         </Panel>
       </Section>
 
-      {initial ? null : (
-        <Section
-          title="Compared with your previous run"
-          hint="A before and after over time, not a controlled experiment."
-        >
-          {launch.comparison === null ? (
-            <Panel>
-              <EmptyState title="No comparison yet" explanation={comparisonAbsence(launch)} />
-            </Panel>
-          ) : (
-            <RunComparisonPanel comparison={launch.comparison} />
-          )}
-        </Section>
-      )}
+      {launch.comparison === null ? comparison : null}
     </>
   );
 }

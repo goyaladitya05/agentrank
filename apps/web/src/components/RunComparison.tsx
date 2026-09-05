@@ -1,10 +1,11 @@
 import Link from "next/link";
 
 import { StatusMark } from "@/components/Primitives";
-import styles from "@/components/console.module.css";
-import merchant from "@/components/merchant.module.css";
+import shared from "@/components/console.module.css";
+import styles from "@/components/comparison.module.css";
 import { formatMoney, formatRate } from "@/lib/format";
-import { compareSummary } from "@/lib/insights/merchant";
+import { scenarioName } from "@/lib/insights/journey";
+import { compareSummary, type CompareSummary } from "@/lib/insights/merchant";
 import {
   comparisonCountLabel,
   comparisonRateLabel,
@@ -20,135 +21,123 @@ import type { CountChange, RunComparison } from "@/lib/evaluation";
 /**
  * One run read against the run before it.
  *
- * The caveats come first and are not collapsible. A merchant who reads only the top of this
- * panel should already know that this is a before and after over time rather than a controlled
- * experiment, because that is the sentence that decides how every number under it should be
- * read.
+ * The before and after are the loudest thing here, because they are what the merchant asked
+ * for. What qualifies them is never hidden: the engine's own conclusion and every methodology
+ * caveat sit directly under the numbers and are not collapsible, so a reader who takes only
+ * the top of this panel away already knows this is a before and after over time rather than
+ * a controlled experiment.
  *
- * Nothing here computes anything. Every delta, every transition and every caveat is the API's,
- * so the console cannot arrive at a different reading of the same two runs.
+ * When the engine says the two runs cannot be read together, no number is drawn at all.
+ * That refusal, in the engine's own words, is the whole result.
+ *
+ * Nothing here computes anything. Every delta, every transition and every caveat is the
+ * API's, so the console cannot arrive at a different reading of the same two runs.
  */
 export function RunComparisonPanel({ comparison }: { comparison: RunComparison }) {
   const conclusion = conclusionKindLabel(comparison.conclusion.kind);
-  return (
-    <div className={styles.panel}>
-      <div className={styles.panelBody}>
-        <div className={merchant.verdict}>
-          <StatusMark tone={conclusion.tone} label={conclusion.label} />
-          <p className={merchant.verdictStatement}>{comparison.conclusion.statement}</p>
-        </div>
-        <p className={styles.reviewMeta}>
-          Comparing run{" "}
-          <Link
-            className={styles.rowLink}
-            href={`/lab/runs/${encodeURIComponent(comparison.baseline_run_id)}`}
-          >
-            before
-          </Link>{" "}
-          with run{" "}
-          <Link
-            className={styles.rowLink}
-            href={`/lab/runs/${encodeURIComponent(comparison.candidate_run_id)}`}
-          >
-            after
-          </Link>
-          .
-        </p>
-        <Warnings comparison={comparison} />
-        <MerchantCompare comparison={comparison} />
-        {comparison.comparable ? (
-          <>
-            <Rates comparison={comparison} />
-            <Counts comparison={comparison} />
-            <Demand comparison={comparison} />
-            <Transitions comparison={comparison} />
-            <Interactions comparison={comparison} />
-            <Runtime comparison={comparison} />
-          </>
-        ) : null}
+  if (!comparison.comparable) {
+    return (
+      <div className={styles.refused}>
+        <StatusMark tone={conclusion.tone} label={conclusion.label} />
+        <p className={styles.refusedTitle}>No before and after can be read from these two runs.</p>
+        <p className={styles.conclusion}>{comparison.conclusion.statement}</p>
+        <Caveats comparison={comparison} />
       </div>
+    );
+  }
+  // The payoff numbers, when the engine published the two counts they are made of. Their
+  // absence is not a refusal: the conclusion, the caveats and the tables still say everything.
+  const summary = compareSummary(comparison);
+  const tone =
+    summary === null
+      ? undefined
+      : summary.improved > 0 && summary.regressed === 0
+        ? "ok"
+        : summary.regressed > 0
+          ? "warn"
+          : undefined;
+  return (
+    <div className={styles.payoff}>
+      {summary === null ? null : (
+        <>
+          <div className={styles.numbers}>
+            <div>
+              <span className={styles.sideLabel}>Before</span>
+              <span className={styles.value}>
+                {String(summary.succeededBefore)} / {String(summary.purchasesBefore)}
+              </span>
+              <span className={styles.sub}>purchase scenarios completed</span>
+            </div>
+            <span className={styles.arrow} aria-hidden="true">
+              &rarr;
+            </span>
+            <div>
+              <span className={styles.sideLabel}>After</span>
+              <span className={styles.value} data-tone={tone}>
+                {String(summary.succeededAfter)} / {String(summary.purchasesAfter)}
+              </span>
+              <span className={styles.sub}>purchase scenarios completed</span>
+            </div>
+          </div>
+          <p className={styles.sentence}>{changeSentence(summary)}</p>
+        </>
+      )}
+      <MovedScenarios comparison={comparison} />
+      <p className={styles.conclusion}>
+        <span className={styles.conclusionMark}>
+          <StatusMark tone={conclusion.tone} label={conclusion.label} />
+        </span>
+        {comparison.conclusion.statement}
+      </p>
+      <Caveats comparison={comparison} />
+      <details className={styles.full}>
+        <summary>Full comparison</summary>
+        <div className={styles.fullBody}>
+          <Rates comparison={comparison} />
+          <Counts comparison={comparison} />
+          <Demand comparison={comparison} />
+          <Transitions comparison={comparison} />
+          <Interactions comparison={comparison} />
+          <Runtime comparison={comparison} />
+        </div>
+      </details>
     </div>
   );
 }
 
 /**
- * The payoff, in the terms a merchant asked the question in: how many purchase scenarios
- * completed before and after, what moved, and what the simulated captured demand did.
- *
- * Renders nothing when the comparison engine said the two runs cannot be read together;
- * the conclusion above already says that, and no summary is fabricated past it.
+ * What moved, in one sentence, from the engine's own transitions. A count of scenarios that
+ * newly completed or no longer complete, and never a percentage or a causal claim.
  */
-function MerchantCompare({ comparison }: { comparison: RunComparison }) {
-  const summary = compareSummary(comparison);
-  if (summary === null) {
-    return null;
-  }
-  const changes: { text: string; tone: "ok" | "warn" | "neutral"; delta: string }[] = [];
+export function changeSentence(summary: CompareSummary): string {
+  const parts: string[] = [];
   if (summary.improved > 0) {
-    changes.push({
-      delta: `+${String(summary.improved)}`,
-      tone: "ok",
-      text:
-        summary.improved === 1
-          ? "previously failed scenario now succeeds"
-          : "previously failed scenarios now succeed",
-    });
+    parts.push(
+      summary.improved === 1
+        ? "Agents completed 1 more shopping scenario"
+        : `Agents completed ${String(summary.improved)} more shopping scenarios`,
+    );
   }
   if (summary.regressed > 0) {
-    changes.push({
-      delta: `−${String(summary.regressed)}`,
-      tone: "warn",
-      text:
-        summary.regressed === 1 ? "scenario no longer completes" : "scenarios no longer complete",
-    });
+    parts.push(
+      summary.regressed === 1
+        ? `${parts.length === 0 ? "Agents completed 1 fewer shopping scenario" : "1 no longer completes"}`
+        : `${parts.length === 0 ? `Agents completed ${String(summary.regressed)} fewer shopping scenarios` : `${String(summary.regressed)} no longer complete`}`,
+    );
   }
-  for (const demand of summary.capturedDemand) {
-    if (demand.beforeMinor !== demand.afterMinor) {
-      changes.push({
-        delta: `${formatMoney(demand.beforeMinor, demand.currency)} → ${formatMoney(demand.afterMinor, demand.currency)}`,
-        tone: demand.afterMinor > demand.beforeMinor ? "ok" : "warn",
-        text: "simulated captured demand",
-      });
-    }
+  if (parts.length === 0) {
+    return "No scenario changed its outcome between the two runs.";
   }
-  return (
-    <>
-      <div className={merchant.compare}>
-        <div className={merchant.compareSide}>
-          <span className={merchant.compareLabel}>Before</span>
-          <span className={merchant.compareValue}>
-            {String(summary.succeededBefore)} / {String(summary.purchasesBefore)}
-            <small>purchase scenarios completed</small>
-          </span>
-        </div>
-        <span className={merchant.compareArrow} aria-hidden="true">
-          &rarr;
-        </span>
-        <div className={merchant.compareSide}>
-          <span className={merchant.compareLabel}>After</span>
-          <span className={merchant.compareValue}>
-            {String(summary.succeededAfter)} / {String(summary.purchasesAfter)}
-            <small>purchase scenarios completed</small>
-          </span>
-        </div>
-      </div>
-      <RecoveredScenarios comparison={comparison} />
-      {changes.length === 0 ? (
-        <p className={styles.reviewMeta}>No scenario changed its outcome between the two runs.</p>
-      ) : (
-        <ul className={merchant.compareChanges}>
-          {changes.map((change) => (
-            <li key={`${change.delta}:${change.text}`}>
-              <span className={merchant.compareDelta} data-tone={change.tone}>
-                {change.delta}
-              </span>
-              <span>{change.text}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </>
-  );
+  const demand = summary.capturedDemand
+    .filter((change) => change.beforeMinor !== change.afterMinor)
+    .map(
+      (change) =>
+        `${formatMoney(change.beforeMinor, change.currency)} to ${formatMoney(change.afterMinor, change.currency)}`,
+    );
+  const sentence = `${parts.join(", and ")}.`;
+  return demand.length === 0
+    ? sentence
+    : `${sentence} Simulated captured demand moved from ${demand.join(" and ")}.`;
 }
 
 /**
@@ -158,7 +147,7 @@ function MerchantCompare({ comparison }: { comparison: RunComparison }) {
  * what a merchant recognises. Direction comes from the comparison engine, so a regression is
  * drawn exactly as loudly as a recovery and neither is inferred here.
  */
-function RecoveredScenarios({ comparison }: { comparison: RunComparison }) {
+function MovedScenarios({ comparison }: { comparison: RunComparison }) {
   const moved = comparison.transitions.filter(
     (entry) => entry.direction === "IMPROVED" || entry.direction === "REGRESSED",
   );
@@ -166,23 +155,21 @@ function RecoveredScenarios({ comparison }: { comparison: RunComparison }) {
     return null;
   }
   return (
-    <ul className={merchant.transitionList} aria-label="Scenarios that changed">
+    <ul className={styles.moved} aria-label="Scenarios that changed">
       {moved.map((entry) => {
         const recovered = entry.direction === "IMPROVED";
         return (
-          <li
-            key={entry.mission_key}
-            className={merchant.transitionRow}
-            data-direction={entry.direction}
-          >
-            <span className={merchant.transitionKey}>{entry.mission_key}</span>
-            <span className={merchant.transitionFrom}>
+          <li key={entry.mission_key} className={styles.movedRow} data-direction={entry.direction}>
+            <span className={styles.movedKey} title={entry.mission_key}>
+              {scenarioName(entry.mission_key)}
+            </span>
+            <span className={styles.movedFrom}>
               {outcome(entry.before_status, entry.before_primary_failure_reason)}
             </span>
-            <span className={merchant.transitionArrow} aria-hidden="true">
+            <span className={styles.movedArrow} aria-hidden="true">
               &rarr;
             </span>
-            <span className={merchant.transitionTo}>
+            <span className={styles.movedTo}>
               {recovered
                 ? "Completed"
                 : outcome(entry.after_status, entry.after_primary_failure_reason)}
@@ -194,30 +181,51 @@ function RecoveredScenarios({ comparison }: { comparison: RunComparison }) {
   );
 }
 
-function Warnings({ comparison }: { comparison: RunComparison }) {
+/** Every caveat the engine raised, visible, and the two runs it read. */
+function Caveats({ comparison }: { comparison: RunComparison }) {
   return (
-    <ul className={styles.warningList}>
-      {comparison.warnings.map((warning) => (
-        <li key={warning.code} className={styles.warningItem}>
-          <span className={styles.warningCode}>{warningLabel(warning.code)}</span>
-          <span>{warning.message}</span>
-        </li>
-      ))}
-    </ul>
+    <>
+      <p className={styles.caveatsLabel}>Read this with care</p>
+      <ul className={shared.warningList}>
+        {comparison.warnings.map((warning) => (
+          <li key={warning.code} className={shared.warningItem}>
+            <span className={shared.warningCode}>{warningLabel(warning.code)}</span>
+            <span>{warning.message}</span>
+          </li>
+        ))}
+      </ul>
+      <p className={styles.runs}>
+        Comparing the run{" "}
+        <Link
+          className={shared.rowLink}
+          href={`/lab/runs/${encodeURIComponent(comparison.baseline_run_id)}`}
+        >
+          before
+        </Link>{" "}
+        with the run{" "}
+        <Link
+          className={shared.rowLink}
+          href={`/lab/runs/${encodeURIComponent(comparison.candidate_run_id)}`}
+        >
+          after
+        </Link>
+        , both in the Lab.
+      </p>
+    </>
   );
 }
 
 function Rates({ comparison }: { comparison: RunComparison }) {
   return (
-    <div className={styles.tableScroll} tabIndex={0} aria-label="Rates before and after">
-      <table className={styles.table}>
+    <div className={shared.tableScroll} tabIndex={0} aria-label="Rates before and after">
+      <table className={shared.table}>
         <thead>
           <tr>
             <th scope="col">Rate</th>
-            <th scope="col" className={styles.num}>
+            <th scope="col" className={shared.num}>
               Before
             </th>
-            <th scope="col" className={styles.num}>
+            <th scope="col" className={shared.num}>
               After
             </th>
           </tr>
@@ -226,8 +234,8 @@ function Rates({ comparison }: { comparison: RunComparison }) {
           {comparison.rates.map((rate) => (
             <tr key={rate.key}>
               <td>{comparisonRateLabel(rate.key)}</td>
-              <td className={styles.num}>{formatRate(rate.before)}</td>
-              <td className={styles.num}>{formatRate(rate.after)}</td>
+              <td className={shared.num}>{formatRate(rate.before)}</td>
+              <td className={shared.num}>{formatRate(rate.after)}</td>
             </tr>
           ))}
         </tbody>
@@ -240,41 +248,39 @@ function Counts({ comparison }: { comparison: RunComparison }) {
   const moved = comparison.counts.filter((count) => count.delta !== 0);
   const shown = moved.length > 0 ? moved : comparison.counts.slice(0, 4);
   return (
-    <>
-      <p className={styles.reviewMeta}>
-        {moved.length > 0
-          ? "Counts that moved between the two runs."
-          : "No count moved between the two runs. A sample of them is shown."}
-      </p>
-      <div className={styles.tableScroll} tabIndex={0} aria-label="Counts before and after">
-        <table className={styles.table}>
-          <thead>
-            <tr>
-              <th scope="col">Count</th>
-              <th scope="col" className={styles.num}>
-                Before
-              </th>
-              <th scope="col" className={styles.num}>
-                After
-              </th>
-              <th scope="col" className={styles.num}>
-                Change
-              </th>
+    <div className={shared.tableScroll} tabIndex={0} aria-label="Counts before and after">
+      <table className={shared.table}>
+        <caption>
+          {moved.length > 0
+            ? "Counts that moved between the two runs."
+            : "No count moved between the two runs. A sample of them is shown."}
+        </caption>
+        <thead>
+          <tr>
+            <th scope="col">Count</th>
+            <th scope="col" className={shared.num}>
+              Before
+            </th>
+            <th scope="col" className={shared.num}>
+              After
+            </th>
+            <th scope="col" className={shared.num}>
+              Change
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {shown.map((count) => (
+            <tr key={count.key}>
+              <td>{comparisonCountLabel(count.key)}</td>
+              <td className={shared.num}>{String(count.before)}</td>
+              <td className={shared.num}>{String(count.after)}</td>
+              <td className={shared.num}>{signed(count)}</td>
             </tr>
-          </thead>
-          <tbody>
-            {shown.map((count) => (
-              <tr key={count.key}>
-                <td>{comparisonCountLabel(count.key)}</td>
-                <td className={styles.num}>{String(count.before)}</td>
-                <td className={styles.num}>{String(count.after)}</td>
-                <td className={styles.num}>{signed(count)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -287,56 +293,50 @@ function Demand({ comparison }: { comparison: RunComparison }) {
     return null;
   }
   return (
-    <>
-      <p className={styles.reviewMeta}>
-        Simulated benchmark demand, one row per currency and bucket. These are authored values,
-        never revenue, and currencies are never added together.
-      </p>
-      <div
-        className={styles.tableScroll}
-        tabIndex={0}
-        aria-label="Simulated demand before and after"
-      >
-        <table className={styles.table}>
-          <thead>
-            <tr>
-              <th scope="col">Currency</th>
-              <th scope="col">Bucket</th>
-              <th scope="col" className={styles.num}>
-                Simulated before
-              </th>
-              <th scope="col" className={styles.num}>
-                Simulated after
-              </th>
+    <div className={shared.tableScroll} tabIndex={0} aria-label="Simulated demand before and after">
+      <table className={shared.table}>
+        <caption>
+          Simulated benchmark demand, one row per currency and bucket. These are authored values,
+          never revenue, and currencies are never added together.
+        </caption>
+        <thead>
+          <tr>
+            <th scope="col">Currency</th>
+            <th scope="col">Bucket</th>
+            <th scope="col" className={shared.num}>
+              Simulated before
+            </th>
+            <th scope="col" className={shared.num}>
+              Simulated after
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {comparison.simulated_demand.map((change) => (
+            <tr key={`${change.currency}:${change.bucket}`}>
+              <td className={shared.mono}>{change.currency}</td>
+              <td>{demandBucketLabel(change.bucket)}</td>
+              <td className={shared.num}>
+                {formatMoney(change.simulated_before_amount_minor, change.currency)}
+              </td>
+              <td className={shared.num}>
+                {formatMoney(change.simulated_after_amount_minor, change.currency)}
+              </td>
             </tr>
-          </thead>
-          <tbody>
-            {comparison.simulated_demand.map((change) => (
-              <tr key={`${change.currency}:${change.bucket}`}>
-                <td className={styles.mono}>{change.currency}</td>
-                <td>{demandBucketLabel(change.bucket)}</td>
-                <td className={styles.num}>
-                  {formatMoney(change.simulated_before_amount_minor, change.currency)}
-                </td>
-                <td className={styles.num}>
-                  {formatMoney(change.simulated_after_amount_minor, change.currency)}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
 function Transitions({ comparison }: { comparison: RunComparison }) {
   if (comparison.transitions.length === 0) {
-    return <p className={styles.reviewMeta}>Every mission ended where it ended before.</p>;
+    return <p className={shared.reviewMeta}>Every mission ended where it ended before.</p>;
   }
   return (
-    <div className={styles.tableScroll} tabIndex={0} aria-label="Missions that ended differently">
-      <table className={styles.table}>
+    <div className={shared.tableScroll} tabIndex={0} aria-label="Missions that ended differently">
+      <table className={shared.table}>
         <thead>
           <tr>
             <th scope="col">Mission</th>
@@ -350,7 +350,7 @@ function Transitions({ comparison }: { comparison: RunComparison }) {
             const direction = transitionDirectionLabel(transition.direction);
             return (
               <tr key={transition.mission_key}>
-                <td className={styles.mono}>{transition.mission_key}</td>
+                <td className={shared.mono}>{transition.mission_key}</td>
                 <td>
                   {outcome(transition.before_status, transition.before_primary_failure_reason)}
                 </td>
@@ -388,21 +388,21 @@ function Interactions({ comparison }: { comparison: RunComparison }) {
   } = comparison.interactions;
   if (!before && !after) {
     return (
-      <p className={styles.reviewMeta}>
+      <p className={shared.reviewMeta}>
         Neither run recorded a model trace, so there is no interaction cost to compare.
       </p>
     );
   }
   if (!before || !after) {
     return (
-      <p className={styles.reviewMeta}>
+      <p className={shared.reviewMeta}>
         Only the {before ? "earlier" : "later"} run recorded a model trace, so interaction cost
         cannot be compared between them.
       </p>
     );
   }
   return (
-    <p className={styles.reviewMeta}>
+    <p className={shared.reviewMeta}>
       Interaction cost:{" "}
       {invocations === null
         ? "round trips not recorded"
@@ -422,7 +422,7 @@ function Runtime({ comparison }: { comparison: RunComparison }) {
     return null;
   }
   return (
-    <p className={styles.reviewMeta}>
+    <p className={shared.reviewMeta}>
       Wall clock: {Math.round(before)}s before, {Math.round(after)}s after. Execution time depends
       on provider latency and machine load as much as on anything you changed.
     </p>

@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useActionState, useState } from "react";
 
 import styles from "@/components/console.module.css";
-import merchant from "@/components/merchant.module.css";
 import { IDLE_LAUNCH, type LaunchState } from "@/lib/evaluation-mutation";
 import type { EvaluationPreflight } from "@/lib/evaluation";
 
@@ -53,7 +52,7 @@ export function LaunchEvaluation({
   const initial = preflight.purpose === "INITIAL";
   if (!confirming) {
     return (
-      <button className={merchant.primaryButton} type="button" onClick={() => setConfirming(true)}>
+      <button className={styles.primaryButton} type="button" onClick={() => setConfirming(true)}>
         {initial ? "Run evaluation" : "Measure again"}
       </button>
     );

@@ -8,7 +8,6 @@ import { LaunchEvaluation } from "@/components/LaunchEvaluation";
 import { EmptyState, KeyValueList, Panel, Section, StatusMark } from "@/components/Primitives";
 import { TechnicalDetails } from "@/components/TechnicalDetails";
 import styles from "@/components/console.module.css";
-import merchant from "@/components/merchant.module.css";
 import { formatTimestamp } from "@/lib/format";
 import { launchStatusLabel } from "@/lib/labels";
 import { loadInsight } from "@/lib/insights/load";
@@ -62,7 +61,7 @@ export default async function EvaluationsPage() {
           <h1 className={styles.pageTitle}>
             {initial ? "Run your first evaluation" : "Measure again"}
           </h1>
-          <p className={merchant.pageIntro}>
+          <p className={styles.pageIntro}>
             {initial
               ? "AI shopping agents attempt realistic purchase scenarios against your store, and AgentRank records exactly what happens."
               : "Your published fixes are measured with the same shopping scenarios, so the result reads as a before and after."}
