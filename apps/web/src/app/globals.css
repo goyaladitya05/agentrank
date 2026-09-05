@@ -1,51 +1,44 @@
 /**
  * AgentRank's ground.
  *
- * One theme rather than two. A product a judge meets once should look the same way every
- * time, and a warm near-black is what lets the scenario board's greens and ochres read as
- * signal rather than as decoration.
- *
- * The ground is not a flat fill. Three layers sit under everything: a warm base, a wide
- * soft wash that lifts the top of the page, and a fine grain that keeps large dark areas
- * from banding and gives the surface a printed quality. None of it is a brand gradient and
- * none of it moves.
+ * One theme, one typeface, one accent. The ground is a plain near-black: nothing is layered
+ * over it, nothing glows and nothing moves, so the only things that can carry emphasis are
+ * scale, weight, whitespace and the one green that means a purchase an agent completed.
  */
 :root {
   color-scheme: dark;
 
-  --surface: #0e0b08;
-  --surface-raised: #16120e;
-  --surface-header: #14100c;
-  --surface-sunken: #120e0b;
-  --border: #2a231c;
-  --border-strong: #4a3f34;
-  --rule-strong: #e8dfd2;
-  --text: #f0e7d6;
-  --text-muted: #b3a897;
+  --surface: #0d0d0c;
+  --surface-raised: #141413;
+  --surface-header: #121211;
+  --surface-sunken: #101010;
+  --border: #262624;
+  --border-strong: #3d3d3a;
+  --rule-strong: #e9e6df;
+  --text: #f1eee7;
+  --text-muted: #a6a298;
 
-  /* One accent. A signal green that survives a warm black ground and means the same thing
-     everywhere: a purchase an agent actually completed. */
-  --accent: #5fcf92;
-  --accent-strong: #8fe4b4;
-  --accent-surface: #16291f;
+  /* The accent. A racing green bright enough to read on near-black, and it always means the
+     same thing: an agent completed a purchase. */
+  --accent: #57d38f;
+  --accent-strong: #84e4b0;
+  --accent-surface: #13271c;
 
-  --state-ok: #5fcf92;
-  --state-ok-surface: #16291f;
-  --state-warn: #e0a54a;
-  --state-warn-surface: #2a2013;
-  --state-fail: #e8796c;
-  --state-fail-surface: #2a1815;
-  --state-info: #8fb0c4;
+  --state-ok: #57d38f;
+  --state-ok-surface: #13271c;
+  --state-warn: #e6a94f;
+  --state-warn-surface: #2a2113;
+  --state-fail: #ef7f72;
+  --state-fail-surface: #2b1815;
+  --state-info: #92b4c9;
 
-  --shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --radius: 6px;
+  --radius-lg: 10px;
 
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   --sans:
     var(--font-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
     sans-serif;
-  /* Kept as a name so nothing that still asks for a display face breaks; it is the same
-     grotesque, because AgentRank now speaks in one voice. */
-  --display: var(--sans);
 }
 
 *,
@@ -61,53 +54,35 @@ body {
 }
 
 body {
-  position: relative;
   min-height: 100vh;
-  background-color: var(--surface);
+  background: var(--surface);
   color: var(--text);
   font-family: var(--sans);
-  font-size: 15px;
-  line-height: 1.6;
+  font-size: 16px;
+  line-height: 1.55;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-}
-
-/* The wash: a single wide, very low contrast warm lift behind the top of the page, so the
-   masthead sits on something rather than on a flat plane. Fixed, so it never parallaxes. */
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
-  background:
-    radial-gradient(120% 70% at 15% -10%, rgba(95, 207, 146, 0.07), transparent 60%),
-    radial-gradient(90% 60% at 95% 0%, rgba(224, 165, 74, 0.05), transparent 65%);
-}
-
-/* The grain: fine static noise at very low opacity. It stops large dark areas from banding
-   on a projector and gives the ground a printed rather than a screen quality. */
-body::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
-  opacity: 0.22;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
-}
-
-/* Everything the product draws sits above both layers. */
-body > * {
-  position: relative;
-  z-index: 1;
 }
 
 h1,
 h2,
 h3 {
   margin: 0;
-  font-weight: 600;
+  font-weight: 700;
+}
+
+p {
+  margin: 0;
+}
+
+a {
+  color: var(--accent);
+}
+
+/* One focus treatment for everything that can take focus. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 ::selection {
@@ -115,11 +90,11 @@ h3 {
   color: var(--text);
 }
 
-/* The one entrance the merchant pages make: content settles onto the ground once. */
+/* The one entrance a page makes: its content settles into place once. */
 @keyframes settle {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateY(8px);
   }
   to {
     opacity: 1;
@@ -127,7 +102,7 @@ h3 {
   }
 }
 
-/* Scenario blocks stamp in one after another after a completed measurement. */
+/* Scenario rows appear one after another after a completed measurement. */
 @keyframes stamp {
   from {
     opacity: 0;

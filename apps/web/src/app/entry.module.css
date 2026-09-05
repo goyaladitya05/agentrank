@@ -34,7 +34,7 @@
 
 .headline {
   margin: 0 0 22px;
-  font-family: var(--display);
+  font-family: var(--sans);
   font-size: clamp(46px, 8.4vw, 104px);
   font-weight: 700;
   letter-spacing: -0.045em;
@@ -147,7 +147,7 @@
 }
 
 .stageName {
-  font-family: var(--display);
+  font-family: var(--sans);
   font-size: 27px;
   font-weight: 700;
   letter-spacing: -0.028em;
@@ -191,7 +191,7 @@
 }
 
 .loopItem strong {
-  font-family: var(--display);
+  font-family: var(--sans);
   font-size: 20px;
   font-weight: 700;
   letter-spacing: -0.022em;

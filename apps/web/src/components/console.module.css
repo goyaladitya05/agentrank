@@ -1,158 +1,116 @@
-/* Shared product primitives: marks, sections, tables, findings, demand, states. */
+/* Shared primitives: page heads, sections, panels, marks, tables, forms and states.
+   Hierarchy comes from size and weight, not from boxes; a panel appears only where a form or
+   a table genuinely needs a boundary. Nothing a merchant has to read is smaller than 13px. */
+
+/* Page heads. */
 
 .pageHeader {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 8px 16px;
-  margin-bottom: 24px;
+  gap: 12px 24px;
+  margin-bottom: 48px;
+  animation: settle 320ms ease-out both;
 }
 
 .pageTitle {
-  font-family: var(--display);
-  font-size: 28px;
+  font-size: clamp(34px, 3.4vw, 44px);
   font-weight: 700;
-  letter-spacing: -0.032em;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
 }
 
-.panelHead {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 10px;
-}
-
-.panelHeadSpacer {
-  flex: 1;
-}
-
-.textLink {
-  color: var(--accent);
-  text-decoration: none;
-  font-size: 13px;
-  white-space: nowrap;
-}
-
-.textLink:hover {
-  text-decoration: underline;
-}
-
-.textLink:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-.rowLinkStrong {
-  color: var(--accent);
-  text-decoration: none;
-  font-weight: 600;
-}
-
-.rowLinkStrong:hover {
-  text-decoration: underline;
-}
-
-.rowLinkStrong:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-.quote {
-  margin: 0 0 10px;
-  padding-left: 14px;
-  border-left: 3px solid var(--border-strong);
-  font-family: var(--display);
+.pageIntro {
+  margin: 14px 0 0;
   font-size: 17px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  max-width: 60ch;
+}
+
+.backLink {
+  display: inline-block;
+  margin-bottom: 20px;
+  font-size: 14px;
   font-weight: 500;
-  line-height: 1.45;
-  letter-spacing: -0.012em;
+  color: var(--text-muted);
+  text-decoration: none;
 }
 
-.warnLine {
-  margin: 6px 0 0;
-  font-size: 12px;
+.backLink:hover {
+  color: var(--text);
 }
 
-.monoMuted {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--state-warn);
-  text-transform: uppercase;
-  margin-right: 6px;
-}
-
-.finePrintTight {
-  margin: 10px 0 0;
-  font-size: 12px;
-}
+/* Sections: a small label, generous space, no rule. */
 
 .section {
-  margin: 0 0 36px;
+  margin: 0 0 64px;
 }
 
 .sectionHeader {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border-strong);
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  margin-bottom: 20px;
 }
 
 .sectionTitle {
-  font-family: var(--mono);
-  font-size: 12px;
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text-muted);
 }
 
 .sectionIndex {
-  margin-right: 10px;
+  margin-right: 8px;
   color: var(--accent);
-  font-weight: 700;
 }
 
 .sectionHint {
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text-muted);
 }
 
+/* Panels. */
+
 .panel {
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-lg);
   background: var(--surface-raised);
-  box-shadow: var(--shadow-raised);
-}
-
-/* On a dark ground a panel reads as raised by its top edge catching the light rather than
-   by a shadow, which is invisible against near-black. */
-.panel::before {
-  content: "";
-  display: block;
-  height: 1px;
-  margin: -1px -1px 0;
-  border-radius: 6px 6px 0 0;
-  background: linear-gradient(90deg, transparent, rgba(240, 231, 214, 0.09), transparent);
 }
 
 .panelBody {
-  padding: 16px 20px;
+  padding: 24px 28px;
 }
 
-/* Status marks: a small filled square plus an uppercase monospace label. */
+.panelBody > p + p {
+  margin-top: 10px;
+}
+
+.panelHead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.panelHeadSpacer {
+  flex: 1;
+}
+
+/* Status marks: a small filled dot plus a label. The label carries the meaning. */
 
 .mark {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font-family: var(--mono);
-  font-size: 11px;
+  gap: 7px;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.03em;
   text-transform: uppercase;
   color: var(--text);
   white-space: nowrap;
@@ -161,9 +119,9 @@
 .mark::before {
   content: "";
   display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 1px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
   background: var(--mark, var(--border-strong));
 }
 
@@ -183,6 +141,37 @@
   --mark: var(--border-strong);
 }
 
+/* Links. */
+
+.textLink,
+.rowLink,
+.rowLinkStrong,
+.errorRetry {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.textLink {
+  font-size: 15px;
+  white-space: nowrap;
+  border: none;
+  background: none;
+  padding: 0;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.rowLinkStrong {
+  font-weight: 600;
+}
+
+.textLink:hover,
+.rowLink:hover,
+.rowLinkStrong:hover,
+.errorRetry:hover {
+  text-decoration: underline;
+}
+
 /* Tables. */
 
 .tableScroll {
@@ -192,24 +181,23 @@
 .table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: 15px;
 }
 
 .table th {
-  padding: 8px 12px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--border-strong);
   text-align: left;
-  font-family: var(--mono);
-  font-size: 11px;
+  font-size: 12.5px;
   font-weight: 600;
-  letter-spacing: 0.07em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-muted);
   white-space: nowrap;
 }
 
 .table td {
-  padding: 8px 12px;
+  padding: 12px 14px;
   border-bottom: 1px solid var(--border);
   vertical-align: top;
 }
@@ -218,8 +206,12 @@
   border-bottom: none;
 }
 
-.table tbody tr:hover {
-  background: var(--surface);
+.table caption {
+  caption-side: top;
+  padding: 0 14px 10px;
+  text-align: left;
+  font-size: 14px;
+  color: var(--text-muted);
 }
 
 .num,
@@ -230,7 +222,7 @@
 
 .mono {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 13.5px;
 }
 
 .cellPrimary {
@@ -241,27 +233,14 @@
   color: var(--text-muted);
 }
 
-.rowLink {
-  color: var(--accent);
-  text-decoration: none;
-}
-
-.rowLink:hover {
-  text-decoration: underline;
-}
-
-.rowLink:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
 /* Key value descriptions. */
 
 .kv {
   display: grid;
-  grid-template-columns: minmax(140px, max-content) 1fr;
-  gap: 4px 20px;
+  grid-template-columns: minmax(160px, max-content) 1fr;
+  gap: 8px 28px;
   margin: 0;
+  font-size: 15.5px;
 }
 
 .kv dt {
@@ -277,14 +256,69 @@
     grid-template-columns: 1fr;
   }
   .kv dt {
-    margin-top: 6px;
+    margin-top: 8px;
   }
 }
 
-/* Findings. */
+/* Quoted conclusions. */
+
+.quote {
+  margin: 0 0 12px;
+  padding-left: 16px;
+  border-left: 2px solid var(--border-strong);
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1.45;
+  letter-spacing: -0.01em;
+}
+
+/* Prose sizes. */
+
+.finePrint {
+  margin: 16px 0 0;
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+.finePrintTight {
+  margin: 12px 0 0;
+  font-size: 14.5px;
+  color: var(--text-muted);
+}
+
+.reviewMeta {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 14.5px;
+}
+
+.warnLine {
+  margin: 8px 0 0;
+  font-size: 14px;
+}
+
+.monoMuted {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--state-warn);
+  margin-right: 6px;
+}
+
+.launchTerms {
+  margin: 12px 0 0;
+  padding-left: 20px;
+  font-size: 15px;
+  color: var(--text-muted);
+}
+
+.launchTerms li {
+  margin-top: 6px;
+}
+
+/* Findings, as the Lab lists them. */
 
 .finding {
-  padding: 12px 16px;
+  padding: 16px 20px;
   border-top: 1px solid var(--border);
 }
 
@@ -300,7 +334,7 @@
 }
 
 .findingTitle {
-  font-size: 13px;
+  font-size: 16px;
   font-weight: 600;
   flex: 1 1 auto;
   min-width: 240px;
@@ -310,37 +344,25 @@
   display: flex;
   flex-wrap: wrap;
   gap: 4px 18px;
-  margin-top: 6px;
-  font-size: 12px;
+  margin-top: 8px;
+  font-size: 14px;
   color: var(--text-muted);
 }
 
 .findingRecommendation {
-  margin: 8px 0 0;
-  font-size: 12px;
+  margin: 10px 0 0;
+  font-size: 14.5px;
 }
 
 .findingDemand {
-  margin: 6px 0 0;
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--text);
-}
-
-.launchTerms {
   margin: 8px 0 0;
-  padding-left: 18px;
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.launchTerms li {
-  margin-top: 4px;
+  font-family: var(--mono);
+  font-size: 13.5px;
 }
 
 .findingActions {
-  margin: 8px 0 0;
-  font-size: 12px;
+  margin: 10px 0 0;
+  font-size: 14px;
 }
 
 .findingActions ul {
@@ -352,12 +374,12 @@
   margin-top: 2px;
 }
 
-/* Outcome distribution bar. */
+/* Outcome distribution bar, Lab only. */
 
 .bar {
   display: flex;
   height: 10px;
-  border-radius: 2px;
+  border-radius: 3px;
   overflow: hidden;
   border: 1px solid var(--border-strong);
 }
@@ -393,15 +415,15 @@
   display: flex;
   flex-wrap: wrap;
   gap: 4px 16px;
-  margin-top: 6px;
-  font-size: 12px;
+  margin-top: 8px;
+  font-size: 14px;
   color: var(--text-muted);
 }
 
 /* States. */
 
 .loadingRegion {
-  padding-top: 4px;
+  padding-top: 8px;
 }
 
 .visuallyHidden {
@@ -414,11 +436,10 @@
 }
 
 .skeletonLine {
-  height: 12px;
-  border-radius: 2px;
-  background: var(--surface-header);
-  border: 1px solid var(--border);
-  margin-bottom: 10px;
+  height: 14px;
+  border-radius: 3px;
+  background: var(--surface-raised);
+  margin-bottom: 14px;
 }
 
 .skeletonLineShort {
@@ -430,110 +451,106 @@
 }
 
 .skeletonPanel {
-  height: 96px;
-  border-radius: 4px;
-  background: var(--surface-header);
-  border: 1px solid var(--border);
-  margin-bottom: 24px;
+  height: 120px;
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+  margin-bottom: 32px;
 }
 
 .emptyState {
-  padding: 28px 16px;
+  padding: 40px 24px;
   text-align: center;
   color: var(--text-muted);
 }
 
 .emptyTitle {
-  font-family: var(--display);
-  font-size: 19px;
+  font-size: 22px;
   font-weight: 700;
-  letter-spacing: -0.022em;
+  letter-spacing: -0.02em;
   color: var(--text);
-  margin: 0 0 4px;
+  margin: 0 0 8px;
 }
 
 .emptyState p {
   margin: 0;
-  font-size: 12.5px;
+  font-size: 15px;
+  max-width: 52ch;
+  margin-inline: auto;
+}
+
+.emptyState p + p {
+  margin-top: 10px;
 }
 
 .errorBox {
-  padding: 16px;
+  padding: 20px 24px;
   border: 1px solid var(--state-fail);
-  border-radius: 4px;
+  border-radius: var(--radius-lg);
   background: var(--surface-raised);
 }
 
 .errorTitle {
-  margin: 0 0 4px;
+  margin: 0 0 6px;
+  font-size: 18px;
   font-weight: 600;
   color: var(--state-fail);
 }
 
 .errorBox p {
-  margin: 0 0 8px;
-  font-size: 12px;
+  margin: 0 0 12px;
+  font-size: 15px;
   color: var(--text-muted);
 }
 
 .errorRetry {
-  color: var(--accent);
-  text-decoration: none;
-  font-size: 13px;
+  font-size: 15px;
+  font-weight: 600;
 }
 
-.errorRetry:hover {
-  text-decoration: underline;
-}
-
-.errorRetry:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-/* Technical details disclosure. */
+/* Disclosures for technical detail. Present, never in the way. */
 
 .tech {
-  margin-top: 8px;
+  margin-top: 16px;
 }
 
 .techSummary {
   cursor: pointer;
-  font-size: 12px;
+  font-size: 14.5px;
   color: var(--text-muted);
   user-select: none;
 }
 
-.techSummary:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+.techSummary:hover {
+  color: var(--text);
 }
 
 .techBody {
-  margin: 8px 0 0;
+  margin: 12px 0 0;
 }
 
 .idRow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 8px 12px;
   font-family: var(--mono);
-  font-size: 11px;
-  padding: 2px 0;
+  font-size: 13px;
+  padding: 4px 0;
 }
 
 .idLabel {
   color: var(--text-muted);
-  min-width: 150px;
+  min-width: 190px;
 }
 
 .copyButton {
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: 4px;
   background: var(--surface);
   color: var(--text-muted);
-  font-size: 11px;
-  padding: 1px 8px;
+  font: inherit;
+  font-size: 12.5px;
+  padding: 2px 8px;
   cursor: pointer;
 }
 
@@ -542,50 +559,45 @@
   border-color: var(--accent);
 }
 
-.copyButton:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
 .copyDone {
   color: var(--state-ok);
-  font-size: 11px;
+  font-size: 13px;
 }
 
-/* Footnotes and fine print. */
-
-.finePrint {
-  margin: 8px 0 0;
-  font-size: 11px;
-  color: var(--text-muted);
-}
+/* Methodology caveats. Visible, never collapsible. */
 
 .warningList {
-  margin: 8px 0 0;
+  margin: 12px 0 0;
   padding: 0;
   list-style: none;
 }
 
 .warningItem {
-  display: flex;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: 4px 20px;
   align-items: baseline;
-  padding: 5px 0 5px 12px;
-  border-left: 2px solid var(--state-warn);
-  margin-bottom: 6px;
-  font-size: 12.5px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+  font-size: 14.5px;
   color: var(--text-muted);
 }
 
 .warningCode {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--state-warn);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
-  white-space: nowrap;
+  color: var(--state-warn);
 }
 
-/* Trace explorer. */
+@media (max-width: 640px) {
+  .warningItem {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Trace explorer, Lab only. */
 
 .traceList {
   list-style: none;
@@ -595,10 +607,10 @@
 
 .traceItem {
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius);
   background: var(--surface-raised);
-  padding: 8px 12px;
-  margin-bottom: 6px;
+  padding: 10px 14px;
+  margin-bottom: 8px;
 }
 
 .traceItem[data-tone="fail"] {
@@ -617,35 +629,37 @@
 }
 
 .tracePayload {
-  margin: 8px 0 0;
-  padding: 10px 12px;
+  margin: 10px 0 0;
+  padding: 12px 14px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: var(--radius);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 13px;
   line-height: 1.5;
   overflow-x: auto;
   white-space: pre;
 }
 
-/* Review and publication controls. The console only writes through these. */
+/* Controls. The console only writes through these. */
 
 .button {
   display: inline-block;
-  padding: 7px 14px;
+  padding: 10px 18px;
   border: 1px solid var(--border-strong);
-  border-radius: 4px;
-  transition: background 120ms ease-out;
+  border-radius: var(--radius);
   background: var(--surface-raised);
   color: var(--text);
   font: inherit;
-  font-size: 13px;
+  font-size: 15px;
+  font-weight: 500;
   cursor: pointer;
+  transition: background 120ms ease-out;
 }
 
 .button:hover:not(:disabled) {
   background: var(--surface-header);
+  border-color: var(--text-muted);
 }
 
 .button:disabled {
@@ -653,100 +667,103 @@
   cursor: progress;
 }
 
-.button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+.primaryButton {
+  display: inline-block;
+  padding: 13px 24px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: var(--surface);
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 120ms ease-out;
+}
+
+.primaryButton:hover:not(:disabled) {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+}
+
+.primaryButton:disabled {
+  opacity: 0.6;
+  cursor: progress;
 }
 
 .buttonRow {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  margin-top: 8px;
+  gap: 14px;
+  margin-top: 16px;
 }
 
 .field {
   display: block;
-  margin-top: 8px;
+  margin-top: 14px;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 14.5px;
 }
 
 .field input,
 .field select {
   display: block;
   width: 100%;
-  min-width: 140px;
-  margin-top: 2px;
-  padding: 5px 8px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--surface-raised);
+  min-width: 160px;
+  margin-top: 6px;
+  padding: 9px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
   color: var(--text);
   font: inherit;
-  font-size: 13px;
-}
-
-.field input:focus-visible,
-.field select:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
+  font-size: 15px;
 }
 
 .editor {
   display: block;
   width: 100%;
-  margin-top: 4px;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--surface-raised);
+  margin-top: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
   color: var(--text);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 13.5px;
   line-height: 1.5;
   resize: vertical;
 }
 
-.editor:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
 .mutationAlert {
-  margin: 8px 0 0;
-  padding: 8px 10px;
+  margin: 14px 0 0;
+  padding: 10px 14px;
   border-left: 3px solid var(--state-fail);
   background: var(--surface-header);
   color: var(--text);
-  font-size: 12px;
+  font-size: 14.5px;
 }
 
 .mutationPending {
-  margin: 8px 0 0;
+  margin: 12px 0 0;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 14.5px;
 }
 
 .reviewDecision {
   font-weight: 600;
+  font-size: 15px;
 }
 
-.reviewMeta {
-  margin: 2px 0 0;
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-/* Merchant policy prose. Wraps, unlike .tracePayload, which is a preformatted payload and would
-   render a returns policy as one line nobody can scroll without a pointer. */
+/* Merchant policy prose. Wraps, unlike .tracePayload, which is a preformatted payload. */
 .policyBody {
-  margin: 4px 0 12px;
-  padding: 8px 10px;
+  margin: 6px 0 14px;
+  padding: 10px 14px;
   border-left: 2px solid var(--border);
   color: var(--text);
-  font-size: 12px;
+  font-size: 14.5px;
   line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;

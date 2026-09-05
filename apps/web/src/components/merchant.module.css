@@ -29,7 +29,7 @@
 
 .mastStatement {
   margin: 10px 0 14px;
-  font-family: var(--display);
+  font-family: var(--sans);
   font-size: clamp(44px, 7.4vw, 92px);
   font-weight: 700;
   letter-spacing: -0.042em;
@@ -47,7 +47,7 @@
 
 .mastStatementSub {
   margin: 6px 0 10px;
-  font-family: var(--display);
+  font-family: var(--sans);
   font-size: clamp(26px, 3.2vw, 38px);
   font-weight: 700;
   letter-spacing: -0.028em;
@@ -82,7 +82,7 @@
 
 .statValue {
   display: block;
-  font-family: var(--display);
+  font-family: var(--sans);
   font-size: 32px;
   font-weight: 700;
   font-variant-numeric: lining-nums;
@@ -232,7 +232,7 @@
 
 .slipTitle {
   margin: 0 0 6px;
-  font-family: var(--display);
+  font-family: var(--sans);
   font-size: 30px;
   font-weight: 700;
   letter-spacing: -0.028em;
@@ -375,7 +375,7 @@
 
 .entryTitle {
   margin: 0;
-  font-family: var(--display);
+  font-family: var(--sans);
   font-size: 20px;
   font-weight: 600;
   letter-spacing: -0.018em;
@@ -455,7 +455,7 @@
 }
 
 .groupCount {
-  font-family: var(--display);
+  font-family: var(--sans);
   font-size: 15px;
   font-weight: 600;
   color: var(--text-muted);
@@ -478,7 +478,7 @@
 
 .factSubject {
   margin: 0;
-  font-family: var(--display);
+  font-family: var(--sans);
   font-size: 18px;
   font-weight: 700;
   letter-spacing: -0.018em;
@@ -525,7 +525,7 @@
 
 .factArrow {
   align-self: center;
-  font-family: var(--display);
+  font-family: var(--sans);
   font-size: 22px;
   color: var(--border-strong);
   line-height: 1;
@@ -537,7 +537,7 @@
 }
 
 .factValue {
-  font-family: var(--display);
+  font-family: var(--sans);
   font-size: 22px;
   font-weight: 700;
   letter-spacing: -0.028em;
@@ -570,7 +570,7 @@
 
 .verdictStatement {
   margin: 6px 0 0;
-  font-family: var(--display);
+  font-family: var(--sans);
   font-size: 19px;
   font-weight: 500;
   line-height: 1.4;
@@ -605,7 +605,7 @@
 .compareValue {
   display: block;
   margin: 2px 0 2px;
-  font-family: var(--display);
+  font-family: var(--sans);
   font-size: clamp(44px, 5.4vw, 64px);
   font-weight: 700;
   letter-spacing: -0.04em;
@@ -624,7 +624,7 @@
 }
 
 .compareArrow {
-  font-family: var(--display);
+  font-family: var(--sans);
   font-size: 30px;
   color: var(--border-strong);
   line-height: 1;
@@ -651,7 +651,7 @@
 }
 
 .establishValue {
-  font-family: var(--display);
+  font-family: var(--sans);
   font-size: 21px;
   font-weight: 700;
   letter-spacing: -0.028em;
@@ -693,14 +693,14 @@
 }
 
 .transitionArrow {
-  font-family: var(--display);
+  font-family: var(--sans);
   font-size: 17px;
   color: var(--border-strong);
   line-height: 1;
 }
 
 .transitionTo {
-  font-family: var(--display);
+  font-family: var(--sans);
   font-size: 19px;
   font-weight: 700;
   letter-spacing: -0.025em;
@@ -791,7 +791,7 @@
 }
 
 .eventTitle {
-  font-family: var(--display);
+  font-family: var(--sans);
   font-size: 16.5px;
   font-weight: 600;
   letter-spacing: -0.015em;

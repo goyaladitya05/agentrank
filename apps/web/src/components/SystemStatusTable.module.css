@@ -2,33 +2,35 @@
   width: 100%;
   border-collapse: collapse;
   border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
   background: var(--surface-raised);
+  font-size: 15px;
 }
 
 .table caption {
   caption-side: top;
-  padding: 0 0 8px;
+  padding: 0 0 10px;
   text-align: left;
-  font-size: 11px;
+  font-size: 13px;
+  font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-muted);
 }
 
 .table th {
-  padding: 6px 12px;
+  padding: 10px 16px;
   border-bottom: 1px solid var(--border);
-  background: var(--surface-header);
   text-align: left;
-  font-size: 11px;
+  font-size: 12.5px;
   font-weight: 600;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-muted);
 }
 
 .table td {
-  padding: 8px 12px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--border);
   vertical-align: baseline;
 }
@@ -43,20 +45,19 @@
 
 .state {
   display: inline-flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
-  font-family: var(--mono);
-  font-size: 12px;
-  letter-spacing: 0.04em;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
   text-transform: uppercase;
 }
 
 .marker {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   flex: none;
-  align-self: center;
-  border: 1px solid currentColor;
+  border-radius: 50%;
   background: currentColor;
 }
 
@@ -74,6 +75,6 @@
 
 .detail {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 13.5px;
   color: var(--text-muted);
 }
