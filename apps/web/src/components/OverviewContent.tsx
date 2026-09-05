@@ -1,13 +1,13 @@
 import Link from "next/link";
 
 import { DemandTable } from "@/components/Demand";
-import { Panel, Section, StatusMark } from "@/components/Primitives";
+import { KeyValueList, StatusMark } from "@/components/Primitives";
 import { ScenarioJourneys } from "@/components/ScenarioJourneys";
 import { IdRow, TechnicalDetails } from "@/components/TechnicalDetails";
-import styles from "@/components/console.module.css";
-import merchant from "@/components/merchant.module.css";
+import shared from "@/components/console.module.css";
+import styles from "@/components/overview.module.css";
 import { formatMoney, formatTimestamp } from "@/lib/format";
-import { conclusionKindLabel, severityLabel, severityTone } from "@/lib/labels";
+import { conclusionKindLabel } from "@/lib/labels";
 import { providerSentence, safetyReading } from "@/lib/insights/summary";
 import { groupFindings, latestFinishedRun, nextAction } from "@/lib/insights/merchant";
 import type { NextAction } from "@/lib/insights/merchant";
@@ -21,15 +21,17 @@ import type {
 } from "@/lib/insights/types";
 
 /**
- * The merchant overview, composed as one editorial surface: the verdict set large, the
- * scenario track under it, one row of figures between hairlines, and the next step as a
- * full-width band under the strong rule. No number here is invented: every count is the
- * API's, the demand figures always say simulated, and an aborted run is labelled before
- * its numbers.
+ * The merchant overview, answering four questions in the order a stranger asks them: what
+ * is measured, how the store did, whether something is wrong, and what to do next.
  *
- * The preflight is the server's answer about what this merchant can launch and whether one
- * is pending; it may be null when that read failed, and the page still renders everything
- * the overview insight carries.
+ * The result is one statement set large, the scenario board under it, the issues that need
+ * the merchant, and one next step. Everything else the overview insight carries stays on
+ * the page behind a disclosure, so no number is lost and none competes with the result.
+ *
+ * No number here is invented: every count is the API's, the demand figures always say
+ * simulated, and an aborted run is labelled before its numbers. The preflight is the
+ * server's answer about what this merchant can launch; it may be null when that read failed,
+ * and the page still renders everything the overview insight carries.
  */
 export function OverviewContent({
   data,
@@ -38,178 +40,64 @@ export function OverviewContent({
 }: {
   data: MerchantOverview;
   preflight: EvaluationPreflight | null;
-  /** The latest finished run's missions, for the journey board. Null when unread. */
+  /** The latest finished run's missions, for the scenario board. Null when unread. */
   run?: RunDiagnostics | null;
 }) {
   const run = latestFinishedRun(data.runs);
   const action = nextAction(data, preflight);
+  if (run === null) {
+    return <UnmeasuredOverview action={action} />;
+  }
+  return <MeasuredOverview data={data} run={run} diagnostics={diagnostics} action={action} />;
+}
 
+function MeasuredOverview({
+  data,
+  run,
+  diagnostics,
+  action,
+}: {
+  data: MerchantOverview;
+  run: RunSummary;
+  diagnostics: RunDiagnostics | null;
+  action: NextAction;
+}) {
+  const grouped = groupFindings(data.top_findings);
+  const attentionScenarios = distinctMissionCount(grouped.needsAttention);
   return (
     <>
-      <div className={styles.pageHeader}>
-        <h1 className={styles.pageTitle}>Overview</h1>
-        <TechnicalDetails summary="Technical identifiers">
-          <IdRow label="Engine identity" value={data.engine_identity} />
-          <IdRow label="Merchant id" value={data.merchant_id} />
-        </TechnicalDetails>
-      </div>
-
-      {run === null ? (
-        <NewMerchantMasthead action={action} />
-      ) : (
-        <MeasuredMasthead run={run} findings={data.top_findings} />
-      )}
-
-      <NextStepSlip action={action} />
-
-      {run !== null && diagnostics !== null ? (
-        <Section
-          index="01"
-          title="What the agents did"
-          hint="One row per scenario, from what the run recorded."
-        >
-          <ScenarioJourneys
-            journeys={scenarioJourneys(diagnostics.missions)}
-            caption="A journey stops at the stage AgentRank's trusted records say it stopped at. Nothing here is a model's own account of itself."
-          />
-        </Section>
-      ) : null}
-
-      {run !== null ? <AttentionSection data={data} run={run} /> : null}
-
-      {run !== null ? (
-        <Section
-          index="03"
-          title="Simulated demand"
-          hint="Simulated benchmark figures across recent evaluations. Not revenue."
-        >
-          <DemandTable
-            buckets={data.simulated_demand_totals_by_currency}
-            caption="Totals across your recent evaluations, one row per currency."
-          />
-        </Section>
-      ) : null}
-
-      <ExperimentNote data={data} />
-
-      {run !== null ? (
-        <p className={styles.finePrint}>
-          Every evaluation and change is in{" "}
-          <Link className={styles.rowLink} href="/history">
-            your history
-          </Link>
-          . Full technical detail, including runs, traces and methodology, is in{" "}
-          <Link className={styles.rowLink} href="/lab">
-            AgentRank Lab
-          </Link>
-          .
+      <header className={styles.hero}>
+        <p className={styles.eyebrow}>How well can AI agents shop from your store?</p>
+        <h1 className={styles.headline}>
+          <strong>{String(run.missions_succeeded)}</strong> of {String(run.purchase_missions)}
+          <span className={styles.headlineSub}>purchase scenarios completed</span>
+        </h1>
+        <p className={styles.reading}>
+          {measuredSentence(run)} {heroSentence(run, attentionScenarios)}
         </p>
+      </header>
+
+      {diagnostics !== null ? (
+        <section className={styles.board} aria-label="What the agents did">
+          <ScenarioJourneys journeys={scenarioJourneys(diagnostics.missions)} />
+        </section>
       ) : null}
+
+      <AttentionSection findings={grouped.needsAttention} run={run} />
+
+      <NextStep action={action} />
+
+      <MoreAboutThisEvaluation data={data} run={run} />
     </>
   );
 }
 
-/** The four steps a new merchant walks, with the current one decided by the next action. */
-const JOURNEY = [
-  { step: "Import your store", kinds: ["import-store"] },
-  { step: "Prepare the evaluation", kinds: ["prepare-evaluation"] },
-  { step: "Run the evaluation", kinds: ["run-first-evaluation", "evaluation-in-progress"] },
-  { step: "See your results", kinds: [] },
-] as const;
-
-function NewMerchantMasthead({ action }: { action: NextAction }) {
-  const currentIndex = JOURNEY.findIndex((entry) =>
-    (entry.kinds as readonly string[]).includes(action.kind),
-  );
-  return (
-    <header className={merchant.masthead}>
-      <p className={merchant.eyebrow}>AI shopping performance</p>
-      <h2 className={merchant.mastStatement}>Can AI shopping agents buy from your store?</h2>
-      <p className={merchant.mastReading}>
-        AgentRank sends shopping agents through realistic purchase scenarios against your store,
-        shows you exactly where they fail, and separates what you can fix from what is not your
-        problem.
-      </p>
-      <ol className={merchant.journey} aria-label="Setup steps">
-        {JOURNEY.map((entry, index) => (
-          <li
-            key={entry.step}
-            className={merchant.journeyStep}
-            data-state={
-              index === currentIndex ? "current" : index < currentIndex ? "done" : undefined
-            }
-          >
-            <span className={merchant.journeyIndex}>0{index + 1}</span>
-            {entry.step}
-            {index === currentIndex ? (
-              <span className={merchant.journeyNow}>you are here</span>
-            ) : null}
-          </li>
-        ))}
-      </ol>
-    </header>
-  );
-}
-
-function MeasuredMasthead({
-  run,
-  findings,
-}: {
-  run: RunSummary;
-  findings: readonly MerchantFinding[];
-}) {
-  const grouped = groupFindings(findings);
-  const merchantScenarios = distinctMissionCount(grouped.needsAttention);
-  return (
-    <header className={merchant.masthead}>
-      <p className={merchant.eyebrow}>
-        AI shopping performance · {run.status === "ABORTED" ? "stopped" : "measured"}{" "}
-        {formatTimestamp(run.completed_at)}
-      </p>
-      <h2 className={merchant.mastStatement}>
-        <strong>{String(run.missions_succeeded)}</strong> of{" "}
-        <strong>{String(run.purchase_missions)}</strong> purchase scenarios completed
-      </h2>
-      <p className={merchant.mastReading}>
-        {heroSentence(run, merchantScenarios)}{" "}
-        {run.status === "ABORTED"
-          ? "This evaluation stopped before it finished, so these numbers describe only the scenarios that executed."
-          : ""}
-      </p>
-      <div className={merchant.statRow}>
-        <div className={merchant.stat}>
-          <span className={merchant.statValue}>{String(run.missions_total)}</span>
-          <span className={merchant.statLabel}>Scenarios tested</span>
-        </div>
-        <div className={merchant.stat}>
-          <span className={merchant.statValue} data-tone="ok">
-            {String(run.missions_succeeded)}
-          </span>
-          <span className={merchant.statLabel}>Successful purchases</span>
-        </div>
-        <div className={merchant.stat}>
-          <span
-            className={merchant.statValue}
-            data-tone={merchantScenarios > 0 ? "warn" : undefined}
-          >
-            {String(merchantScenarios)}
-          </span>
-          <span className={merchant.statLabel}>Need your attention</span>
-        </div>
-        <div className={merchant.stat}>
-          <span className={merchant.statValue}>{String(run.provider_failure_missions)}</span>
-          <span className={merchant.statLabel}>Provider or system failures</span>
-        </div>
-        <div className={merchant.stat}>
-          <span className={merchant.statValue}>
-            {String(run.correct_abstentions)} of {String(run.control_missions)}
-          </span>
-          <span className={merchant.statLabel}>Correct declines</span>
-        </div>
-        <CapturedDemandStat run={run} />
-      </div>
-    </header>
-  );
+/** When the measurement happened, and whether it finished. */
+function measuredSentence(run: RunSummary): string {
+  if (run.status === "ABORTED") {
+    return `This evaluation stopped before it finished ${formatTimestamp(run.completed_at)}, so these numbers describe only the scenarios that executed.`;
+  }
+  return `Measured ${formatTimestamp(run.completed_at)}.`;
 }
 
 /**
@@ -248,119 +136,153 @@ function heroSentence(run: RunSummary, merchantScenarios: number): string {
   return `${parts.join("; ")}.`;
 }
 
-function CapturedDemandStat({ run }: { run: RunSummary }) {
-  if (run.simulated_demand.length === 0) {
-    return null;
+/** Where a finding leads: to its proposed fix when AgentRank has one, else to the issue. */
+function findingAction(finding: MerchantFinding): { href: string; label: string } {
+  const reference = finding.compiler_references[0];
+  if (reference !== undefined) {
+    return { href: `/fixes/${encodeURIComponent(reference.compiler_run_id)}`, label: "Review fix" };
   }
-  return (
-    <div className={merchant.stat}>
-      <span className={merchant.statValue}>
-        {run.simulated_demand
-          .map((bucket) =>
-            formatMoney(bucket.simulated_captured_demand_amount_minor, bucket.currency),
-          )
-          .join(" ")}
-      </span>
-      <span className={merchant.statLabel}>Simulated demand captured</span>
-    </div>
-  );
+  return { href: `/issues/${encodeURIComponent(finding.key)}`, label: "See the issue" };
 }
 
-/** The one action the page leads to, as a band under the strong rule. */
-function NextStepSlip({ action }: { action: NextAction }) {
-  return (
-    <aside className={merchant.slip} aria-label="Next step">
-      <div className={merchant.slipText}>
-        <p className={merchant.slipEyebrow}>Next step</p>
-        <h2 className={merchant.slipTitle}>{action.title}</h2>
-        <p className={merchant.slipBody}>{action.body}</p>
-      </div>
-      <Link className={merchant.primaryButton} href={action.href}>
-        {action.label}
-      </Link>
-    </aside>
-  );
-}
-
-function AttentionSection({ data, run }: { data: MerchantOverview; run: RunSummary }) {
-  const grouped = groupFindings(data.top_findings);
+function AttentionSection({
+  findings,
+  run,
+}: {
+  findings: readonly MerchantFinding[];
+  run: RunSummary;
+}) {
   const safety = safetyReading(run.unsafe_attempts, run.unsafe_completions, 0);
   const providerNote = providerSentence(run.provider_failure_missions);
   return (
-    <Section
-      index="02"
-      title="What needs attention"
-      actions={
-        grouped.needsAttention.length > 0 ? (
-          <Link className={styles.textLink} href="/issues">
+    <section className={styles.attention} aria-label="What needs attention">
+      <div className={styles.sectionHead}>
+        <h2 className={styles.sectionLabel}>What needs attention</h2>
+        {findings.length > 0 ? (
+          <Link className={styles.sectionLink} href="/issues">
             All issues
           </Link>
-        ) : undefined
-      }
-    >
-      {grouped.needsAttention.length === 0 ? (
-        <div className={styles.emptyState}>
-          <p className={styles.emptyTitle}>Nothing needs your attention</p>
-          <p>
+        ) : null}
+      </div>
+      {findings.length === 0 ? (
+        <p className={styles.allClear}>
+          Nothing needs your attention.
+          <span className={styles.allClearBody}>
             {run.status === "ABORTED"
               ? "No merchant-fixable finding came out of the part of this evaluation that executed."
               : "Your latest evaluation produced no finding that requires action from you."}
-          </p>
-        </div>
+          </span>
+        </p>
       ) : (
-        <div className={merchant.entryList}>
-          {grouped.needsAttention.slice(0, 5).map((finding) => (
-            <article key={finding.key} className={merchant.entry}>
-              <div className={merchant.entryGutter}>
-                <StatusMark
-                  tone={severityTone(finding.severity)}
-                  label={severityLabel(finding.severity)}
-                />
-                <span>
-                  {finding.mission_run_ids.length === 1
-                    ? "1 scenario"
-                    : `${String(finding.mission_run_ids.length)} scenarios`}
-                </span>
-                {finding.product_ids.length > 0 ? (
-                  <span>
-                    {finding.product_ids.length === 1
-                      ? "1 product"
-                      : `${String(finding.product_ids.length)} products`}
-                  </span>
-                ) : null}
-              </div>
-              <div>
-                <h3 className={merchant.entryTitle}>
-                  <Link
-                    className={merchant.entryTitleLink}
-                    href={`/issues/${encodeURIComponent(finding.key)}`}
-                  >
-                    {finding.title}
-                  </Link>
-                </h3>
-              </div>
-            </article>
-          ))}
-        </div>
+        <ol className={styles.attentionList}>
+          {findings.slice(0, 3).map((finding) => {
+            const next = findingAction(finding);
+            return (
+              <li key={finding.key} className={styles.attentionItem}>
+                <div>
+                  <h3 className={styles.attentionTitle}>
+                    <Link href={`/issues/${encodeURIComponent(finding.key)}`}>{finding.title}</Link>
+                  </h3>
+                  {finding.recommendation !== null ? (
+                    <p className={styles.attentionBody}>{finding.recommendation}</p>
+                  ) : null}
+                </div>
+                <Link className={styles.attentionAction} href={next.href}>
+                  {next.label}
+                  <span aria-hidden="true"> &rarr;</span>
+                </Link>
+              </li>
+            );
+          })}
+        </ol>
       )}
-      {providerNote !== null ? (
-        <p className={styles.finePrintTight}>
-          <StatusMark tone="neutral" label="Provider" /> {providerNote}
-        </p>
-      ) : null}
-      {safety !== null ? (
-        <p className={styles.finePrintTight}>
-          <StatusMark tone={safety.tone} label="Safety" /> {safety.text}
-        </p>
-      ) : null}
-    </Section>
+      {providerNote !== null ? <p className={styles.aside}>{providerNote}</p> : null}
+      {safety !== null ? <p className={styles.aside}>{safety.text}</p> : null}
+    </section>
+  );
+}
+
+/** The one action the page leads to. */
+function NextStep({ action }: { action: NextAction }) {
+  return (
+    <section className={styles.next} aria-label="Next step">
+      <div>
+        <p className={styles.eyebrow}>Next step</p>
+        <h2 className={styles.nextTitle}>{action.title}</h2>
+        <p className={styles.nextBody}>{action.body}</p>
+      </div>
+      <Link className={shared.primaryButton} href={action.href}>
+        {action.label}
+        <span aria-hidden="true"> &rarr;</span>
+      </Link>
+    </section>
   );
 }
 
 /**
- * The latest controlled experiment, when one exists. One quoted conclusion and a link into
- * the Lab, where the methodology detail lives. The conclusion is the backend's verbatim;
- * NOT_INTERPRETABLE stays exactly that here.
+ * Everything else the overview knows, behind one disclosure: the run's other counts, the
+ * simulated demand by currency, the latest controlled experiment and the identifiers.
+ * Present on the page and out of the way of the result.
+ */
+function MoreAboutThisEvaluation({ data, run }: { data: MerchantOverview; run: RunSummary }) {
+  const captured = run.simulated_demand
+    .map((bucket) => formatMoney(bucket.simulated_captured_demand_amount_minor, bucket.currency))
+    .join(" ");
+  return (
+    <details className={styles.more}>
+      <summary>More about this evaluation</summary>
+      <div className={styles.moreBody}>
+        <KeyValueList
+          entries={[
+            { term: "Scenarios tested", value: String(run.missions_total) },
+            { term: "Successful purchases", value: String(run.missions_succeeded) },
+            {
+              term: "Correct declines",
+              value: `${String(run.correct_abstentions)} of ${String(run.control_missions)}`,
+            },
+            {
+              term: "Provider or system failures",
+              value: String(run.provider_failure_missions),
+            },
+            ...(captured.length > 0
+              ? [{ term: "Simulated demand captured", value: captured }]
+              : []),
+          ]}
+        />
+        <div className={styles.moreBlock}>
+          <p className={shared.finePrintTight}>
+            Simulated benchmark figures across your recent evaluations. Not revenue.
+          </p>
+          <DemandTable
+            buckets={data.simulated_demand_totals_by_currency}
+            caption="Totals across your recent evaluations, one row per currency."
+          />
+        </div>
+        <ExperimentNote data={data} />
+        <p className={shared.finePrintTight}>
+          Every evaluation and change is in{" "}
+          <Link className={shared.rowLink} href="/history">
+            your history
+          </Link>
+          . Full technical detail, including runs, traces and methodology, is in{" "}
+          <Link className={shared.rowLink} href="/lab">
+            AgentRank Lab
+          </Link>
+          .
+        </p>
+        <TechnicalDetails summary="Technical identifiers">
+          <IdRow label="Engine identity" value={data.engine_identity} />
+          <IdRow label="Merchant id" value={data.merchant_id} />
+        </TechnicalDetails>
+      </div>
+    </details>
+  );
+}
+
+/**
+ * The latest controlled experiment, when one exists: the backend's conclusion verbatim and
+ * a link into the Lab, where the methodology detail lives. NOT_INTERPRETABLE stays exactly
+ * that here.
  */
 function ExperimentNote({ data }: { data: MerchantOverview }) {
   const experiment = data.latest_experiment;
@@ -369,27 +291,69 @@ function ExperimentNote({ data }: { data: MerchantOverview }) {
   }
   const conclusion = conclusionKindLabel(experiment.conclusion_kind);
   return (
-    <Section
-      index="04"
-      title="Controlled experiment"
-      hint="Run by your operator. Detail is in the Lab."
-    >
-      <Panel>
-        <div className={styles.panelHead}>
-          <StatusMark tone={conclusion.tone} label={conclusion.label} />
-        </div>
-        <blockquote className={styles.quote}>
-          &ldquo;{experiment.conclusion_statement}&rdquo;
-        </blockquote>
-        <p className={styles.finePrintTight}>
-          <Link
-            className={styles.rowLink}
-            href={`/lab/experiments/${encodeURIComponent(experiment.experiment_id)}`}
-          >
-            Open the full comparison in the Lab
-          </Link>
+    <div className={styles.moreBlock}>
+      <p className={shared.finePrintTight}>
+        Controlled experiment, run by your operator:{" "}
+        <StatusMark tone={conclusion.tone} label={conclusion.label} />
+      </p>
+      <blockquote className={shared.quote}>
+        &ldquo;{experiment.conclusion_statement}&rdquo;
+      </blockquote>
+      <p className={shared.finePrintTight}>
+        <Link
+          className={shared.rowLink}
+          href={`/lab/experiments/${encodeURIComponent(experiment.experiment_id)}`}
+        >
+          Open the full comparison in the Lab
+        </Link>
+      </p>
+    </div>
+  );
+}
+
+/** The four steps a new merchant walks, with the current one decided by the next action. */
+const STEPS = [
+  { step: "Import your store", kinds: ["import-store"] },
+  { step: "Prepare the evaluation", kinds: ["prepare-evaluation"] },
+  { step: "Run the evaluation", kinds: ["run-first-evaluation", "evaluation-in-progress"] },
+  { step: "See your results", kinds: [] },
+] as const;
+
+function UnmeasuredOverview({ action }: { action: NextAction }) {
+  const currentIndex = STEPS.findIndex((entry) =>
+    (entry.kinds as readonly string[]).includes(action.kind),
+  );
+  return (
+    <>
+      <header className={styles.hero}>
+        <p className={styles.eyebrow}>Not measured yet</p>
+        <h1 className={styles.question}>
+          Can AI shopping agents <em>buy</em> from your store?
+        </h1>
+        <p className={styles.reading}>
+          AgentRank sends shopping agents through realistic purchase scenarios against your store,
+          shows you exactly where they fail, and separates what you can fix from what is not your
+          problem.
         </p>
-      </Panel>
-    </Section>
+      </header>
+
+      <ol className={styles.steps} aria-label="Setup steps">
+        {STEPS.map((entry, index) => (
+          <li
+            key={entry.step}
+            className={styles.step}
+            data-state={
+              index === currentIndex ? "current" : index < currentIndex ? "done" : undefined
+            }
+          >
+            <span className={styles.stepIndex}>0{index + 1}</span>
+            {entry.step}
+            {index === currentIndex ? <span className={styles.stepNow}>You are here</span> : null}
+          </li>
+        ))}
+      </ol>
+
+      <NextStep action={action} />
+    </>
   );
 }

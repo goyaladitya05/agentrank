@@ -36,6 +36,8 @@ describe("the measured merchant's overview", () => {
     const html = render(overviewWith(() => undefined));
     expect(html).toContain("purchase scenarios completed");
     expect(html).toContain("<strong>8</strong>");
+    expect(html).toContain("How well can AI agents shop from your store?");
+    // The other counts stay on the page, behind the disclosure rather than beside the result.
     expect(html).toContain("Scenarios tested");
     expect(html).toContain("Successful purchases");
     expect(html).toContain("4 of 4");
@@ -46,7 +48,6 @@ describe("the measured merchant's overview", () => {
     // The fixture's one merchant finding touches two distinct missions.
     const html = render(overviewWith(() => undefined));
     expect(html).toContain("2 scenarios need your attention");
-    expect(html).toContain("Need your attention");
   });
 
   it("separates provider failures from merchant problems in the hero itself", () => {
@@ -60,6 +61,9 @@ describe("the measured merchant's overview", () => {
     expect(html).toContain("What needs attention");
     expect(html).toContain('href="/issues/ATTRIBUTE_NOT_PUBLISHED%3Awattage"');
     expect(html).toContain("could not verify a required wattage attribute");
+    // A finding with a proposed fix leads straight to it.
+    expect(html).toContain('href="/fixes/01a0aaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa1"');
+    expect(html).toContain("Review fix");
   });
 
   it("never words a provider finding as merchant attention", () => {
@@ -70,7 +74,7 @@ describe("the measured merchant's overview", () => {
         ];
       }),
     );
-    expect(html).toContain("Nothing needs your attention");
+    expect(html).toContain("Nothing needs your attention.");
     expect(html).not.toContain("You can fix this");
   });
 
@@ -193,7 +197,8 @@ describe("a merchant with nothing measured yet", () => {
 
   it("walks the journey and leads to the first evaluation when one can run", () => {
     const html = render(unmeasured(), INITIAL_PREFLIGHT);
-    expect(html).toContain("Can AI shopping agents buy from your store?");
+    expect(html).toContain("Can AI shopping agents <em>buy</em> from your store?");
+    expect(html).toContain("You are here");
     expect(html).toContain("Run your first evaluation");
     expect(html).toContain('href="/evaluations"');
     // No invented numbers in place of the measurement nobody has taken.

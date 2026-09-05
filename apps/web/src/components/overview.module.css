@@ -1,0 +1,304 @@
+/* The overview. One statement set very large, the scenario board under it, what needs
+   attention, and one next step. Whitespace and scale carry the hierarchy; nothing here is a
+   card and no number is smaller than the sentence beside it. */
+
+.hero {
+  margin-bottom: 64px;
+  animation: settle 360ms ease-out both;
+}
+
+.eyebrow {
+  margin: 0 0 24px;
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* The result. The numerals are the loudest thing on the page and the completed count carries
+   the accent, because that is the number the product exists to move. */
+.headline {
+  margin: 0;
+  font-size: clamp(72px, 11vw, 160px);
+  font-weight: 700;
+  letter-spacing: -0.05em;
+  line-height: 0.9;
+  font-variant-numeric: lining-nums;
+}
+
+.headline strong {
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.headlineSub {
+  display: block;
+  margin-top: 18px;
+  font-size: clamp(24px, 2.6vw, 34px);
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 1.1;
+}
+
+/* The question a merchant nobody has measured yet is asked. */
+.question {
+  margin: 0;
+  font-size: clamp(44px, 6vw, 84px);
+  font-weight: 700;
+  letter-spacing: -0.045em;
+  line-height: 0.96;
+  max-width: 16ch;
+  text-wrap: balance;
+}
+
+.question em {
+  font-style: normal;
+  color: var(--accent);
+}
+
+.reading {
+  margin: 28px 0 0;
+  font-size: 18px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  max-width: 58ch;
+}
+
+/* The scenario board sits directly under the result with no heading of its own. */
+.board {
+  margin-bottom: 72px;
+  animation: settle 360ms ease-out 80ms both;
+}
+
+/* Section labels. */
+.sectionHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.sectionLabel {
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.sectionLink {
+  font-size: 15px;
+  color: var(--accent);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.sectionLink:hover {
+  text-decoration: underline;
+}
+
+/* What needs attention: a short list of the issues that matter most. */
+.attention {
+  margin-bottom: 64px;
+  animation: settle 360ms ease-out 140ms both;
+}
+
+.attentionList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.attentionItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 40px;
+  align-items: center;
+  padding: 22px 0;
+  border-top: 1px solid var(--border);
+}
+
+.attentionItem:last-child {
+  border-bottom: 1px solid var(--border);
+}
+
+.attentionTitle {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.018em;
+  line-height: 1.3;
+}
+
+.attentionTitle a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.attentionTitle a:hover {
+  color: var(--accent);
+}
+
+.attentionBody {
+  margin: 6px 0 0;
+  font-size: 15.5px;
+  color: var(--text-muted);
+  max-width: 64ch;
+}
+
+.attentionAction {
+  font-size: 15.5px;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.attentionAction:hover {
+  text-decoration: underline;
+}
+
+.allClear {
+  margin: 0;
+  padding: 22px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  font-size: 18px;
+  font-weight: 500;
+}
+
+.allClearBody {
+  margin: 6px 0 0;
+  font-size: 15.5px;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.aside {
+  margin: 16px 0 0;
+  font-size: 15px;
+  color: var(--text-muted);
+}
+
+/* The next step: the one action the page leads to. */
+.next {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px 48px;
+  align-items: center;
+  margin-bottom: 64px;
+  animation: settle 360ms ease-out 200ms both;
+}
+
+.nextTitle {
+  margin: 0;
+  font-size: clamp(26px, 2.6vw, 34px);
+  font-weight: 700;
+  letter-spacing: -0.028em;
+  line-height: 1.12;
+}
+
+.nextBody {
+  margin: 10px 0 0;
+  font-size: 16px;
+  color: var(--text-muted);
+  max-width: 56ch;
+}
+
+/* The steps a new merchant walks. */
+.steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 24px;
+  margin: 0 0 64px;
+  padding: 28px 0 0;
+  border-top: 1px solid var(--border);
+  list-style: none;
+}
+
+.step {
+  font-size: 16px;
+  color: var(--text-muted);
+}
+
+.step[data-state="current"],
+.step[data-state="done"] {
+  color: var(--text);
+}
+
+.step[data-state="current"] {
+  font-weight: 600;
+}
+
+.stepIndex {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.step[data-state="current"] .stepIndex,
+.step[data-state="done"] .stepIndex {
+  color: var(--accent);
+}
+
+.stepNow {
+  display: block;
+  margin-top: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+/* Everything else about the evaluation, present and out of the way. */
+.more {
+  padding-top: 28px;
+  border-top: 1px solid var(--border);
+}
+
+.more summary {
+  cursor: pointer;
+  font-size: 15.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.more summary:hover {
+  color: var(--text);
+}
+
+.moreBody {
+  display: grid;
+  gap: 32px;
+  margin-top: 28px;
+}
+
+.moreBlock {
+  display: grid;
+  gap: 12px;
+}
+
+@media (max-width: 720px) {
+  .hero {
+    margin-bottom: 48px;
+  }
+  .board,
+  .attention,
+  .next {
+    margin-bottom: 48px;
+  }
+  .attentionItem,
+  .next {
+    grid-template-columns: 1fr;
+  }
+  .steps {
+    grid-template-columns: 1fr 1fr;
+  }
+}

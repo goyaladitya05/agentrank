@@ -27,24 +27,6 @@
   animation: settle 320ms ease-out both;
 }
 
-.mastStatement {
-  margin: 10px 0 14px;
-  font-family: var(--sans);
-  font-size: clamp(44px, 7.4vw, 92px);
-  font-weight: 700;
-  letter-spacing: -0.042em;
-  line-height: 0.98;
-  max-width: 17ch;
-  text-wrap: balance;
-}
-
-/* The numerals carry the verdict, so they carry the accent and the weight. */
-.mastStatement strong {
-  font-weight: 650;
-  font-variant-numeric: lining-nums;
-  color: var(--accent);
-}
-
 .mastStatementSub {
   margin: 6px 0 10px;
   font-family: var(--sans);
@@ -63,143 +45,11 @@
   max-width: 56ch;
 }
 
-/* One row of figures between two hairlines. Not cards. */
-
-.statRow {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 18px 28px;
-  margin-top: 34px;
-  padding: 20px 0;
-  border-top: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
-}
-
-.stat {
-  min-width: 90px;
-}
-
-.statValue {
-  display: block;
-  font-family: var(--sans);
-  font-size: 32px;
-  font-weight: 700;
-  font-variant-numeric: lining-nums;
-  letter-spacing: -0.03em;
-  line-height: 1.2;
-}
-
-.statValue[data-tone="warn"] {
-  color: var(--state-warn);
-}
-
-.statValue[data-tone="ok"] {
-  color: var(--accent);
-}
-
-.statLabel {
-  display: block;
-  margin-top: 3px;
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
-
-/* The scenario track: one stamp per shopping scenario. */
-
-.track {
-  margin: 2px 0 0;
-}
-
-.trackRow {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-
-.trackBlock {
-  width: 20px;
-  height: 27px;
-  border-radius: 2px;
-  animation: stamp 220ms ease-out both;
-}
-
-.trackBlock[data-outcome="succeeded"] {
-  background: var(--accent);
-}
-
-.trackBlock[data-outcome="failed"] {
-  background: var(--state-warn);
-}
-
-.trackBlock[data-outcome="abstained"] {
-  background: transparent;
-  box-shadow: inset 0 0 0 1.5px var(--border-strong);
-}
-
-.trackBlock[data-outcome="errored"] {
-  background: var(--border-strong);
-}
-
-.trackBlock[data-outcome="unfinished"] {
-  background: repeating-linear-gradient(
-    45deg,
-    transparent,
-    transparent 3px,
-    var(--border-strong) 3px,
-    var(--border-strong) 5px
-  );
-  opacity: 0.6;
-}
-
-.trackBar {
-  display: flex;
-  height: 14px;
-  border-radius: 2px;
-  overflow: hidden;
-}
-
-.trackBarSegment[data-outcome="succeeded"] {
-  background: var(--accent);
-}
 .trackBarSegment[data-outcome="failed"] {
   background: var(--state-warn);
 }
-.trackBarSegment[data-outcome="abstained"] {
-  background: var(--surface-sunken);
-  box-shadow: inset 0 0 0 1px var(--border-strong);
-}
 .trackBarSegment[data-outcome="errored"] {
   background: var(--border-strong);
-}
-.trackBarSegment[data-outcome="unfinished"] {
-  background: repeating-linear-gradient(
-    45deg,
-    transparent,
-    transparent 3px,
-    var(--border-strong) 3px,
-    var(--border-strong) 5px
-  );
-}
-
-.trackLegend {
-  margin: 8px 0 0;
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.02em;
-  color: var(--text-muted);
-}
-
-.trackLegendItem {
-  white-space: nowrap;
-}
-
-.trackLegendCount {
-  color: var(--text);
-  font-weight: 600;
 }
 
 /* The next step: a full-width band under a strong rule. The loudest thing on the page. */
@@ -297,54 +147,6 @@
 .secondaryAction:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-}
-
-/* The journey a new merchant walks, set as a numbered protocol. */
-
-.journey {
-  margin: 18px 0 0;
-  padding: 0;
-  list-style: none;
-  max-width: 34ch;
-}
-
-.journeyStep {
-  display: flex;
-  gap: 14px;
-  align-items: baseline;
-  padding: 9px 0;
-  border-top: 1px solid var(--border);
-  font-size: 14.5px;
-  color: var(--text-muted);
-}
-
-.journeyStep[data-state="current"] {
-  color: var(--text);
-  font-weight: 600;
-}
-
-.journeyStep[data-state="done"] {
-  color: var(--text);
-}
-
-.journeyIndex {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
-.journeyStep[data-state="current"] .journeyIndex {
-  color: var(--accent);
-  font-weight: 700;
-}
-
-.journeyNow {
-  margin-left: auto;
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--accent);
 }
 
 /* Ledger entries: full-width rows with a fixed evidence gutter on the left. */

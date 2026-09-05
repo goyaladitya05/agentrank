@@ -172,3 +172,22 @@ export function scenarioJourneys(
 export function stagesReached(journey: ScenarioJourney): number {
   return STAGES.indexOf(journey.reached) + 1;
 }
+
+/**
+ * A scenario's key as a merchant reads it.
+ *
+ * Mission keys are identifiers, `black-100w-charger` or `mission.usb-c.charger`, and the
+ * merchant surfaces name scenarios by them. The identifier stays the identity everywhere it
+ * is compared or linked; this is only how it is spelled on a page a merchant reads.
+ */
+export function scenarioName(missionKey: string): string {
+  const words = missionKey
+    .replace(/^mission[._-]/, "")
+    .split(/[._-]+/)
+    .filter((word) => word.length > 0);
+  const first = words[0];
+  if (first === undefined) {
+    return missionKey;
+  }
+  return [first.charAt(0).toUpperCase() + first.slice(1), ...words.slice(1)].join(" ");
+}

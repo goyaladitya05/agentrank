@@ -1,25 +1,21 @@
-/* The scenario journey board. One row is one real shopping attempt; one cell is one stage of
-   it. Filled cells were reached, hollow ones were not, and the terminal cell carries the
-   outcome's colour. Nothing is drawn that the run did not record. */
+/* The scenario board. One row is one real shopping attempt; one cell is one stage of it.
+   A row fills as far as the recorded evidence says the attempt got, and the cell where it
+   stopped carries the outcome's colour. Nothing is drawn that the run did not record. */
 
 .figure {
   margin: 0;
 }
 
-.headerRow {
+.head {
   display: grid;
-  grid-template-columns: minmax(120px, 1.1fr) minmax(0, 3fr) 118px;
-  gap: 20px;
+  grid-template-columns: minmax(150px, 1.1fr) minmax(0, 3fr) 120px;
+  gap: 28px;
   align-items: end;
-  padding-bottom: 8px;
+  padding-bottom: 12px;
   border-bottom: 1px solid var(--border);
-}
-
-.headScenario,
-.headOutcome {
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.12em;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-muted);
 }
@@ -27,15 +23,11 @@
 .headStages {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 6px;
+  gap: 8px;
 }
 
-.headStage {
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text-muted);
+.headOutcome {
+  text-align: right;
 }
 
 .list {
@@ -46,123 +38,95 @@
 
 .row {
   display: grid;
-  grid-template-columns: minmax(120px, 1.1fr) minmax(0, 3fr) 118px;
-  gap: 6px 20px;
+  grid-template-columns: minmax(150px, 1.1fr) minmax(0, 3fr) 120px;
+  gap: 8px 28px;
   align-items: center;
-  padding: 14px 0;
+  padding: 20px 0;
   border-bottom: 1px solid var(--border);
-  animation: settle 320ms ease-out both;
+  animation: stamp 320ms ease-out both;
 }
 
 .scenario {
-  font-family: var(--mono);
-  font-size: 12.5px;
-  color: var(--text);
+  font-size: 16.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.stages {
+.track {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 6px;
+  gap: 8px;
 }
 
-/* One stage of one attempt. The bar is the graphic; the label inside it keeps the meaning
-   readable without depending on colour or position. */
+/* One stage of one attempt. */
 .cell {
-  display: flex;
-  align-items: center;
-  height: 34px;
-  padding: 0 10px;
+  height: 14px;
   border-radius: 3px;
-  border: 1px solid var(--border);
+  background: var(--border-strong);
+}
+
+/* Stages the attempt never reached: an outline, so the shape of the whole journey stays
+   visible and the gap is information rather than blank. */
+.cell[data-state="unreached"] {
   background: transparent;
-  overflow: hidden;
+  border: 1px solid var(--border);
 }
 
-.cellLabel {
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-
-/* Stages the attempt passed through. */
-.cell[data-state="passed"] {
-  background: var(--accent-surface);
-  border-color: var(--accent-surface);
-}
-
-.cell[data-state="passed"] .cellLabel {
-  color: var(--accent);
-}
-
-/* The stage the attempt ended on, coloured by what became of it. */
-.row[data-outcome="completed"] .cell[data-state="final"] {
+/* A completed purchase fills the whole row in the accent. */
+.row[data-outcome="completed"] .cell {
   background: var(--accent);
-  border-color: var(--accent-strong);
 }
 
-.row[data-outcome="declined"] .cell[data-state="final"] {
-  background: var(--surface-sunken);
-  border-color: var(--border-strong);
-  border-style: dashed;
+/* An attempt the merchant's information stopped: what it got through in dim green, the stage
+   it stopped at in ochre. */
+.row[data-outcome="blocked"] .cell[data-state="passed"] {
+  background: color-mix(in srgb, var(--accent) 38%, var(--surface));
 }
 
 .row[data-outcome="blocked"] .cell[data-state="final"] {
   background: var(--state-warn);
-  border-color: var(--state-warn);
+}
+
+/* A correct decline is a deliberate stop: dashed, not coloured as a failure. */
+.row[data-outcome="declined"] .cell[data-state="passed"] {
+  background: color-mix(in srgb, var(--accent) 38%, var(--surface));
+}
+
+.row[data-outcome="declined"] .cell[data-state="final"] {
+  background: transparent;
+  border: 1.5px dashed var(--text-muted);
+}
+
+/* A provider interruption is hatched: not the merchant's problem, and drawn as such. */
+.row[data-outcome="interrupted"] .cell[data-state="passed"],
+.row[data-outcome="unmeasured"] .cell[data-state="passed"] {
+  background: var(--border-strong);
 }
 
 .row[data-outcome="interrupted"] .cell[data-state="final"] {
   background: repeating-linear-gradient(
     45deg,
-    var(--surface-sunken),
-    var(--surface-sunken) 4px,
+    var(--surface-raised),
+    var(--surface-raised) 4px,
     var(--border-strong) 4px,
-    var(--border-strong) 6px
+    var(--border-strong) 7px
   );
-  border-color: var(--border-strong);
 }
 
 .row[data-outcome="unmeasured"] .cell[data-state="final"] {
-  background: var(--surface-sunken);
-  border-color: var(--border-strong);
-}
-
-.row[data-outcome="completed"] .cell[data-state="final"] .cellLabel,
-.row[data-outcome="blocked"] .cell[data-state="final"] .cellLabel {
-  color: var(--surface);
-}
-
-.row[data-outcome="declined"] .cell[data-state="final"] .cellLabel,
-.row[data-outcome="interrupted"] .cell[data-state="final"] .cellLabel,
-.row[data-outcome="unmeasured"] .cell[data-state="final"] .cellLabel {
-  color: var(--text-muted);
-}
-
-/* Stages the attempt never got to. Dimmed rather than blanked: a stage that was not
-   reached is information, and text nobody can see is text a screen reader still finds. */
-.cell[data-state="unreached"] {
-  border-style: dotted;
-  border-color: var(--border);
-}
-
-.cell[data-state="unreached"] .cellLabel {
-  color: var(--border-strong);
+  background: var(--border-strong);
 }
 
 .outcome {
-  font-family: var(--mono);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.09em;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   text-align: right;
+  white-space: nowrap;
 }
 
 .row[data-outcome="completed"] .outcome {
@@ -180,28 +144,29 @@
 }
 
 .reason {
-  grid-column: 2 / 3;
+  grid-column: 2 / 4;
   margin: 0;
-  font-size: 13.5px;
+  font-size: 14.5px;
   color: var(--text-muted);
-  max-width: 68ch;
+  max-width: 72ch;
 }
 
 .caption {
-  margin-top: 10px;
-  font-size: 12.5px;
+  margin-top: 14px;
+  font-size: 14px;
   color: var(--text-muted);
 }
 
 @media (max-width: 760px) {
-  .headerRow {
+  .head {
     display: none;
   }
   .row {
     grid-template-columns: minmax(0, 1fr) auto;
-    gap: 8px 12px;
+    gap: 10px 16px;
+    padding: 16px 0;
   }
-  .stages {
+  .track {
     grid-column: 1 / -1;
   }
   .reason {

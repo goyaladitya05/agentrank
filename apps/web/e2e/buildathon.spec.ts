@@ -98,9 +98,11 @@ test("a judge's walk: evaluate, read the issues, review the fixes, publish, meas
 
   // 3. The overview now leads with results a judge can read in seconds.
   await page.goto("/overview");
-  await expect(page.getByText("purchase scenarios completed")).toBeVisible();
-  await expect(page.getByText("Scenarios tested")).toBeVisible();
+  await expect(page.getByRole("heading", { name: /purchase scenarios completed/ })).toBeVisible();
   await expect(page.getByText("1 scenario needs your attention")).toBeVisible();
+  await expect(page.getByRole("region", { name: "What needs attention" })).toContainText(
+    "identified nothing to buy",
+  );
 
   // 4. Issues separate what needs the merchant from what does not.
   await nav(page, "Issues").click();

@@ -1,4 +1,4 @@
-import { STAGES, stagesReached, type ScenarioJourney } from "@/lib/insights/journey";
+import { STAGES, scenarioName, stagesReached, type ScenarioJourney } from "@/lib/insights/journey";
 
 import styles from "./journey.module.css";
 
@@ -18,12 +18,12 @@ const OUTCOME_WORD: Record<ScenarioJourney["outcome"], string> = {
 };
 
 /**
- * AgentRank's signature graphic: one row per shopping scenario, each row a journey through
- * the four stages of an attempt, stopping where the recorded evidence says it stopped.
+ * The scenario board: one row per shopping scenario, each row a journey through the four
+ * stages of an attempt, filled to the stage the recorded evidence says it reached.
  *
- * Every cell is a real stage of a real attempt. A filled cell was reached, a hollow one was
- * not, and the cell where a journey ends carries the reason beside it. Nothing here is
- * decorative and nothing is invented: an empty run draws nothing rather than a placeholder.
+ * Every cell is a real stage of a real attempt and the track is described in one sentence
+ * for anyone who cannot see it. Nothing here is decorative and nothing is invented: an empty
+ * run draws nothing rather than a placeholder.
  */
 export function ScenarioJourneys({
   journeys,
@@ -37,13 +37,11 @@ export function ScenarioJourneys({
   }
   return (
     <figure className={styles.figure}>
-      <div className={styles.headerRow} aria-hidden="true">
-        <span className={styles.headScenario}>Scenario</span>
+      <div className={styles.head} aria-hidden="true">
+        <span>Scenario</span>
         <div className={styles.headStages}>
           {STAGES.map((stage) => (
-            <span key={stage} className={styles.headStage}>
-              {STAGE_LABEL[stage]}{" "}
-            </span>
+            <span key={stage}>{STAGE_LABEL[stage]} </span>
           ))}
         </div>
         <span className={styles.headOutcome}>Outcome</span>
@@ -60,9 +58,9 @@ export function ScenarioJourneys({
 
 function JourneyRow({ journey, index }: { journey: ScenarioJourney; index: number }) {
   const reached = stagesReached(journey);
-  const label = `${journey.missionKey}: ${OUTCOME_WORD[journey.outcome]}, reached ${
+  const label = `${OUTCOME_WORD[journey.outcome]}, reached ${
     STAGE_LABEL[journey.reached] ?? journey.reached
-  }`;
+  } of ${String(STAGES.length)} stages`;
   return (
     <li
       className={styles.row}
@@ -70,18 +68,18 @@ function JourneyRow({ journey, index }: { journey: ScenarioJourney; index: numbe
       style={{ animationDelay: `${String(60 + index * 70)}ms` }}
     >
       <span className={styles.scenario} title={journey.missionKey}>
-        {journey.missionKey}
+        {scenarioName(journey.missionKey)}
       </span>
-      <div className={styles.stages} role="img" aria-label={label}>
-        {STAGES.map((stage, position) => {
-          const state =
-            position < reached - 1 ? "passed" : position === reached - 1 ? "final" : "unreached";
-          return (
-            <span key={stage} className={styles.cell} data-state={state}>
-              <span className={styles.cellLabel}>{STAGE_LABEL[stage]}</span>{" "}
-            </span>
-          );
-        })}
+      <div className={styles.track} role="img" aria-label={label}>
+        {STAGES.map((stage, position) => (
+          <span
+            key={stage}
+            className={styles.cell}
+            data-state={
+              position < reached - 1 ? "passed" : position === reached - 1 ? "final" : "unreached"
+            }
+          />
+        ))}
       </div>
       <span className={styles.outcome}>{OUTCOME_WORD[journey.outcome]}</span>
       {journey.stoppedBecause === null ? null : (

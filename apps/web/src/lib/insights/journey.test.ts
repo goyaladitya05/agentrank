@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { scenarioJourney, stagesReached } from "@/lib/insights/journey";
+import { scenarioJourney, scenarioName, stagesReached } from "@/lib/insights/journey";
 import type { MissionDiagnosis, MissionFinding } from "@/lib/insights/types";
 
 function finding(overrides: Partial<MissionFinding> = {}): MissionFinding {
@@ -101,5 +101,16 @@ describe("scenarioJourney", () => {
       }),
     );
     expect(journey.outcome).toBe("interrupted");
+  });
+});
+
+describe("scenarioName", () => {
+  it("spells a mission key the way a merchant reads it", () => {
+    expect(scenarioName("black-100w-charger")).toBe("Black 100w charger");
+    expect(scenarioName("mission.usb-c.charger")).toBe("Usb c charger");
+  });
+
+  it("leaves a key it cannot read as it is", () => {
+    expect(scenarioName("")).toBe("");
   });
 });
