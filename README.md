@@ -1,5 +1,7 @@
 # AgentRank
 
+[![CI](https://github.com/goyaladitya05/agentrank/actions/workflows/ci.yml/badge.svg)](https://github.com/goyaladitya05/agentrank/actions/workflows/ci.yml)
+
 AgentRank measures whether AI buyer agents can actually transact with a merchant, identifies why
 they fail, compiles ordinary merchant catalogs and policies into a structured machine-readable
 commerce representation, and reruns the identical benchmark to measure what changed.
@@ -227,11 +229,10 @@ production-configured environment and runs one merchant evaluation through it, s
 would be deployed is exercised on every test run. Hosting is being selected; deployment
 configuration is not yet in the repository.
 
-GitHub Actions is configured and currently cannot run because of an account billing problem
-external to this repository. Local validation is the gate in the meantime: `make check` runs
-linting, formatting, mypy strict, the backend suite against real PostgreSQL, the frontend suite,
-TypeScript, a production build, browser workflows through Chromium, and the text and whitespace
-scanners.
+GitHub Actions runs the full gate on every push and pull request, and `make check` runs the
+identical set locally: linting, formatting, mypy strict, the backend suite against real
+PostgreSQL, the frontend suite, TypeScript, a production build, browser workflows through
+Chromium, and the text and whitespace scanners.
 
 Requirements are Python 3.14, Node 24, PostgreSQL 18, uv, pnpm and Docker Compose. `make help`
 lists every target.
