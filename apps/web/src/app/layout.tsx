@@ -1,27 +1,22 @@
 import type { Metadata } from "next";
-import localFont from "next/font/local";
 
 import "./globals.css";
 
 /**
- * Satoshi, vendored under ./fonts with its ITF Free Font Licence.
+ * Satoshi, served by Fontshare rather than vendored.
  *
  * A geometric grotesque carries AgentRank's voice at every size: the verdict headline at
- * ninety-odd pixels, the interface text at fourteen, and the numerals in between. Loaded
- * locally so builds are deterministic and no request leaves the deployment for a typeface.
- * Evidence stays monospace, which is the one place a second family earns its keep.
+ * ninety-odd pixels, the interface text at fourteen, and the numerals in between. Evidence stays
+ * monospace, which is the one place a second family earns its keep.
+ *
+ * The typeface is the Indian Type Foundry's, distributed by Fontshare under the ITF Free Font
+ * Licence. That licence permits using the font on a website and forbids passing the font files
+ * on to anybody else, so a public repository cannot carry them. Fontshare's own stylesheet
+ * endpoint serves them instead, and the system stack in globals.css stands in until it answers,
+ * or for a console with no route to it.
  */
-const satoshi = localFont({
-  src: [
-    { path: "./fonts/satoshi-400.woff2", weight: "400", style: "normal" },
-    { path: "./fonts/satoshi-500.woff2", weight: "500", style: "normal" },
-    { path: "./fonts/satoshi-700.woff2", weight: "700", style: "normal" },
-    { path: "./fonts/satoshi-900.woff2", weight: "900", style: "normal" },
-  ],
-  display: "swap",
-  variable: "--font-sans",
-  fallback: ["-apple-system", "BlinkMacSystemFont", "Segoe UI", "Roboto", "sans-serif"],
-});
+const FONTSHARE_STYLESHEET =
+  "https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700,900&display=swap";
 
 export const metadata: Metadata = {
   title: "AgentRank",
@@ -30,7 +25,12 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={satoshi.variable}>
+    <html lang="en">
+      <head>
+        <link rel="preconnect" href="https://api.fontshare.com" />
+        <link rel="preconnect" href="https://cdn.fontshare.com" crossOrigin="anonymous" />
+        <link rel="stylesheet" href={FONTSHARE_STYLESHEET} />
+      </head>
       <body>{children}</body>
     </html>
   );
