@@ -74,6 +74,7 @@ from agentrank_api.benchmark.execution import BenchmarkRunCapability, ExecutorId
 from agentrank_api.benchmark.fixtures import BenchmarkFixture
 from agentrank_api.benchmark.isolation import (
     IsolatedMissionExecutor,
+    provider_worker_credentials,
     provider_worker_environment,
 )
 from agentrank_api.benchmark.launch import (
@@ -829,6 +830,7 @@ def _executor(
         merchant_information=surface.merchant_information,
         discovery=surface.discovery,
         environment=provider_worker_environment(settings, plan.configuration.provider),
+        credentials=provider_worker_credentials(settings, plan.configuration.provider),
         permits=permits,
     )
     executor.identity = plan.identity

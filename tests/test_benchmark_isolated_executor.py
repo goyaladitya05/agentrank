@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from agentrank_api.auth.service import MerchantCredentialService
 from agentrank_api.auth.tokens import TokenMarker
+from agentrank_api.benchmark import report as report_module
 from agentrank_api.benchmark.agent_trace import AgentExecutionEvidence, TraceEvent
 from agentrank_api.benchmark.definitions import (
     AgentMissionBrief,
@@ -53,6 +54,7 @@ from agentrank_api.benchmark.isolation import (
     ISOLATED_REFERENCE,
     WORKER_MODULE,
     IsolatedMissionExecutor,
+    ProviderCredentialRotation,
     _exited,
     reference_worker_environment,
 )
@@ -1132,3 +1134,204 @@ def _reference_executor_with(
         served=served,
         permits=permits,
     )
+
+
+# Which provider credential a worker is handed, and when the next one is tried.
+
+
+def _rotating_executor(
+    served: RequestLedger, permits: GrantedPermits, keys: tuple[str, ...]
+) -> IsolatedMissionExecutor:
+    configuration = AgentConfiguration(provider=GEMINI_PROVIDER, requested_model="test-model")
+    return IsolatedMissionExecutor(
+        base_url="http://127.0.0.1:1",
+        token="ar_dev_" + "0" * 32 + "_" + "0" * 64,
+        served=served,
+        strategy=LLM_STRATEGY,
+        provision_mandate=lambda brief: asyncio.sleep(0, result=uuid.uuid7()),
+        agent_configuration=configuration.payload(),
+        merchant_information={"products": []},
+        discovery={"kind": "STOREFRONT"},
+        environment={"PATH": "/usr/bin", "GEMINI_API_KEY": keys[0]},
+        credentials=ProviderCredentialRotation("GEMINI_API_KEY", keys),
+        permits=permits,
+    )
+
+
+def _refused_by_the_provider(
+    merchant_id: uuid.UUID,
+) -> tuple[report_module.ExecutorReport, AgentExecutionEvidence]:
+    """What a worker reports when the provider refused its very first request."""
+    evidence = AgentExecutionEvidence(
+        events=[
+            TraceEvent("MODEL_REQUEST", {"invocation_sequence": 1}),
+            TraceEvent(
+                "PROVIDER_ERROR", {"kind": "ProviderUnavailableError", "detail": "http_403"}
+            ),
+            TraceEvent("AGENT_ABORT", {"reason": "provider_unavailable", "turn": 1}),
+        ]
+    )
+    report = report_module.ExecutorReport(
+        merchant_id=merchant_id,
+        error=report_module.ReportedError(detail="provider unavailable: http_403"),
+    )
+    return report, evidence
+
+
+def _abstained(
+    merchant_id: uuid.UUID,
+) -> tuple[report_module.ExecutorReport, AgentExecutionEvidence]:
+    evidence = AgentExecutionEvidence(
+        events=[
+            TraceEvent("MODEL_REQUEST", {"invocation_sequence": 1}),
+            TraceEvent("MODEL_RESPONSE", {"response_id": "resp_1"}),
+            TraceEvent("AGENT_FINAL", {"reason": "structured_abstention"}),
+        ]
+    )
+    report = report_module.ExecutorReport(
+        merchant_id=merchant_id,
+        abstention=report_module.ReportedAbstention(
+            code=report_module.AbstentionCode.NO_CANDIDATE_FOUND, detail=None
+        ),
+    )
+    return report, evidence
+
+
+async def test_sequential_missions_are_handed_sequential_provider_credentials(
+    monkeypatch: pytest.MonkeyPatch, served: RequestLedger
+) -> None:
+    """One conversation cannot change key part way, so the switch is between missions.
+
+    A provider stores the conversation a worker continues under the project the key belongs to,
+    so a mission keeps the key it started with. What alternates is which key each new mission's
+    process is handed, which is what spreads a per-minute quota across projects.
+    """
+    handed: list[str] = []
+
+    async def through(
+        self: IsolatedMissionExecutor, request: MissionRequest, sandbox: str
+    ) -> tuple[report_module.ExecutorReport, int | None]:
+        handed.append(self.environment["GEMINI_API_KEY"])
+        report, self._agent_evidence = _abstained(request.merchant_id)
+        return report, 1
+
+    monkeypatch.setattr(IsolatedMissionExecutor, "_through", through)
+    permits = GrantedPermits(granted=6)
+    executor = _rotating_executor(served, permits, ("first", "second", "third"))
+
+    for _ in range(4):
+        executor.begin()
+        await executor.admit("mission")
+        report = await executor(brief(), merchant_id=uuid.uuid7())
+        assert report.abstention is not None
+
+    assert handed == ["first", "second", "third", "first"]
+    assert "OPENAI_API_KEY" not in executor.environment
+    assert permits.states == ["RECONCILED"] * 4
+
+
+async def test_a_provider_refusal_before_any_merchant_request_is_retried_with_the_next_key(
+    monkeypatch: pytest.MonkeyPatch, served: RequestLedger
+) -> None:
+    """A dead or exhausted project is skipped without a mission being lost to it.
+
+    Only where nothing happened: the server answered no request, so no quote, hold or payment
+    exists for a second process to repeat. The reservation is settled to what both processes
+    spent together, and the second is handed only what the first left of the grant.
+    """
+    handed: list[tuple[str, int | None]] = []
+
+    async def through(
+        self: IsolatedMissionExecutor, request: MissionRequest, sandbox: str
+    ) -> tuple[report_module.ExecutorReport, int | None]:
+        key = self.environment["GEMINI_API_KEY"]
+        handed.append((key, request.provider_request_grant))
+        if key == "denied":
+            report, self._agent_evidence = _refused_by_the_provider(request.merchant_id)
+            return report, 1
+        report, self._agent_evidence = _abstained(request.merchant_id)
+        return report, 2
+
+    monkeypatch.setattr(IsolatedMissionExecutor, "_through", through)
+    permits = GrantedPermits(granted=6)
+    executor = _rotating_executor(served, permits, ("denied", "working", "spare"))
+    executor.begin()
+    await executor.admit("mission")
+
+    report = await executor(brief(), merchant_id=uuid.uuid7())
+
+    assert report.abstention is not None
+    assert executor.fault() is None
+    assert handed == [("denied", 6), ("working", 5)]
+    assert permits.settled[-1][1:] == ("RECONCILED", 3)
+    # The next mission moves on again rather than returning to the key that was refused.
+    assert executor.environment["GEMINI_API_KEY"] == "spare"
+
+
+async def test_a_provider_failure_after_the_merchant_answered_is_never_retried(
+    monkeypatch: pytest.MonkeyPatch, served: RequestLedger
+) -> None:
+    """A mission that reached the merchant may have quoted or paid, and is never run twice."""
+    handed: list[str] = []
+
+    async def through(
+        self: IsolatedMissionExecutor, request: MissionRequest, sandbox: str
+    ) -> tuple[report_module.ExecutorReport, int | None]:
+        handed.append(self.environment["GEMINI_API_KEY"])
+        served.record(
+            ServedRequest(
+                method="POST", path="/api/v1/commerce/products/search", status=200, failure=None
+            )
+        )
+        report, self._agent_evidence = _refused_by_the_provider(request.merchant_id)
+        return report, 3
+
+    monkeypatch.setattr(IsolatedMissionExecutor, "_through", through)
+    permits = GrantedPermits(granted=6)
+    executor = _rotating_executor(served, permits, ("first", "second"))
+    executor.begin()
+    await executor.admit("mission")
+
+    report = await executor(brief(), merchant_id=uuid.uuid7())
+
+    assert report.abstention is None
+    fault = executor.fault()
+    assert fault is not None
+    assert fault.origin is FaultOrigin.AGENT
+    assert handed == ["first"]
+    assert permits.settled[-1][1:] == ("RECONCILED", 3)
+
+
+async def test_a_retry_is_refused_when_the_reservation_has_nothing_left(
+    monkeypatch: pytest.MonkeyPatch, served: RequestLedger
+) -> None:
+    """The grant bounds both processes together; a retry is never a second allowance."""
+    handed: list[str] = []
+
+    async def through(
+        self: IsolatedMissionExecutor, request: MissionRequest, sandbox: str
+    ) -> tuple[report_module.ExecutorReport, int | None]:
+        handed.append(self.environment["GEMINI_API_KEY"])
+        report, self._agent_evidence = _refused_by_the_provider(request.merchant_id)
+        return report, 1
+
+    monkeypatch.setattr(IsolatedMissionExecutor, "_through", through)
+    permits = GrantedPermits(granted=1)
+    executor = _rotating_executor(served, permits, ("first", "second"))
+    executor.begin()
+    await executor.admit("mission")
+
+    report = await executor(brief(), merchant_id=uuid.uuid7())
+
+    assert report.error is not None
+    assert handed == ["first"]
+    assert permits.settled[-1][1:] == ("RECONCILED", 1)
+
+
+def test_a_rotation_refuses_a_variable_the_worker_would_not_be_allowed_to_see() -> None:
+    with pytest.raises(ValueError, match="allowlist"):
+        ProviderCredentialRotation("DATABASE_URL", ("k",))
+    with pytest.raises(ValueError, match="once"):
+        ProviderCredentialRotation("GEMINI_API_KEY", ("k", "k"))
+    with pytest.raises(ValueError, match="nonblank"):
+        ProviderCredentialRotation("GEMINI_API_KEY", ())

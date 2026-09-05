@@ -219,9 +219,14 @@ messages, log lines and serialized settings. A missing provider credential is a 
 process does not have, not a failure: the process starts, and launches frozen to that provider stay
 queued for a worker that holds the key.
 
-The isolated worker receives exactly the selected provider credential and never both. Each process
-logs one startup line naming its environment, its expected schema revision and which capabilities
-it holds, in names and never in values.
+The isolated worker receives exactly one credential for the selected provider and never the other
+provider's. A provider variable may list several keys, each belonging to a different provider
+project. The trusted side hands one to each mission's process and moves to the next key for the
+next mission, and a mission the provider refused before the buyer made any commerce request is
+retried once per remaining key. The worker never sees the list, and which key was presented is
+not evidence about anything: the model, the frozen configuration and every other pin are the same
+whichever key answered. Each process logs one startup line naming its environment, its expected
+schema revision and which capabilities it holds, in names and never in values.
 
 Spending is governed on the trusted side, before the worker process exists. A permit is reserved
 and committed durably before anything leaves the machine, and settled after the process has exited.

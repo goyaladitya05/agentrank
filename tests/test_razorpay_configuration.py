@@ -166,3 +166,24 @@ def test_a_razorpay_variable_set_empty_means_the_integration_is_not_configured()
 
     assert settings.razorpay is None
     assert settings.capability_report()["razorpay_test_mode"] is False
+
+
+@pytest.mark.parametrize(
+    "listed",
+    ["k-one,k-two,k-three", "[k-one, k-two, k-three]", "'k-one', \"k-two\", k-three, k-one,"],
+)
+def test_a_provider_variable_may_list_several_keys(listed: str) -> None:
+    """Several keys from several provider projects are one variable, however a person wrote it.
+
+    The worker still receives one key per mission; which one is the trusted side's rotation.
+    Brackets and quotes are tolerated because a list is what a person types when asked for
+    several values, a trailing comma is not a fourth key, and a key listed twice is one key.
+    """
+    configured = settings_with(GEMINI_API_KEY=listed)
+
+    assert configured.gemini is not None
+    keys = [key.get_secret_value() for key in configured.gemini.api_keys]
+    assert keys == ["k-one", "k-two", "k-three"]
+    assert configured.gemini.api_key.get_secret_value() == "k-one"
+    assert "k-one" not in repr(configured.gemini)
+    assert configured.openai is None

@@ -92,6 +92,7 @@ from agentrank_api.benchmark.experiment import (
 )
 from agentrank_api.benchmark.isolation import (
     IsolatedMissionExecutor,
+    provider_worker_credentials,
     provider_worker_environment,
 )
 from agentrank_api.benchmark.launch import EvaluationLaunchWorkerService, worker_executor_kinds
@@ -1465,6 +1466,7 @@ async def compare_run(
                 merchant_information=treatment.projection,
                 discovery=_treatment_discovery(treatment),
                 environment=worker_environment,
+                credentials=provider_worker_credentials(settings, configuration.provider),
                 # An operator sample spends the same provider quota a merchant's evaluation
                 # does, so it is admitted and charged through the same permits. Its budget comes
                 # from the capacity policy in force now rather than from a frozen column,

@@ -205,6 +205,11 @@ one answer to "how many evaluations are calling this provider right now" and one
 path when a dispatcher dies holding one. Both checks run under a transaction-scoped advisory lock
 keyed by provider name.
 
+A provider variable may list several keys from different provider projects. Each mission's worker
+is handed exactly one, sequential missions alternate keys, and a mission the provider refused before
+the buyer made any merchant request is retried with the next key. Rotation is a credential concern
+only: the model, the configuration digest and every other pin are unchanged by which key answered.
+
 ## Diagnostics
 
 Diagnostics is a read model over runs. It produces the reading a merchant needs: what changed

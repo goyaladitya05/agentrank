@@ -19,7 +19,10 @@ from agentrank_api.benchmark.discovery import (
     storefront_view,
 )
 from agentrank_api.benchmark.http_buyer import HttpBuyerCommerceSurface
-from agentrank_api.benchmark.isolation import provider_worker_environment
+from agentrank_api.benchmark.isolation import (
+    provider_worker_credentials,
+    provider_worker_environment,
+)
 from agentrank_api.benchmark.llm import (
     GEMINI_PROVIDER,
     THROTTLE_RETRY_LIMIT,
@@ -167,6 +170,29 @@ def test_selected_worker_provider_key_excludes_other_provider(
     assert "OPENAI_API_KEY" not in gemini
     assert openai["OPENAI_API_KEY"] == "selected-openai"
     assert "GEMINI_API_KEY" not in openai
+
+
+def test_a_listed_provider_credential_rotates_one_key_per_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Several keys in one variable become a rotation, and a worker environment carries one."""
+    monkeypatch.setenv("GEMINI_API_KEY", "parent-gemini")
+    settings = Settings(
+        postgres_password="test-password",
+        gemini_api_key="[first-gemini, second-gemini]",
+    )  # type: ignore[call-arg]
+
+    rotation = provider_worker_credentials(settings, GEMINI_PROVIDER)
+    first = provider_worker_environment(settings, GEMINI_PROVIDER)
+
+    assert rotation.count == 2
+    assert first["GEMINI_API_KEY"] == "first-gemini"
+    rotation.advance()
+    second = rotation.applied(first)
+    assert second["GEMINI_API_KEY"] == "second-gemini"
+    assert "OPENAI_API_KEY" not in second
+    rotation.advance()
+    assert rotation.current() == "first-gemini"
 
 
 def test_agent_configuration_rejects_an_inconsistent_snapshot() -> None:

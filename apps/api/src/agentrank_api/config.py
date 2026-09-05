@@ -85,18 +85,57 @@ class RazorpayCredentials:
     timeout_seconds: float
 
 
+def _secret_list(value: SecretStr | None) -> tuple[SecretStr, ...]:
+    """Every key one provider variable holds, in the order it lists them, or nothing.
+
+    One variable rather than a numbered family. A deployment is configured by its environment,
+    and a family of `GEMINI_API_KEY_2`, `_3` variables is a shape a chart forgets one member of
+    without anything noticing. The value is a comma separated list, and the brackets and quotes a
+    person writes around a list are tolerated, so `[a, b, c]` and `a,b,c` are the same three
+    keys. Blank entries are dropped, so a trailing comma is not a fourth key of zero length, and a
+    key listed twice is one key: rotating onto the same project twice would spend the same quota
+    while looking as though it spread the load.
+    """
+    if value is None:
+        return ()
+    raw = value.get_secret_value().strip()
+    if raw.startswith("[") and raw.endswith("]"):
+        raw = raw[1:-1]
+    keys: list[str] = []
+    for part in raw.split(","):
+        key = part.strip().strip("'\"").strip()
+        if key and key not in keys:
+            keys.append(key)
+    return tuple(SecretStr(key) for key in keys)
+
+
 @dataclass(frozen=True, slots=True)
 class OpenAICredentials:
-    """A proper application-runtime OpenAI API key, never a developer subscription token."""
+    """Proper application-runtime OpenAI API keys, never a developer subscription token.
 
-    api_key: SecretStr
+    One or several. Listing several keys, each belonging to a different provider project, is how
+    a deployment spreads a provider's rate limit: the isolated worker still receives exactly one
+    key per mission, and the trusted side decides which. See `agentrank_api.benchmark.isolation`.
+    """
+
+    api_keys: tuple[SecretStr, ...]
+
+    @property
+    def api_key(self) -> SecretStr:
+        """The first key, for a reader that wants one credential rather than a rotation."""
+        return self.api_keys[0]
 
 
 @dataclass(frozen=True, slots=True)
 class GeminiCredentials:
-    """A runtime Gemini API key, unwrapped only by the isolated worker."""
+    """Runtime Gemini API keys, unwrapped only for the isolated worker, one per mission."""
 
-    api_key: SecretStr
+    api_keys: tuple[SecretStr, ...]
+
+    @property
+    def api_key(self) -> SecretStr:
+        """The first key, for a reader that wants one credential rather than a rotation."""
+        return self.api_keys[0]
 
 
 class Settings(BaseSettings):
@@ -264,10 +303,11 @@ class Settings(BaseSettings):
         deployment that has a key on disk can say it does not want one is to set the variable
         empty in the environment, and a credential of zero length is not a credential in any
         case: it would be carried all the way to a provider that then refuses it.
+
+        Several keys may be listed in the one variable, comma separated. See `_secret_list`.
         """
-        if self.openai_api_key is None or not self.openai_api_key.get_secret_value().strip():
-            return None
-        return OpenAICredentials(api_key=self.openai_api_key)
+        keys = _secret_list(self.openai_api_key)
+        return None if not keys else OpenAICredentials(api_keys=keys)
 
     @property
     def gemini(self) -> GeminiCredentials | None:
@@ -275,9 +315,8 @@ class Settings(BaseSettings):
 
         Blank counts as absent, for the same reasons as above.
         """
-        if self.gemini_api_key is None or not self.gemini_api_key.get_secret_value().strip():
-            return None
-        return GeminiCredentials(api_key=self.gemini_api_key)
+        keys = _secret_list(self.gemini_api_key)
+        return None if not keys else GeminiCredentials(api_keys=keys)
 
     @property
     def file_configured(self) -> bool:

@@ -78,11 +78,13 @@ have been paid for.
 
 import asyncio
 import json
+import logging
 import os
 import sys
 import tempfile
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 from agentrank_api.benchmark.agent_trace import AgentExecutionEvidence
@@ -111,9 +113,12 @@ from agentrank_api.benchmark.worker import (
     EXIT_ALLOWANCE_EXHAUSTED,
     EXIT_NOT_ISOLATED,
     EXIT_PROTOCOL,
+    PERMITTED_ENVIRONMENT,
     worker_environment,
 )
 from agentrank_api.config import Settings
+
+log = logging.getLogger(__name__)
 
 WORKER_MODULE = "agentrank_api.benchmark.worker"
 
@@ -136,29 +141,87 @@ def _revision() -> str:
     )
 
 
+@dataclass(slots=True)
+class ProviderCredentialRotation:
+    """The keys one run may hand its workers for one provider, and which one is next.
+
+    A provider keeps the conversation a worker continues, filed under the project the key
+    belongs to, so a mission keeps the key it started with: a chain begun under one project is
+    not found under another. What can change is which key the next mission's process is handed,
+    and that is what this decides. Sequential missions are sequential conversations, and
+    alternating projects across them spreads a per-minute rate limit rather than draining one.
+
+    The worker never sees this object or the list. It is handed one value in one variable,
+    through the same allowlist as before, and a worker started with two keys would be refused by
+    the allowlist for the same reason a worker started with a database URL is.
+    """
+
+    variable: str
+    keys: tuple[str, ...]
+    index: int = 0
+
+    def __post_init__(self) -> None:
+        if self.variable not in PERMITTED_ENVIRONMENT:
+            raise ValueError("a credential rotation names a variable the worker allowlist admits")
+        if not self.keys or any(not key.strip() for key in self.keys):
+            raise ValueError("a credential rotation holds at least one nonblank key")
+        if len(set(self.keys)) != len(self.keys):
+            raise ValueError("a credential rotation lists each key once")
+
+    @property
+    def count(self) -> int:
+        return len(self.keys)
+
+    def current(self) -> str:
+        """The key the next worker process is handed."""
+        return self.keys[self.index % len(self.keys)]
+
+    def advance(self) -> None:
+        """Move to the next key, wrapping round to the first after the last."""
+        self.index = (self.index + 1) % len(self.keys)
+
+    def applied(self, environment: Mapping[str, str]) -> dict[str, str]:
+        """This environment, filtered by the allowlist, carrying the current key and no other."""
+        built = worker_environment(environment)
+        built[self.variable] = self.current()
+        return built
+
+
+def provider_worker_credentials(settings: Settings, provider: str) -> ProviderCredentialRotation:
+    """Every key this deployment holds for one provider, as the rotation a run hands out from.
+
+    The values are unwrapped here and in `provider_worker_environment`, and nowhere else. They
+    cross no argument vector, no standard input and no log line: a worker receives one of them in
+    its environment and the rotation stays on this side of the process boundary.
+    """
+    if provider == OPENAI_PROVIDER:
+        if settings.openai is None:
+            raise ValueError("an OpenAI buyer needs an OpenAI runtime credential")
+        return ProviderCredentialRotation(
+            "OPENAI_API_KEY", tuple(key.get_secret_value() for key in settings.openai.api_keys)
+        )
+    if provider == GEMINI_PROVIDER:
+        if settings.gemini is None:
+            raise ValueError("a Gemini buyer needs a Gemini runtime credential")
+        return ProviderCredentialRotation(
+            "GEMINI_API_KEY", tuple(key.get_secret_value() for key in settings.gemini.api_keys)
+        )
+    raise ValueError("LLM provider is not supported")
+
+
 def provider_worker_environment(settings: Settings, provider: str) -> dict[str, str]:
     """The environment one model buyer process is given, with exactly one provider credential.
 
     Built through the same allowlist the worker refuses to run without, and then narrowed once
     more: both provider variables are removed before the configured one is put back, so a worker
     running an OpenAI sample cannot see a Gemini key that happened to be in this process. The
-    value is unwrapped here and nowhere else, and it crosses no argument vector, no standard
-    input and no log line.
+    key placed here is the first the deployment lists; an executor given a rotation as well
+    replaces it with the current one before each process starts.
     """
     environment = worker_environment(os.environ)
     environment.pop("OPENAI_API_KEY", None)
     environment.pop("GEMINI_API_KEY", None)
-    if provider == OPENAI_PROVIDER:
-        if settings.openai is None:
-            raise ValueError("an OpenAI buyer needs an OpenAI runtime credential")
-        environment["OPENAI_API_KEY"] = settings.openai.api_key.get_secret_value()
-        return environment
-    if provider == GEMINI_PROVIDER:
-        if settings.gemini is None:
-            raise ValueError("a Gemini buyer needs a Gemini runtime credential")
-        environment["GEMINI_API_KEY"] = settings.gemini.api_key.get_secret_value()
-        return environment
-    raise ValueError("LLM provider is not supported")
+    return provider_worker_credentials(settings, provider).applied(environment)
 
 
 def reference_worker_environment(parent: Mapping[str, str]) -> dict[str, str]:
@@ -237,6 +300,7 @@ class IsolatedMissionExecutor:
         discovery: dict[str, object] | None = None,
         timeout: float = DEFAULT_TIMEOUT,
         environment: dict[str, str] | None = None,
+        credentials: ProviderCredentialRotation | None = None,
         interpreter: str | None = None,
         permits: ProviderPermitBroker | None = None,
     ) -> None:
@@ -250,6 +314,7 @@ class IsolatedMissionExecutor:
         self._discovery = discovery
         self._timeout = timeout
         self._environment = environment
+        self._credentials = credentials
         self._interpreter = sys.executable if interpreter is None else interpreter
         if strategy == LLM_STRATEGY and permits is None:
             # The invariant this whole layer exists for, refused where it is cheapest to refuse.
@@ -382,7 +447,7 @@ class IsolatedMissionExecutor:
             return ExecutorReport(merchant_id=merchant_id)
 
         try:
-            return await self._carry_out(request)
+            return await self._attempted(request)
         except _WorkerFailureError as failed:
             self._fault = ExecutionFault(origin=failed.origin, detail=failed.detail)
             return ExecutorReport(merchant_id=merchant_id)
@@ -398,8 +463,79 @@ class IsolatedMissionExecutor:
             # request nobody can account for is the safe direction, and every path that knows
             # better has already settled by now.
             await self._settle()
+            if self._credentials is not None:
+                # The next mission starts on the next key whatever became of this one. It is a
+                # new conversation, so it may be a new project, and alternating is the point.
+                self._credentials.advance()
 
-    async def _carry_out(self, request: MissionRequest) -> ExecutorReport:
+    async def _attempted(self, request: MissionRequest) -> ExecutorReport:
+        """Carry the mission out, moving to the next credential only where nothing happened.
+
+        A provider that refuses a worker's first request has been asked nothing about this
+        merchant: the server answered no request, so no quote, hold or payment exists, and the
+        worker's own runtime recorded that it gave up on the provider. That mission has no side
+        effect a second process could repeat, so a deployment holding another key for the same
+        provider may try it, once per remaining key. Every other failure is final here, because
+        a mission that reached the merchant may have quoted or paid and is never run twice.
+
+        The reservation bounds both processes together. The second is handed only what the first
+        left of the grant, and the permit is settled to what they spent between them. A worker
+        that reported no number leaves consumption unknown, which is charged in full and never
+        retried: a retry on top of an unknown spend would be spending twice.
+        """
+        spent = 0
+        tried = 0
+        while True:
+            tried += 1
+            report, attempts = await self._carry_out(request)
+            if attempts is None:
+                await self._settle()
+                return report
+            spent += attempts
+            remaining = None if self._grant is None else self._grant.granted_requests - spent
+            credentials = self._credentials
+            if (
+                credentials is None
+                or tried >= credentials.count
+                or (remaining is not None and remaining < 1)
+                or not self._untouched_provider_failure(report)
+            ):
+                await self._settle(consumed=spent)
+                return report
+            log.info(
+                "provider credential %d of %d was refused before the buyer reached the merchant;"
+                " retrying the mission with the next one",
+                credentials.index + 1,
+                credentials.count,
+            )
+            credentials.advance()
+            self._served.begin()
+            request = replace(request, provider_request_grant=remaining)
+
+    def _untouched_provider_failure(self, report: ExecutorReport) -> bool:
+        """Whether this attempt ended on the provider before the buyer did anything at all.
+
+        Every condition is read from this side's own evidence and none from the report's prose.
+        The server answered no request, so nothing exists at the merchant; the worker's runtime
+        recorded that it gave up on the provider; and the report names no selection, quote or
+        payment. Only a mission in that state has no side effect a retry could repeat.
+        """
+        if self._served.served or self._served.payment_attempted():
+            return False
+        if report.selection is not None or report.checkout is not None:
+            return False
+        if report.payment is not None:
+            return False
+        evidence = self._agent_evidence
+        if evidence is None or not evidence.events:
+            return False
+        last = evidence.events[-1]
+        return (
+            last.event_type == "AGENT_ABORT"
+            and last.payload.get("reason") == "provider_unavailable"
+        )
+
+    async def _carry_out(self, request: MissionRequest) -> tuple[ExecutorReport, int | None]:
         # An empty directory of its own, and this is load bearing rather than tidy. `Settings`
         # reads a `.env` file from the working directory, so a worker started in a checkout
         # picks up the developer's `POSTGRES_PASSWORD` from disk however carefully its
@@ -407,7 +543,9 @@ class IsolatedMissionExecutor:
         with tempfile.TemporaryDirectory(prefix="agentrank-benchmark-") as sandbox:
             return await self._through(request, sandbox)
 
-    async def _through(self, request: MissionRequest, sandbox: str) -> ExecutorReport:
+    async def _through(
+        self, request: MissionRequest, sandbox: str
+    ) -> tuple[ExecutorReport, int | None]:
         process = await self._spawn(sandbox)
         try:
             stdout, stderr = await asyncio.wait_for(
@@ -449,11 +587,11 @@ class IsolatedMissionExecutor:
             raise _WorkerFailureError(
                 f"the executor process reported {malformed}", FaultOrigin.AGENT
             ) from malformed
-        # A clean exit with a number is the one outcome this side can settle exactly. A clean
-        # exit that reported no number is not: null is unknown rather than zero, and unknown is
-        # charged in full.
-        await self._settle(consumed=attempts)
-        return report
+        # A clean exit with a number is the one outcome this side can settle exactly, and the
+        # caller settles it, because this process may be one of two that spent against one
+        # reservation. A clean exit that reported no number is not: null is unknown rather than
+        # zero, and unknown is charged in full.
+        return report, attempts
 
     def take_agent_evidence(self) -> AgentExecutionEvidence | None:
         """Return this mission's validated worker evidence to trusted orchestration once."""
@@ -549,7 +687,9 @@ class IsolatedMissionExecutor:
         """
         if self._environment is None:
             return reference_worker_environment(os.environ)
-        return worker_environment(self._environment)
+        if self._credentials is None:
+            return worker_environment(self._environment)
+        return self._credentials.applied(self._environment)
 
     async def _reap(self, process: asyncio.subprocess.Process) -> None:
         """Make sure a worker that timed out is gone before anything else runs.
