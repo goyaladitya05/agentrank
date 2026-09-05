@@ -43,9 +43,11 @@ export function Section({
       <div className={styles.sectionHeader}>
         <h2 className={styles.sectionTitle}>
           {index !== undefined ? (
-            <span className={styles.sectionIndex} aria-hidden="true">
-              {index}
-            </span>
+            <>
+              <span className={styles.sectionIndex} aria-hidden="true">
+                {index}
+              </span>{" "}
+            </>
           ) : null}
           {title}
         </h2>

@@ -18,8 +18,8 @@
 .headScenario,
 .headOutcome {
   font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.14em;
+  font-size: 11px;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--text-muted);
 }
@@ -32,8 +32,8 @@
 
 .headStage {
   font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.12em;
+  font-size: 11px;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text-muted);
 }
@@ -56,8 +56,8 @@
 
 .scenario {
   font-family: var(--mono);
-  font-size: 12px;
-  color: var(--text-muted);
+  font-size: 12.5px;
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -84,10 +84,10 @@
 
 .cellLabel {
   font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.08em;
+  font-size: 11px;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: transparent;
+  color: var(--text-muted);
   white-space: nowrap;
 }
 
@@ -136,7 +136,7 @@
 
 .row[data-outcome="completed"] .cell[data-state="final"] .cellLabel,
 .row[data-outcome="blocked"] .cell[data-state="final"] .cellLabel {
-  color: var(--surface-raised);
+  color: var(--surface);
 }
 
 .row[data-outcome="declined"] .cell[data-state="final"] .cellLabel,
@@ -145,17 +145,22 @@
   color: var(--text-muted);
 }
 
-/* Stages the attempt never got to. */
+/* Stages the attempt never got to. Dimmed rather than blanked: a stage that was not
+   reached is information, and text nobody can see is text a screen reader still finds. */
 .cell[data-state="unreached"] {
   border-style: dotted;
   border-color: var(--border);
 }
 
+.cell[data-state="unreached"] .cellLabel {
+  color: var(--border-strong);
+}
+
 .outcome {
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
   text-align: right;
 }
@@ -177,14 +182,14 @@
 .reason {
   grid-column: 2 / 3;
   margin: 0;
-  font-size: 13px;
+  font-size: 13.5px;
   color: var(--text-muted);
   max-width: 68ch;
 }
 
 .caption {
   margin-top: 10px;
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--text-muted);
 }
 

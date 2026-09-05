@@ -34,21 +34,20 @@
 
 .headline {
   margin: 0 0 22px;
-  font-family: var(--serif);
-  font-size: clamp(44px, 8vw, 96px);
-  font-weight: 500;
-  letter-spacing: -0.03em;
-  line-height: 0.98;
+  font-family: var(--display);
+  font-size: clamp(46px, 8.4vw, 104px);
+  font-weight: 700;
+  letter-spacing: -0.045em;
+  line-height: 0.95;
   max-width: 15ch;
   text-wrap: balance;
 }
 
-/* Fraunces italic has tight sidebearings, so an italic word beside a roman one needs the
-   space put back by hand. */
+/* The payoff word carries the accent rather than an italic: a grotesque says emphasis with
+   colour and weight, not with a slope. */
 .headline em {
-  font-style: italic;
+  font-style: normal;
   color: var(--accent);
-  margin-right: 0.14em;
 }
 
 .lede {
@@ -73,7 +72,7 @@
   border: 1px solid var(--accent-strong);
   border-radius: 5px;
   background: var(--accent);
-  color: var(--surface-raised);
+  color: var(--surface);
   font-size: 15px;
   font-weight: 600;
   text-decoration: none;
@@ -148,10 +147,10 @@
 }
 
 .stageName {
-  font-family: var(--serif);
-  font-size: 26px;
-  font-weight: 580;
-  letter-spacing: -0.012em;
+  font-family: var(--display);
+  font-size: 27px;
+  font-weight: 700;
+  letter-spacing: -0.028em;
 }
 
 .stageBody {
@@ -192,10 +191,10 @@
 }
 
 .loopItem strong {
-  font-family: var(--serif);
+  font-family: var(--display);
   font-size: 20px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  font-weight: 700;
+  letter-spacing: -0.022em;
   color: var(--text);
   margin-right: 4px;
 }

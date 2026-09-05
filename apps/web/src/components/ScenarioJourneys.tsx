@@ -42,7 +42,7 @@ export function ScenarioJourneys({
         <div className={styles.headStages}>
           {STAGES.map((stage) => (
             <span key={stage} className={styles.headStage}>
-              {STAGE_LABEL[stage]}
+              {STAGE_LABEL[stage]}{" "}
             </span>
           ))}
         </div>
@@ -78,7 +78,7 @@ function JourneyRow({ journey, index }: { journey: ScenarioJourney; index: numbe
             position < reached - 1 ? "passed" : position === reached - 1 ? "final" : "unreached";
           return (
             <span key={stage} className={styles.cell} data-state={state}>
-              <span className={styles.cellLabel}>{STAGE_LABEL[stage]}</span>
+              <span className={styles.cellLabel}>{STAGE_LABEL[stage]}</span>{" "}
             </span>
           );
         })}
