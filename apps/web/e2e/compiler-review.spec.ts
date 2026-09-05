@@ -131,7 +131,7 @@ test("a merchant reviews every kind of fact and publishes one immutable represen
   await expect(
     rowOf(page, WATTAGE_BLACK).getByText("CORRECT recorded by MERCHANT_CREDENTIAL"),
   ).toBeVisible();
-  await expect(page.getByText("which is unchanged").first()).toBeVisible();
+  await expect(rowOf(page, WATTAGE_BLACK).getByText("which is unchanged")).toBeVisible();
 
   await page.getByRole("button", { name: "Publish fixes" }).click();
   await expect(page.getByText("does not rerun a benchmark")).toBeVisible();
